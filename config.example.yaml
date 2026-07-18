@@ -1,0 +1,38 @@
+project:
+  root: .
+  index_path: .code-harness/index.db
+
+files:
+  use_gitignore: true
+  max_file_size_bytes: 2000000
+  ignored_patterns:
+    - "**/target/**"
+    - "**/node_modules/**"
+    - "**/.git/**"
+
+ripgrep:
+  executable: rg
+  timeout_seconds: 10
+
+parsers:
+  enabled: false
+  timeout_seconds: 3
+  startup_timeout_seconds: 10
+  failure_threshold: 3
+
+semantic:
+  enabled: false
+  provider: local
+  model: null
+  batch_size: 16
+
+search:
+  max_results: 50
+  max_results_per_file: 5
+
+context:
+  default_max_tokens: 12000
+  max_expansion_depth: 2
+
+mcp:
+  expose_index_commands: false

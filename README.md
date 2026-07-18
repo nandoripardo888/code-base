@@ -82,3 +82,5 @@ pytest --cov
 
 See [architecture](docs/architecture.md), [tools](docs/tools.md), and the
 [implementation roadmap](docs/implementation-plan.md).
+
+> Teste de fluxo de commit: alteração mínima no README.

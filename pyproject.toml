@@ -15,10 +15,27 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-parsers = []
-semantic = []
+parsers = [
+  "tree-sitter>=0.25,<0.27",
+  "tree-sitter-java>=0.23.5,<0.24",
+  "tree-sitter-python>=0.25,<0.26",
+]
+semantic = [
+  "fastembed==0.8.0",
+  "huggingface-hub==1.24.0",
+  "onnxruntime==1.27.0",
+  "truststore==0.10.4",
+]
 mcp = []
-all = []
+all = [
+  "fastembed==0.8.0",
+  "huggingface-hub==1.24.0",
+  "onnxruntime==1.27.0",
+  "truststore==0.10.4",
+  "tree-sitter>=0.25,<0.27",
+  "tree-sitter-java>=0.23.5,<0.24",
+  "tree-sitter-python>=0.25,<0.26",
+]
 dev = [
   "mypy>=1.16,<2",
   "pytest>=8.4,<9",

@@ -72,6 +72,58 @@ class RipgrepUnavailableError(CodeHarnessError):
         )
 
 
+class IndexNotReadyError(CodeHarnessError):
+    def __init__(self, message: str = "The project index is not ready.") -> None:
+        super().__init__(ErrorCode.INDEX_NOT_READY, message)
+
+
+class IndexCorruptedError(CodeHarnessError):
+    def __init__(self, message: str, *, path: str | None = None) -> None:
+        details = {"path": path} if path is not None else None
+        super().__init__(ErrorCode.INDEX_CORRUPTED, message, details=details)
+
+
+class ParserUnavailableError(CodeHarnessError):
+    def __init__(self, language: str) -> None:
+        super().__init__(
+            ErrorCode.PARSER_UNAVAILABLE,
+            f"No structural parser is available for language: {language}",
+            details={"language": language},
+        )
+
+
+class ParserTimeoutError(CodeHarnessError):
+    def __init__(self, path: str, timeout_seconds: float) -> None:
+        super().__init__(
+            ErrorCode.PARSER_TIMEOUT,
+            f"Structural parser timed out for {path}.",
+            details={"path": path, "timeout_seconds": timeout_seconds},
+        )
+
+
+class ParserCrashError(CodeHarnessError):
+    def __init__(self, path: str, message: str = "Structural parser worker failed.") -> None:
+        super().__init__(
+            ErrorCode.PARSER_CRASH,
+            message,
+            details={"path": path},
+        )
+
+
+class ParserCircuitOpenError(CodeHarnessError):
+    def __init__(self, language: str) -> None:
+        super().__init__(
+            ErrorCode.PARSER_CIRCUIT_OPEN,
+            f"Structural parser circuit is open for language: {language}",
+            details={"language": language},
+        )
+
+
+class EmbeddingUnavailableError(CodeHarnessError):
+    def __init__(self, message: str) -> None:
+        super().__init__(ErrorCode.EMBEDDING_UNAVAILABLE, message)
+
+
 class InvalidQueryError(CodeHarnessError):
     def __init__(self, message: str, **details: Any) -> None:
         super().__init__(ErrorCode.INVALID_QUERY, message, details=details)

@@ -27,4 +27,5 @@ class SearchTextTool:
             elapsed_ms,
             truncated=outcome.truncated,
             warnings=outcome.warnings,
+            index_state=outcome.index_state,
         )

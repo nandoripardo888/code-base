@@ -1,0 +1,19 @@
+from typing import Protocol
+
+from code_harness.domain.models.structural import AnalyzeRequest, AnalyzeResult
+
+
+class StructuralAnalyzer(Protocol):
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def version(self) -> str: ...
+
+    def supports(self, language: str) -> bool: ...
+
+    def analyze(self, request: AnalyzeRequest) -> AnalyzeResult: ...
+
+    def health_check(self) -> bool: ...
+
+    def shutdown(self) -> None: ...

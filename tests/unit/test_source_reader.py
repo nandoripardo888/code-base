@@ -24,7 +24,7 @@ def test_reader_returns_current_range_and_hash(tmp_path: Path) -> None:
 
 
 def test_reader_truncates_by_lines_and_characters(tmp_path: Path) -> None:
-    (tmp_path / "sample.txt").write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+    (tmp_path / "sample.txt").write_bytes(b"alpha\nbeta\ngamma\n")
     reader = LocalSourceReader(PathGuard(tmp_path))
 
     by_lines = reader.read_file("sample.txt", max_chars=100, max_lines=1)

@@ -3,9 +3,12 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from code_harness.application.dto.requests import (
+    BuildContextRequest,
+    GetRepositoryMapRequest,
     ListFilesRequest,
     ReadFileRequest,
     ReadRangeRequest,
+    SearchCodeRequest,
     SearchFilesRequest,
     SearchTextRequest,
 )
@@ -45,6 +48,11 @@ def test_code_location_and_tool_result_are_immutable() -> None:
         lambda: SearchTextRequest("needle", timeout_seconds=0),
         lambda: ReadFileRequest(""),
         lambda: ReadRangeRequest("x", 2, 1),
+        lambda: SearchCodeRequest(""),
+        lambda: SearchCodeRequest("x", context_lines=-1),
+        lambda: BuildContextRequest("x", max_tokens=10, reserved_tokens=10),
+        lambda: BuildContextRequest("x", max_expansion_depth=-1),
+        lambda: GetRepositoryMapRequest(max_files=0),
     ],
 )
 def test_requests_reject_invalid_limits(factory: object) -> None:

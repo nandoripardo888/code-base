@@ -15,16 +15,25 @@ ripgrep:
   timeout_seconds: 10
 
 parsers:
-  enabled: false
-  timeout_seconds: 3
+  enabled: true
+  timeout_seconds: 10
   startup_timeout_seconds: 10
   failure_threshold: 3
+  circuit_reset_seconds: 60
+  chunk_target_chars: 4000
+  chunk_max_chars: 8000
 
 semantic:
   enabled: false
   provider: local
-  model: null
+  model: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+  model_cache: ~/.cache/code-harness/models
   batch_size: 16
+  window_chars: 1500
+  window_overlap_chars: 150
+  timeout_seconds: 300
+  system_trust: true
+  ca_bundle: null
 
 search:
   max_results: 50
@@ -32,6 +41,9 @@ search:
 
 context:
   default_max_tokens: 12000
+  reserved_tokens: 0
+  max_files: 12
+  max_snippets: 20
   max_expansion_depth: 2
 
 mcp:

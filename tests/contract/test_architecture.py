@@ -35,3 +35,18 @@ def test_mcp_sdk_is_not_imported_outside_future_adapter() -> None:
         assert not any(
             name == "mcp" or name.startswith("mcp.") for name in _project_imports(source)
         )
+
+
+def test_tree_sitter_is_only_loaded_by_the_isolated_worker() -> None:
+    worker = Path("src/code_harness/infrastructure/parsers/native_worker.py")
+    for source in Path("src/code_harness").rglob("*.py"):
+        if source == worker:
+            continue
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        imported: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module)
+        assert not any(name.startswith("tree_sitter") for name in imported), source

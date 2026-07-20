@@ -18,3 +18,4 @@ class SearchOutcome:
     hits: tuple[SearchHit, ...]
     truncated: bool = False
     warnings: tuple[str, ...] = ()
+    index_state: str | None = None

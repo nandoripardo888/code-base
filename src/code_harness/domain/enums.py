@@ -12,6 +12,40 @@ class MatchType(StrEnum):
     PATH = "path"
 
 
+class QueryKind(StrEnum):
+    EXACT = "exact"
+    MIXED = "mixed"
+    CONCEPTUAL = "conceptual"
+
+
+class IndexMode(StrEnum):
+    FULL = "full"
+    INCREMENTAL = "incremental"
+    VERIFY = "verify"
+
+
+class IndexState(StrEnum):
+    NOT_INITIALIZED = "not_initialized"
+    INDEXING = "indexing"
+    READY = "ready"
+    READY_WITH_WARNINGS = "ready_with_warnings"
+    FAILED = "failed"
+    REPAIRING = "repairing"
+
+
+class ParseState(StrEnum):
+    NOT_APPLICABLE = "not_applicable"
+    READY = "ready"
+    FALLBACK = "fallback"
+    FAILED = "failed"
+
+
+class DiagnosticStatus(StrEnum):
+    PASS = "pass"
+    WARNING = "warning"
+    FAIL = "fail"
+
+
 class ErrorCode(StrEnum):
     PROJECT_NOT_FOUND = "project_not_found"
     PATH_OUTSIDE_PROJECT = "path_outside_project"

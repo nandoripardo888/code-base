@@ -63,3 +63,32 @@ def test_cli_version() -> None:
 
     assert result.exit_code == 0
     assert result.stdout.strip() == "0.1.0"
+
+
+def test_cli_indexes_reports_status_and_runs_doctor(
+    copied_repository: Path, tmp_path: Path
+) -> None:
+    environment = {"CODE_HARNESS_HOME": str(tmp_path / "state")}
+    initialized = runner.invoke(app, ["init", str(copied_repository)], env=environment)
+    indexed = runner.invoke(app, ["--output", "json", "index"], env=environment)
+    repeated = runner.invoke(app, ["--output", "json", "index"], env=environment)
+    status = runner.invoke(app, ["--output", "json", "status"], env=environment)
+    doctor = runner.invoke(app, ["--output", "json", "doctor"], env=environment)
+
+    assert initialized.exit_code == 0, initialized.output
+    assert indexed.exit_code == 0, indexed.output
+    assert json.loads(indexed.stdout)["data"]["indexed_files"] > 0
+    assert json.loads(repeated.stdout)["data"]["indexed_files"] == 0
+    assert json.loads(status.stdout)["data"]["state"] == "ready"
+    assert json.loads(doctor.stdout)["data"]["healthy"] is True
+
+
+def test_cli_model_prepare_requires_semantic_configuration(copied_repository: Path) -> None:
+    result = runner.invoke(
+        app,
+        ["--project", str(copied_repository), "models", "prepare"],
+        env={"CODE_HARNESS_SEMANTIC": "0"},
+    )
+
+    assert result.exit_code == 4
+    assert "embedding_unavailable" in result.stderr

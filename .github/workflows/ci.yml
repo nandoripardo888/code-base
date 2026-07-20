@@ -3,6 +3,9 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
 
 jobs:
   test:
@@ -30,3 +33,49 @@ jobs:
         run: mypy
       - name: Test
         run: pytest --cov --cov-report=term-missing
+
+  semantic-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install semantic stack
+        run: python -m pip install -c constraints/semantic.txt -e ".[dev,semantic]"
+      - name: Run isolated semantic contracts
+        run: >-
+          pytest
+          tests/unit/test_embedding_provider.py
+          tests/unit/test_native_embedding_supervisor.py
+          tests/integration/test_semantic_search.py
+
+  semantic-smoke:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Cache embedding model
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/code-harness/models
+            ~/AppData/Local/code-harness/models
+          key: semantic-${{ runner.os }}-${{ hashFiles('constraints/semantic.txt') }}
+      - name: Install semantic stack
+        run: python -m pip install -c constraints/semantic.txt -e ".[semantic]"
+      - name: Run real semantic smoke test
+        run: python scripts/semantic_smoke.py

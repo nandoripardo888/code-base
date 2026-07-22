@@ -13,6 +13,7 @@ class CodeSymbol:
     location: CodeLocation
     signature: str | None = None
     parent_symbol_id: str | None = None
+    canonical_signature: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +23,11 @@ class CodeReference:
     kind: str
     location: CodeLocation
     source_symbol_id: str | None = None
+    source: str = "structural"
+    target_symbol_id: str | None = None
+    confidence: float = 1.0
+    validated: bool = False
+    resolution: str = "name_only"
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,5 +65,6 @@ class AnalyzeResult:
 class StructuralSearchResult:
     symbol: CodeSymbol | None
     reference: CodeReference | None
-    content: str
+    content: str | None
     file_hash: str
+    content_included: bool = False

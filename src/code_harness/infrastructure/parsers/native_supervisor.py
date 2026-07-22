@@ -68,7 +68,7 @@ class NativeParserSupervisor:
 
     @property
     def version(self) -> str:
-        return "2"
+        return "4"
 
     def supports(self, language: str) -> bool:
         return self._enabled and language.casefold() in {"java", "python", "plsql"}
@@ -211,6 +211,9 @@ def _decode_result(payload: dict[str, Any]) -> AnalyzeResult:
             signature=str(item["signature"]) if item.get("signature") else None,
             parent_symbol_id=(
                 str(item["parent_symbol_id"]) if item.get("parent_symbol_id") else None
+            ),
+            canonical_signature=(
+                str(item["canonical_signature"]) if item.get("canonical_signature") else None
             ),
         )
         for item in payload.get("symbols", ())

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from code_harness.application.indexing import IndexCoordinator
 from code_harness.application.tools import (
@@ -22,9 +22,14 @@ from code_harness.application.tools import (
     SearchTextTool,
     SemanticSearchTool,
 )
+from code_harness.application.tools.index_state import resolve_index_state
 from code_harness.bootstrap.settings import Settings
+from code_harness.domain.models.project import Project
+from code_harness.domain.models.tool_result import ToolResult
 from code_harness.domain.protocols.embedding_provider import EmbeddingProvider
+from code_harness.domain.protocols.repository_store import RepositoryStore
 from code_harness.infrastructure.diagnostics import LocalDiagnosticProvider
+from code_harness.infrastructure.diagnostics.capability_reporter import LocalCapabilityReporter
 from code_harness.infrastructure.embeddings import (
     NativeEmbeddingSupervisor,
     UnavailableEmbeddingProvider,
@@ -43,6 +48,8 @@ from code_harness.infrastructure.ripgrep import RipgrepSearcher
 
 @dataclass(frozen=True, slots=True)
 class ApplicationContainer:
+    project: Project
+    store: RepositoryStore
     initialize_index: InitializeIndexTool
     index_project: IndexProjectTool
     get_index_status: GetIndexStatusTool
@@ -62,6 +69,14 @@ class ApplicationContainer:
     build_context: BuildContextTool
     get_repository_map: GetRepositoryMapTool
     prepare_semantic_model: PrepareSemanticModelTool
+
+    def with_index_state[T](self, result: ToolResult[T]) -> ToolResult[T]:
+        if result.index_state is not None:
+            return result
+        return replace(
+            result,
+            index_state=resolve_index_state(self.store, self.project),
+        )
 
 
 def build_container(settings: Settings) -> ApplicationContainer:
@@ -113,6 +128,12 @@ def build_container(settings: Settings) -> ApplicationContainer:
         chunk_target_chars=settings.chunk_target_chars,
         chunk_max_chars=settings.chunk_max_chars,
     )
+    capability_reporter = LocalCapabilityReporter(
+        semantic_enabled=settings.semantic_enabled,
+        semantic_model_id=settings.embedding_model if settings.semantic_enabled else None,
+        ripgrep_executable=settings.ripgrep_executable,
+        model_cache_path=settings.embedding_cache_path,
+    )
     diagnostics = LocalDiagnosticProvider(
         settings.root,
         settings.index_path,
@@ -121,8 +142,9 @@ def build_container(settings: Settings) -> ApplicationContainer:
         embedding_provider,
         settings.semantic_enabled,
         settings.embedding_cache_path,
+        capability_reporter=capability_reporter,
     )
-    search_files_tool = SearchFilesTool(catalog)
+    search_files_tool = SearchFilesTool(catalog, project=project, store=store)
     search_text_tool = SearchTextTool(searcher)
     find_symbol_tool = FindSymbolTool(project, store, index_reader)
     find_references_tool = FindReferencesTool(project, store, index_reader, ripgrep_searcher)
@@ -140,22 +162,27 @@ def build_container(settings: Settings) -> ApplicationContainer:
         semantic_search_tool,
         search_files_tool,
         index_reader,
+        project=project,
+        store=store,
     )
     return ApplicationContainer(
+        project=project,
+        store=store,
         initialize_index=InitializeIndexTool(project, store),
         index_project=IndexProjectTool(coordinator),
         get_index_status=GetIndexStatusTool(
             project,
             store,
             settings.embedding_model if settings.semantic_enabled else None,
+            capability_reporter=capability_reporter,
         ),
         doctor=DoctorTool(diagnostics),
-        list_files=ListFilesTool(catalog),
+        list_files=ListFilesTool(catalog, project=project, store=store),
         search_files=search_files_tool,
         search_text=search_text_tool,
         search_regex=SearchRegexTool(searcher),
-        read_file=ReadFileTool(reader),
-        read_range=ReadRangeTool(reader),
+        read_file=ReadFileTool(reader, project=project, store=store),
+        read_range=ReadRangeTool(reader, project=project, store=store),
         get_file_outline=GetFileOutlineTool(project, store, index_reader),
         find_symbol=find_symbol_tool,
         find_definition=FindDefinitionTool(project, store, index_reader),

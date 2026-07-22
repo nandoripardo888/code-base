@@ -67,7 +67,10 @@ def test_indexing_is_incremental_and_search_uses_validated_fts(
     result = harness.search_text("AgendaService")
 
     assert result.index_state == IndexState.READY.value
-    assert any(hit.match_type is MatchType.FULL_TEXT for hit in result.data)
+    assert any(
+        hit.match_type.value in {"full_text", "fts_term", "exact_literal", "substring"}
+        for hit in result.data
+    )
     assert all(len(hit.snippet.file_hash) == 64 for hit in result.data)
 
 

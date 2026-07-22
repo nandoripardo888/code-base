@@ -1,7 +1,13 @@
-from code_harness.domain.models.code_chunk import CodeSnippet, SourceRead
+from code_harness.domain.models.capability import (
+    CapabilityStatus,
+    StrategyOutcome,
+    ToolWarning,
+)
+from code_harness.domain.models.code_chunk import CodeSnippet, SourceRead, TruncationInfo
 from code_harness.domain.models.code_location import CodeLocation
 from code_harness.domain.models.context import ContextBundle, ContextSnippet
-from code_harness.domain.models.file_match import FileMatch
+from code_harness.domain.models.file_listing import FileListingPage
+from code_harness.domain.models.file_match import FileMatch, FileMatchEvidence
 from code_harness.domain.models.hybrid import HybridSearchHit, QueryClassification, SearchEvidence
 from code_harness.domain.models.index_report import (
     DiagnosticCheck,
@@ -45,6 +51,7 @@ from code_harness.domain.models.tool_result import ToolResult
 __all__ = [
     "AnalyzeRequest",
     "AnalyzeResult",
+    "CapabilityStatus",
     "ChunkEmbeddingLink",
     "CodeChunk",
     "CodeLocation",
@@ -60,7 +67,9 @@ __all__ = [
     "EmbeddingIdentity",
     "EmbeddingRecord",
     "FileIndexUpdate",
+    "FileListingPage",
     "FileMatch",
+    "FileMatchEvidence",
     "FtsCandidate",
     "HybridSearchHit",
     "IndexReport",
@@ -79,8 +88,11 @@ __all__ = [
     "SourceFile",
     "SourceRead",
     "StoredFile",
+    "StrategyOutcome",
     "StructuralSearchResult",
     "ToolResult",
+    "ToolWarning",
+    "TruncationInfo",
     "Vector",
     "VectorSearchHit",
 ]

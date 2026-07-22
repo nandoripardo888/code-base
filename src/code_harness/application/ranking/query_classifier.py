@@ -1,5 +1,6 @@
 import re
 
+from code_harness.application.ranking.lexical_expansion import expand_lexical_identifiers
 from code_harness.domain.enums import QueryKind
 from code_harness.domain.models.hybrid import QueryClassification
 
@@ -93,13 +94,20 @@ class QueryClassifier:
             if not signals:
                 signals.append("no_strong_identifier")
 
-        lexical_terms = _unique([*quoted, *identifiers])
+        lexical_terms = list(_unique([*quoted, *identifiers]))
+        if kind in {QueryKind.CONCEPTUAL, QueryKind.MIXED}:
+            expansion = expand_lexical_identifiers(stripped)
+            expanded = [item.value for item in expansion.generated_identifiers]
+            if expansion.generated_identifiers:
+                signals.append("lexical_expansion")
+            identifiers = list(_unique([*identifiers, *expanded]))
+            lexical_terms = list(_unique([*lexical_terms, *expanded]))
         if not lexical_terms:
-            lexical_terms = (stripped,)
+            lexical_terms = [stripped]
         return QueryClassification(
             kind=kind,
             signals=_unique(signals),
-            identifiers=_unique(identifiers)[:5],
-            lexical_terms=lexical_terms[:5],
+            identifiers=_unique(identifiers)[:8],
+            lexical_terms=_unique(lexical_terms)[:8],
             path_terms=_unique(path_terms)[:3],
         )

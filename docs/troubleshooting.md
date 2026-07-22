@@ -6,6 +6,16 @@ Install Ripgrep and ensure `rg --version` succeeds, or configure the executable
 through `CODE_HARNESS_RG`. If the configured override does not resolve to an
 executable, `code-harness` falls back to the `rg` available through `PATH`.
 
+`search_regex` depends exclusively on Ripgrep; there is no Python fallback.
+Other tools degrade when possible:
+
+- `find_references` still returns validated structural references;
+- literal FTS/`search_text` paths remain available without `rg`;
+- `doctor` reports discovery path, version probe, and remediation.
+
+A Ripgrep timeout surfaces as `ripgrep_timeout` (recoverable) rather than a
+generic process failure.
+
 ## `project_not_found`
 
 Run `code-harness init <path>`, pass `--project <path>`, or set
@@ -71,6 +81,17 @@ real inference probe. Run `code-harness models prepare` before indexing. Check
 `CODE_HARNESS_EMBEDDING_MODEL` when a custom value is rejected. A failed model
 download or inference produces `ready_with_warnings`; lexical and structural
 search remain operational and a later incremental run retries missing vectors.
+
+Failed semantic health probes are cached in-process so repeated
+`get_index_status` / hybrid calls do not reload the runtime on every request.
+Change embedding configuration or run `doctor --deep` to invalidate that cache.
+Inspect `capabilities` and `service_state` separately from `index_state`.
+
+## `cursor_stale`
+
+Pagination cursors for `list_files` are stable only while the underlying listing
+order is unchanged. Re-run the first page without a cursor after the project
+file set changes significantly.
 
 ## TLS and native runtime errors
 

@@ -1,6 +1,6 @@
 # Status do projeto
 
-Última atualização: **20 de julho de 2026**.
+Última atualização: **22 de julho de 2026**.
 
 Este documento é a fotografia operacional do `code-harness`. O
 [plano de implementação](../plano-implementacao.md) continua sendo a referência
@@ -9,17 +9,19 @@ foi verificado no repositório.
 
 ## Resumo executivo
 
-O projeto concluiu localmente as **Fases 0, 1, 2, 3, 4 e 5**. O produto oferece pela
-CLI e pela API Python busca lexical direta, persistência SQLite, FTS, indexação
-incremental, análise estrutural isolada, busca semântica local opcional, ranking
-híbrido e contexto com orçamento. MCP ainda não foi implementado.
+O projeto concluiu localmente as **Fases 0, 1, 2, 3, 4, 5 e 6**. O produto oferece
+pela CLI, pela API Python e pelo adaptador MCP opcional busca lexical direta,
+persistência SQLite, FTS, indexação incremental, análise estrutural isolada,
+busca semântica local opcional, ranking híbrido e contexto com orçamento.
 
 O ponto exato da implementação é:
 
-- itens 1 a 24 da sequência recomendada concluídos;
-- suíte local com 114 testes passando e 86,98% de cobertura;
-- próximo item: **25 — adaptador MCP**;
-- próxima fase: **Fase 6 — Adaptador MCP**.
+- itens 1 a 25 da sequência recomendada concluídos;
+- suíte local com testes unitários/contrato verdes após a rodada de melhorias MCP
+  (capabilities, degradação estrutural, outline compacto, assinaturas canônicas,
+  expansão lexical, contexto por query, paginação e truncamento);
+- próximo item: **26 — cenários end-to-end**;
+- próxima fase: **Fase 7 — Hardening**.
 
 ## Progresso por fase
 
@@ -31,8 +33,8 @@ O ponto exato da implementação é:
 | 3 — Estrutural | Concluída localmente | Worker isolado, supervisor, circuit breaker, Java/Python/PLSQL, símbolos, referências, chunks e tools | Preservar degradação segura nas fases seguintes |
 | 4 — Semântica | Concluída localmente | FastEmbed opcional e isolado, cache persistente, preparação, diagnóstico profundo, SQLite vetorial, API e CLI | Preservar degradação segura na busca híbrida |
 | 5 — Híbrida/contexto | Concluída localmente | Classificação, execução paralela, ranking, diversidade, contexto por orçamento e mapa | Preservar degradação segura no adaptador MCP |
-| 6 — MCP | Próxima | ADR e teste arquitetural preventivo | Criar adaptador opcional e handlers finos |
-| 7 — Hardening | Não iniciada | Benchmark lexical e troubleshooting preliminares | Validar recuperação, limites e projetos grandes |
+| 6 — MCP | Concluída localmente | Extra opcional, handlers finos, serializers compartilhados, `mcp serve` e contratos | Preservar isolamento do SDK MCP |
+| 7 — Hardening | Próxima | Benchmark lexical e troubleshooting preliminares | Validar recuperação, limites e projetos grandes |
 
 Artefatos preparatórios de fases futuras não significam que os respectivos
 critérios de saída estejam satisfeitos.
@@ -104,7 +106,8 @@ critérios de saída estejam satisfeitos.
 - CLI `code-harness` e `python -m code_harness`;
 - registro e seleção explícita de projeto;
 - comandos `init`, `index`, `status`, `doctor`, `files list`, `files search`,
-  `search text`, `search regex`, `search hybrid`, `context`, `map` e `read`;
+  `search text`, `search regex`, `search hybrid`, `context`, `map`, `read` e
+  `mcp serve`;
 - renderização em `text`, `table`, `json`, `jsonl` e `llm`;
 - envelopes estruturados de sucesso e erro;
 - códigos de saída estáveis.
@@ -138,21 +141,33 @@ critérios de saída estejam satisfeitos.
 - mapa hierárquico do catálogo atual com símbolos enriquecidos somente após validação;
 - `search_code`, `build_context` e `get_repository_map` na API Python e CLI.
 
+### Adaptador MCP
+
+- extra opcional `mcp` com o SDK oficial;
+- servidor FastMCP em stdio via `code-harness mcp serve`;
+- handlers finos que só traduzem protocolo → DTO → application tool → JSON;
+- serializers compartilhados com a CLI (`to_primitive` / envelopes de erro);
+- tools iniciais da seção 10.3 do plano; `index_project` opcional via
+  `CODE_HARNESS_MCP_EXPOSE_INDEX`;
+- SDK restrito a `interfaces/mcp`, verificado por teste arquitetural;
+- import lazy do adaptador na CLI para o core continuar sem o extra.
+
 ## Baseline de validação
 
-Validação local executada no Windows com Python 3.12 em 20 de julho de 2026:
+Validação local executada no Windows com Python 3.12 em 21 de julho de 2026:
 
 | Gate | Resultado |
 |---|---|
 | `ruff check .` | Passou |
-| `ruff format --check .` | Passou — 132 arquivos formatados |
-| `mypy` | Passou — 103 arquivos sem problemas |
-| `pytest --cov --cov-report=term-missing` | Passou — 114 testes |
-| Cobertura total | 86,98% |
+| `ruff format --check .` | Passou — 139 arquivos formatados |
+| `mypy` | Passou — 108 arquivos sem problemas |
+| `pytest --cov --cov-report=term-missing` | Passou — 126 testes |
+| Cobertura total | 86,28% |
 | Cobertura mínima configurada | 85% |
 | `python -m code_harness --version` | Passou — versão 0.1.0 |
 | `code-harness --help` | Passou |
 | Fluxos lexical e incremental pela CLI/API | Passaram |
+| Contratos MCP e isolamento do SDK | Passaram |
 
 A workflow de CI está configurada para Ubuntu e Windows. Esta fotografia não
 afirma o estado de uma execução remota específica; registra apenas a validação
@@ -160,7 +175,7 @@ local e a existência da matriz.
 
 ## Critérios globais já atendidos
 
-Dos 20 critérios globais do plano, 14 estão comprovadamente atendidos:
+Dos 20 critérios globais do plano, 15 estão comprovadamente atendidos:
 
 1. a CLI pesquisa uma base sem índice;
 2. API Python e CLI usam as mesmas application tools;
@@ -176,20 +191,20 @@ Dos 20 critérios globais do plano, 14 estão comprovadamente atendidos:
 12. embeddings são opcionais e sua indisponibilidade preserva o core.
 13. a busca híbrida combina resultados semânticos e exatos.
 14. `build_context` respeita o orçamento local estimado.
+15. o MCP apenas adapta chamadas; remover o adaptador não afeta o core; CLI e MCP
+    apresentam resultados equivalentes para as tools cobertas.
 
-Os demais critérios dependem de MCP, CI remota ou documentação final.
+Os demais critérios dependem de CI remota, repair/rebuild ou documentação final.
 
 ## Funcionalidades ainda não implementadas
 
-- servidor e adaptador MCP;
-- comando dedicado de repair e hardening para grandes projetos.
+- comando dedicado de repair e hardening para grandes projetos;
+- documentação final consolidada de troubleshooting e release.
 
-## Próximo marco: Fase 6
+## Próximo marco: Fase 7
 
-A Fase 6 deverá começar pelo item 25 do plano: adaptador MCP opcional. Os handlers
-deverão apenas traduzir chamadas para as application tools já validadas, sem
-mover busca, ranking, acesso a arquivos ou construção de contexto para a camada
-de interface.
+A Fase 7 deverá começar pelo item 26 do plano: cenários end-to-end, seguido de
+benchmarks, recuperação de índice e limites para projetos grandes.
 
 ## Regra de atualização
 

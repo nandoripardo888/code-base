@@ -10,6 +10,7 @@ from code_harness.bootstrap.settings import Settings
 from code_harness.domain.enums import IndexMode, IndexState, ParseState
 from code_harness.domain.errors import ParserCrashError
 from code_harness.domain.models.code_location import CodeLocation
+from code_harness.domain.models.tool_result import warning_message
 from code_harness.domain.models.structural import AnalyzeRequest, AnalyzeResult, CodeReference
 from code_harness.infrastructure.filesystem import (
     LocalFileCatalog,
@@ -111,7 +112,11 @@ def test_index_persists_structure_and_exposes_python_api(copied_repository: Path
         "montarAgendaConsultor",
         "validarAgenda",
     }
-    assert symbols.data[0].content.startswith("public class AgendaService")
+    assert symbols.data[0].content_included is False
+    assert symbols.data[0].content is None
+    full_symbols = harness.find_symbol("AgendaService", include_content=True)
+    assert full_symbols.data[0].content is not None
+    assert full_symbols.data[0].content.startswith("public class AgendaService")
     assert definition.data[0].symbol is not None
     assert references.data[0].reference is not None
     assert "validarAgenda()" in references.data[0].content
@@ -128,7 +133,7 @@ def test_structural_results_are_skipped_after_file_changes(copied_repository: Pa
     assert all(
         item.symbol is None or item.symbol.location.path != "src/agenda.py" for item in result.data
     )
-    assert any("stale" in warning for warning in result.warnings)
+    assert any("stale" in warning_message(warning) for warning in result.warnings)
 
 
 def test_references_fall_back_to_lexical_search_without_index(
@@ -137,8 +142,10 @@ def test_references_fall_back_to_lexical_search_without_index(
     result = CodeHarness.open(copied_repository).find_references("AgendaService")
 
     assert result.data
-    assert any(item.reference and item.reference.kind == "textual" for item in result.data)
-    assert any("lexical" in warning for warning in result.warnings)
+    assert any(
+        item.reference and item.reference.kind == "unknown_textual" for item in result.data
+    )
+    assert any("lexical" in warning_message(warning) for warning in result.warnings)
 
 
 def test_cli_exposes_structural_commands(copied_repository: Path) -> None:

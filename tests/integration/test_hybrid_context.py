@@ -12,6 +12,7 @@ from code_harness.application.tools.semantic_search import SemanticSearchTool
 from code_harness.bootstrap.container import build_container
 from code_harness.bootstrap.settings import Settings
 from code_harness.domain.enums import IndexMode, MatchType
+from code_harness.domain.models.tool_result import warning_message
 from code_harness.infrastructure.embeddings import FakeEmbeddingProvider
 from code_harness.infrastructure.filesystem import (
     LocalFileCatalog,
@@ -34,7 +35,7 @@ def test_hybrid_search_context_and_repository_map_work_without_semantics(
         max_tokens=120,
         max_snippets=5,
     )
-    repository_map = harness.get_repository_map(max_files=20)
+    repository_map = harness.get_repository_map(max_files=20, mode="detailed")
 
     assert hybrid.data
     assert hybrid.data[0].snippet.location.path == "src/AgendaService.java"
@@ -101,7 +102,7 @@ def test_hybrid_search_skips_stale_structural_candidates(copied_repository: Path
 
     result = harness.search_code("AgendaService")
 
-    assert any("stale" in warning for warning in result.warnings)
+    assert any("stale" in warning_message(warning) for warning in result.warnings)
     assert all(
         not (
             hit.snippet.location.path == "src/AgendaService.java"

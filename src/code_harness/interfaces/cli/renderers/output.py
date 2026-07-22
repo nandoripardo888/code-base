@@ -1,14 +1,15 @@
 import json
 import sys
-from dataclasses import fields, is_dataclass
+from dataclasses import is_dataclass
 from enum import StrEnum
 from typing import Any
 
 import typer
 
 from code_harness.domain.errors import CodeHarnessError
-from code_harness.domain.models.code_chunk import CodeSnippet
+from code_harness.domain.models.code_chunk import CodeSnippet, SourceRead
 from code_harness.domain.models.context import ContextBundle
+from code_harness.domain.models.file_listing import FileListingPage
 from code_harness.domain.models.file_match import FileMatch
 from code_harness.domain.models.hybrid import HybridSearchHit
 from code_harness.domain.models.repository_map import RepositoryDirectory, RepositoryMap
@@ -16,6 +17,9 @@ from code_harness.domain.models.search_hit import SearchHit
 from code_harness.domain.models.source_file import SourceFile
 from code_harness.domain.models.structural import StructuralSearchResult
 from code_harness.domain.models.tool_result import ToolResult
+from code_harness.interfaces.serialization import serialize_error, to_primitive
+
+__all__ = ["OutputFormat", "render_error", "render_value", "to_primitive"]
 
 
 class OutputFormat(StrEnum):
@@ -39,22 +43,19 @@ def _echo(value: str, *, err: bool = False) -> None:
     typer.echo(printable, err=err)
 
 
-def to_primitive(value: Any) -> Any:
-    if is_dataclass(value) and not isinstance(value, type):
-        return {field.name: to_primitive(getattr(value, field.name)) for field in fields(value)}
-    if isinstance(value, StrEnum):
-        return value.value
-    if isinstance(value, (tuple, list)):
-        return [to_primitive(item) for item in value]
-    if isinstance(value, dict):
-        return {str(key): to_primitive(item) for key, item in value.items()}
-    return value
-
-
 def _render_item(value: Any) -> str:
     if isinstance(value, SourceFile):
         language = value.language or "text"
         return f"{value.path}\t{value.size_bytes} bytes\t{language}"
+    if isinstance(value, FileListingPage):
+        lines = [_render_item(item) for item in value.items]
+        footer = f"sort={value.sort}:{value.sort_direction}"
+        if value.total_count is not None:
+            footer += f"; total={value.total_count}"
+        if value.next_cursor:
+            footer += f"; next_cursor={value.next_cursor}"
+        lines.append(footer)
+        return "\n".join(lines)
     if isinstance(value, FileMatch):
         return f"{value.source_file.path}\t{value.score:.2f}\t{value.reason}"
     if isinstance(value, SearchHit):
@@ -93,27 +94,43 @@ def _render_item(value: Any) -> str:
             f"files={value.included_files}/{value.total_files}; omitted={value.omitted_files}"
         )
         return "\n".join(lines)
+    if isinstance(value, SourceRead):
+        body = value.snippet.content
+        if value.numbered_lines:
+            body = "\n".join(f"{number:>6}|{text}" for number, text in value.numbered_lines)
+        footer = ""
+        if value.truncation and value.truncation.truncated:
+            footer = (
+                f"\n[truncated reason={value.truncation.reason}; "
+                f"next_start_line={value.truncation.next_start_line}; "
+                f"total_lines={value.truncation.total_lines}]"
+            )
+        return f"{body}{footer}"
     if isinstance(value, CodeSnippet):
         return value.content
     if isinstance(value, StructuralSearchResult):
         item = value.symbol or value.reference
         if item is None:
-            return value.content
+            return value.content or ""
         location = item.location
         if value.symbol is not None:
+            signature = value.symbol.signature or ""
             heading = (
                 f"{location.path}:{location.start_line}-{location.end_line} "
                 f"[{value.symbol.kind} {value.symbol.qualified_name or value.symbol.name}]"
             )
+            if not value.content_included:
+                return f"{heading}\n{signature}".rstrip()
         else:
             reference = value.reference
             if reference is None:
-                return value.content
+                return value.content or ""
             heading = (
                 f"{location.path}:{location.start_line}-{location.end_line} "
                 f"[{reference.kind} -> {reference.target_name}]"
             )
-        return f"{heading}\n{value.content.rstrip()}"
+        body = (value.content or "").rstrip()
+        return f"{heading}\n{body}" if body else heading
     if is_dataclass(value):
         return _json(to_primitive(value), indent=2)
     return str(value)
@@ -152,18 +169,14 @@ def render_value(value: Any, output: OutputFormat) -> None:
     else:
         _echo(_render_item(data))
     if isinstance(value, ToolResult) and value.warnings:
+        from code_harness.domain.models.tool_result import warning_message
+
         for warning in value.warnings:
-            _echo(f"warning: {warning}", err=True)
+            _echo(f"warning: {warning_message(warning)}", err=True)
 
 
 def render_error(error: CodeHarnessError, output: OutputFormat) -> None:
-    payload = {
-        "error": {
-            "code": error.code.value,
-            "message": error.message,
-            "details": error.details,
-        }
-    }
+    payload = serialize_error(error)
     if output in (OutputFormat.JSON, OutputFormat.JSONL):
         _echo(_json(payload), err=True)
     else:

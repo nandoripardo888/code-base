@@ -3,6 +3,10 @@ from enum import StrEnum
 
 class MatchType(StrEnum):
     EXACT = "exact"
+    EXACT_LITERAL = "exact_literal"
+    SUBSTRING = "substring"
+    FTS_TERM = "fts_term"
+    FTS_PHRASE = "fts_phrase"
     REGEX = "regex"
     FULL_TEXT = "full_text"
     SYMBOL = "symbol"
@@ -46,6 +50,14 @@ class DiagnosticStatus(StrEnum):
     FAIL = "fail"
 
 
+class CapabilityState(StrEnum):
+    READY = "ready"
+    DEGRADED = "degraded"
+    UNAVAILABLE = "unavailable"
+    DISABLED = "disabled"
+    UNKNOWN = "unknown"
+
+
 class ErrorCode(StrEnum):
     PROJECT_NOT_FOUND = "project_not_found"
     PATH_OUTSIDE_PROJECT = "path_outside_project"
@@ -53,6 +65,7 @@ class ErrorCode(StrEnum):
     BINARY_FILE = "binary_file"
     UNSUPPORTED_ENCODING = "unsupported_encoding"
     RIPGREP_UNAVAILABLE = "ripgrep_unavailable"
+    RIPGREP_TIMEOUT = "ripgrep_timeout"
     INDEX_NOT_READY = "index_not_ready"
     INDEX_CORRUPTED = "index_corrupted"
     PARSER_UNAVAILABLE = "parser_unavailable"
@@ -62,3 +75,4 @@ class ErrorCode(StrEnum):
     EMBEDDING_UNAVAILABLE = "embedding_unavailable"
     INVALID_QUERY = "invalid_query"
     RESULT_LIMIT_EXCEEDED = "result_limit_exceeded"
+    CURSOR_STALE = "cursor_stale"

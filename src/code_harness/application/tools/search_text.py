@@ -1,7 +1,7 @@
 from code_harness.application.dto.requests import SearchTextRequest
 from code_harness.application.tools._timing import timed
 from code_harness.domain.models.search_hit import SearchHit
-from code_harness.domain.models.tool_result import ToolResult
+from code_harness.domain.models.tool_result import ToolResult, normalize_warnings
 from code_harness.domain.protocols.text_searcher import TextSearcher
 
 
@@ -26,6 +26,6 @@ class SearchTextTool:
             outcome.hits,
             elapsed_ms,
             truncated=outcome.truncated,
-            warnings=outcome.warnings,
+            warnings=normalize_warnings(outcome.warnings, capability="lexical"),
             index_state=outcome.index_state,
         )

@@ -5,7 +5,8 @@ context from source repositories. The current release combines safe filesystem
 access, direct lexical search, an incremental SQLite index, and isolated
 structural analysis. Semantic search is available as an optional local extra;
 deterministic hybrid ranking and budgeted context construction work with or
-without that extra. MCP remains planned.
+without that extra. An optional MCP adapter exposes the same application tools
+over stdio.
 
 ## Current capabilities
 
@@ -27,14 +28,20 @@ without that extra. MCP remains planned.
 - extract PL/SQL packages, procedures, functions, triggers, and cursors;
 - persist symbols, references, and syntax-aware chunks incrementally;
 - query outlines, symbols, definitions, and structural/textual references;
+- return compact outlines/symbols by default, with display and canonical
+  signatures;
+- degrade `find_references` to structural results when Ripgrep is unavailable;
 - preserve lexical indexing when a parser times out, crashes, or is disabled.
 - generate optional local multilingual embeddings with FastEmbed;
 - cache embeddings by model, strategy, and content hash in SQLite;
+- report index vs service health and per-capability status;
 - search current, hash-validated chunks by cosine similarity.
 - classify exact, conceptual, and mixed queries without an LLM;
 - fuse lexical, structural, path, reference, and optional semantic evidence;
 - build current-file-validated context within a conservative token estimate;
-- return a structured repository tree enriched with validated symbols.
+- paginate file listings and return read truncation metadata for agents;
+- return a structured repository tree (symbols in detailed mode);
+- expose the same application tools over optional MCP stdio via `mcp serve`.
 
 No repository code is executed. The analyzed repository is treated as read-only.
 
@@ -56,6 +63,8 @@ python -m pip install -e .
 python -m pip install -e ".[parsers]"
 # Optional local semantic search (downloads the configured model on first use):
 python -m pip install -e ".[semantic]"
+# Optional MCP adapter:
+python -m pip install -e ".[mcp]"
 
 code-harness init "C:\projetos\sample_project"
 code-harness index --mode incremental
@@ -74,6 +83,7 @@ code-harness search hybrid "como AgendaService distribui serviços"
 code-harness context "como a agenda do consultor funciona?" --max-tokens 12000
 code-harness map
 code-harness read "src\AgendaService.java" --lines 100:180
+code-harness mcp serve
 ```
 
 On a new Windows development machine, the assisted setup validates Python and

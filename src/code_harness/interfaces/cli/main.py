@@ -41,9 +41,11 @@ app = typer.Typer(
 files_app = typer.Typer(help="Discover and locate files.", no_args_is_help=True)
 search_app = typer.Typer(help="Search source content.", no_args_is_help=True)
 models_app = typer.Typer(help="Prepare and inspect local models.", no_args_is_help=True)
+mcp_app = typer.Typer(help="Optional MCP adapter.", no_args_is_help=True)
 app.add_typer(files_app, name="files")
 app.add_typer(search_app, name="search")
 app.add_typer(models_app, name="models")
+app.add_typer(mcp_app, name="mcp")
 
 
 @dataclass(slots=True)
@@ -183,9 +185,19 @@ def list_files(
     include: Annotated[list[str] | None, typer.Option("--include", help="Include glob.")] = None,
     exclude: Annotated[list[str] | None, typer.Option("--exclude", help="Exclude glob.")] = None,
     max_results: Annotated[int, typer.Option("--max-results", min=1)] = 10_000,
+    cursor: Annotated[str | None, typer.Option("--cursor")] = None,
+    sort: Annotated[str, typer.Option("--sort")] = "path",
+    sort_direction: Annotated[str, typer.Option("--sort-direction")] = "asc",
 ) -> None:
     state: CliState = ctx.obj
-    request = ListFilesRequest(tuple(include or ()), tuple(exclude or ()), max_results)
+    request = ListFilesRequest(
+        tuple(include or ()),
+        tuple(exclude or ()),
+        max_results,
+        cursor,
+        sort,
+        sort_direction,
+    )
     _execute(state, lambda: state.container().list_files.execute(request))
 
 
@@ -343,9 +355,19 @@ def search_symbol(
     query: Annotated[str, typer.Argument(help="Symbol name or qualified name.")],
     max_results: Annotated[int, typer.Option("--max-results", min=1)] = 50,
     exact: Annotated[bool, typer.Option("--exact")] = False,
+    include_content: Annotated[
+        bool | None, typer.Option("--include-content/--no-include-content")
+    ] = None,
+    response_format: Annotated[str, typer.Option("--response-format")] = "compact",
 ) -> None:
     state: CliState = ctx.obj
-    request = FindSymbolRequest(query, max_results, exact)
+    request = FindSymbolRequest(
+        query,
+        max_results,
+        exact,
+        include_content=include_content,
+        response_format=response_format,
+    )
     _execute(state, lambda: state.container().find_symbol.execute(request))
 
 
@@ -353,9 +375,17 @@ def search_symbol(
 def file_outline(
     ctx: typer.Context,
     path: Annotated[str, typer.Argument(help="Relative source path.")],
+    include_content: Annotated[
+        bool | None, typer.Option("--include-content/--no-include-content")
+    ] = None,
+    response_format: Annotated[str, typer.Option("--response-format")] = "compact",
 ) -> None:
     state: CliState = ctx.obj
-    request = GetFileOutlineRequest(path)
+    request = GetFileOutlineRequest(
+        path,
+        include_content=include_content,
+        response_format=response_format,
+    )
     _execute(state, lambda: state.container().get_file_outline.execute(request))
 
 
@@ -476,6 +506,26 @@ def read_source(
         raise typer.Exit(_exit_code(error)) from error
     request_range = ReadRangeRequest(path, start_line, end_line, max_chars)
     _execute(state, lambda: state.container().read_range.execute(request_range))
+
+
+@mcp_app.command("serve")
+def mcp_serve(ctx: typer.Context) -> None:
+    """Serve application tools over MCP stdio for the active project."""
+    state: CliState = ctx.obj
+    try:
+        from code_harness.interfaces.mcp import run_server
+    except ImportError as error:
+        typer.echo(
+            "The MCP adapter requires the optional extra: pip install code-harness[mcp]",
+            err=True,
+        )
+        raise typer.Exit(4) from error
+    try:
+        root = resolve_active_project(state.project)
+    except CodeHarnessError as error:
+        render_error(error, state.output)
+        raise typer.Exit(_exit_code(error)) from error
+    run_server(root)
 
 
 def main() -> None:

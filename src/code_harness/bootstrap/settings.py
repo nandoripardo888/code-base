@@ -1,20 +1,11 @@
 import os
-import shutil
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
 
 from code_harness.domain.errors import ProjectNotFoundError
 from code_harness.domain.models.project import Project
-
-
-def _resolve_ripgrep_executable() -> str:
-    configured = os.environ.get("CODE_HARNESS_RG")
-    if configured:
-        resolved = shutil.which(configured)
-        if resolved:
-            return resolved
-    return shutil.which("rg") or "rg"
+from code_harness.infrastructure.ripgrep.discovery import resolve_ripgrep_executable
 
 
 def _default_model_cache() -> Path:
@@ -48,6 +39,7 @@ class Settings:
     embedding_timeout_seconds: float = 300.0
     system_trust_enabled: bool = True
     ca_bundle_path: Path | None = None
+    mcp_expose_index_commands: bool = False
 
     def __post_init__(self) -> None:
         if self.embedding_batch_size <= 0:
@@ -83,7 +75,7 @@ class Settings:
         return cls(
             root=resolved,
             index_path=configured_index.resolve(strict=False),
-            ripgrep_executable=_resolve_ripgrep_executable(),
+            ripgrep_executable=resolve_ripgrep_executable(),
             parsers_enabled=os.environ.get("CODE_HARNESS_PARSERS", "1").casefold()
             not in {"0", "false", "off", "no"},
             parser_timeout_seconds=float(
@@ -112,4 +104,8 @@ class Settings:
             ca_bundle_path=(
                 Path(configured_ca).expanduser().resolve(strict=False) if configured_ca else None
             ),
+            mcp_expose_index_commands=os.environ.get(
+                "CODE_HARNESS_MCP_EXPOSE_INDEX", "0"
+            ).casefold()
+            in {"1", "true", "on", "yes"},
         )

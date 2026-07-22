@@ -1,5 +1,4 @@
 import os
-import shutil
 import sqlite3
 import ssl
 import sys
@@ -12,9 +11,11 @@ from code_harness.domain.models.index_report import (
     DiagnosticCheck,
     DoctorReport,
 )
+from code_harness.domain.protocols.capability_reporter import CapabilityReporter
 from code_harness.domain.protocols.embedding_provider import EmbeddingProvider
 from code_harness.domain.protocols.structural_analyzer import StructuralAnalyzer
 from code_harness.infrastructure.persistence.migrations import SCHEMA_VERSION
+from code_harness.infrastructure.ripgrep.discovery import probe_ripgrep
 
 
 class LocalDiagnosticProvider:
@@ -27,6 +28,7 @@ class LocalDiagnosticProvider:
         embedding_provider: EmbeddingProvider | None = None,
         semantic_enabled: bool = False,
         model_cache_path: Path | None = None,
+        capability_reporter: CapabilityReporter | None = None,
     ) -> None:
         self._root = root
         self._index_path = index_path
@@ -35,8 +37,13 @@ class LocalDiagnosticProvider:
         self._embedding_provider = embedding_provider
         self._semantic_enabled = semantic_enabled
         self._model_cache_path = model_cache_path
+        self._capability_reporter = capability_reporter
 
     def run(self, *, deep: bool = False) -> DoctorReport:
+        if deep and self._capability_reporter is not None:
+            self._capability_reporter.invalidate_semantic_health()
+            if hasattr(self._embedding_provider, "invalidate_health_cache"):
+                self._embedding_provider.invalidate_health_cache()
         checks = [
             DiagnosticCheck(
                 "project",
@@ -52,15 +59,7 @@ class LocalDiagnosticProvider:
                 if os.access(self._root, os.W_OK)
                 else "Project root is not writable.",
             ),
-            DiagnosticCheck(
-                "ripgrep",
-                DiagnosticStatus.PASS
-                if shutil.which(self._ripgrep_executable)
-                else DiagnosticStatus.FAIL,
-                "Ripgrep is available."
-                if shutil.which(self._ripgrep_executable)
-                else f"Ripgrep is unavailable: {self._ripgrep_executable}.",
-            ),
+            self._ripgrep_check(),
             DiagnosticCheck(
                 "python_runtime",
                 DiagnosticStatus.PASS,
@@ -98,6 +97,36 @@ class LocalDiagnosticProvider:
             checks=tuple(checks),
         )
 
+    def _ripgrep_check(self) -> DiagnosticCheck:
+        probe = probe_ripgrep(self._ripgrep_executable)
+        details = {
+            "capability": "ripgrep",
+            "configured_executable": probe.configured_executable,
+            "resolved_path": probe.resolved_path,
+            "version": probe.version,
+            "execution_test": probe.execution_test,
+            "root_cause": probe.root_cause,
+            "remediation": list(probe.remediation),
+            "affected_tools": list(probe.affected_tools),
+            "unaffected_tools": list(probe.unaffected_tools),
+        }
+        if probe.execution_test == "passed":
+            version = probe.version or "unknown"
+            path = probe.resolved_path or probe.configured_executable
+            return DiagnosticCheck(
+                "ripgrep",
+                DiagnosticStatus.PASS,
+                f"Ripgrep is available ({version}) at {path}.",
+                details,
+            )
+        cause = probe.root_cause or "Ripgrep is unavailable."
+        return DiagnosticCheck(
+            "ripgrep",
+            DiagnosticStatus.FAIL,
+            f"Ripgrep is unavailable: {cause}",
+            details,
+        )
+
     def _semantic_check(self, *, deep: bool) -> DiagnosticCheck:
         if not self._semantic_enabled:
             return DiagnosticCheck(
@@ -120,7 +149,7 @@ class LocalDiagnosticProvider:
                 if len(vector) != identity.dimensions or not all(isfinite(item) for item in vector):
                     raise ValueError("semantic probe returned an unexpected dimension")
                 documents = (
-                    "índice semântico com ação, validação e Unicode",
+                    "indice semantico com acao, validacao e Unicode",
                     "",
                     *(f"semantic batch diagnostic document {index}" for index in range(16)),
                 )

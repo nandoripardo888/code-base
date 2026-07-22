@@ -6,7 +6,7 @@ from code_harness.domain.models.code_chunk import CodeSnippet
 from code_harness.domain.models.index_report import IndexedSource
 from code_harness.domain.models.project import Project
 from code_harness.domain.models.search_hit import SearchHit
-from code_harness.domain.models.tool_result import ToolResult
+from code_harness.domain.models.tool_result import ToolResult, normalize_warnings
 from code_harness.domain.protocols.embedding_provider import EmbeddingProvider
 from code_harness.domain.protocols.index_source_reader import IndexSourceReader
 from code_harness.domain.protocols.repository_store import RepositoryStore
@@ -109,6 +109,6 @@ class SemanticSearchTool:
             hits,
             elapsed_ms,
             truncated=truncated,
-            warnings=warnings,
+            warnings=normalize_warnings(warnings, code="embedding_unavailable", capability="semantic"),
             index_state=status.state.value,
         )

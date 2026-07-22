@@ -13,6 +13,16 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
+from code_harness.infrastructure.parsers.signature_extractor import (
+    SIGNATURE_EXTRACTOR_VERSION,
+    canonicalize_java,
+    canonicalize_plsql,
+    canonicalize_python,
+    extract_header,
+    java_signatures_from_node,
+    normalize_display,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class _Symbol:
@@ -24,6 +34,7 @@ class _Symbol:
     end_line: int
     signature: str | None
     parent_symbol_id: str | None
+    canonical_signature: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +71,7 @@ def _symbol_payload(path: str, symbol: _Symbol) -> dict[str, object]:
         "location": _location(path, symbol.start_line, symbol.end_line),
         "signature": symbol.signature,
         "parent_symbol_id": symbol.parent_symbol_id,
+        "canonical_signature": symbol.canonical_signature,
     }
 
 
@@ -96,12 +108,32 @@ class _PythonVisitor(ast.NodeVisitor):
         self.references: list[_Reference] = []
         self._parents: list[_Symbol] = []
 
-    def _add_symbol(self, node: ast.AST, name: str, kind: str) -> _Symbol:
+    def _add_symbol(
+        self,
+        node: ast.AST,
+        name: str,
+        kind: str,
+        *,
+        args: ast.arguments | None = None,
+        returns: ast.AST | None = None,
+    ) -> _Symbol:
         start = int(getattr(node, "lineno", 1))
         end = int(getattr(node, "end_lineno", start))
         parent = self._parents[-1] if self._parents else None
         qualified = ".".join([*(item.name for item in self._parents), name])
-        signature = self.lines[start - 1].strip() if start <= len(self.lines) else None
+        display = normalize_display(extract_header("\n".join(self.lines), start))
+        if not display and start <= len(self.lines):
+            display = self.lines[start - 1].strip()
+        canonical = (
+            canonicalize_python(
+                qualified_name=qualified,
+                args=args,
+                returns=returns,
+                display_signature=display,
+            )
+            if kind in {"function", "method"}
+            else qualified
+        )
         symbol = _Symbol(
             _identifier(self.path, kind, qualified, start),
             name,
@@ -109,8 +141,9 @@ class _PythonVisitor(ast.NodeVisitor):
             kind,
             start,
             end,
-            signature,
+            display or None,
             parent.symbol_id if parent else None,
+            canonical,
         )
         self.symbols.append(symbol)
         return symbol
@@ -123,7 +156,13 @@ class _PythonVisitor(ast.NodeVisitor):
 
     def _visit_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         kind = "method" if self._parents and self._parents[-1].kind == "class" else "function"
-        symbol = self._add_symbol(node, node.name, kind)
+        symbol = self._add_symbol(
+            node,
+            node.name,
+            kind,
+            args=node.args,
+            returns=node.returns,
+        )
         self._parents.append(symbol)
         self.generic_visit(node)
         self._parents.pop()
@@ -242,7 +281,25 @@ def _tree_sitter_analysis(
                 start = point_value(node.start_point, 0) + 1
                 end = max(start, point_value(node.end_point, 0) + 1)
                 qualified = f"{parent.qualified_name}.{name}" if parent else name
-                first_line = node_text(node).splitlines()[0].strip()
+                if language == "java" and symbol_kind in {"method", "constructor", "function"}:
+                    display, canonical = java_signatures_from_node(
+                        node,
+                        source,
+                        qualified_name=qualified,
+                        content=content,
+                        start_line=start,
+                    )
+                else:
+                    display = normalize_display(extract_header(content, start))
+                    if not display:
+                        display = node_text(node).splitlines()[0].strip()
+                    if language == "python" and symbol_kind in {"method", "function"}:
+                        canonical = canonicalize_python(
+                            qualified_name=qualified,
+                            display_signature=display,
+                        )
+                    else:
+                        canonical = qualified
                 active_parent = _Symbol(
                     _identifier(path, symbol_kind, qualified, start),
                     name,
@@ -250,8 +307,9 @@ def _tree_sitter_analysis(
                     symbol_kind,
                     start,
                     end,
-                    first_line,
+                    display,
                     parent.symbol_id if parent else None,
+                    canonical,
                 )
                 symbols.append(active_parent)
         reference_kind: str | None = None
@@ -299,9 +357,9 @@ def _tree_sitter_analysis(
 
 _JAVA_TYPE = re.compile(r"\b(class|interface|enum|record)\s+([A-Za-z_$][\w$]*)", re.MULTILINE)
 _JAVA_METHOD = re.compile(
-    r"(?m)^\s*(?:@[\w.]+\s*)*(?:(?:public|protected|private|static|final|abstract|"
-    r"synchronized|native|default|strictfp)\s+)*(?:[\w$<>\[\],.?]+\s+)?"
-    r"([A-Za-z_$][\w$]*)\s*\([^;{}]*\)\s*(?:throws\s+[^\{]+)?\{"
+    r"(?ms)^\s*(?:@[\w.]+\s*)*(?:(?:public|protected|private|static|final|abstract|"
+    r"synchronized|native|default|strictfp)\s+)*(?:[\w$<>\[\],.?\s]+\s+)?"
+    r"([A-Za-z_$][\w$]*)\s*\([^;{}]*?\)\s*(?:throws\s+[^\{]+)?\{"
 )
 _JAVA_IMPORT = re.compile(r"(?m)^\s*import\s+(?:static\s+)?([\w.*]+)\s*;")
 _CALL = re.compile(r"\b([A-Za-z_$][\w$]*)\s*\(")
@@ -370,6 +428,9 @@ def _analyze_java(path: str, content: str) -> tuple[list[_Symbol], list[_Referen
         )
         kind = "constructor" if parent and name == parent.name else "method"
         qualified = f"{parent.name}.{name}" if parent else name
+        display = normalize_display(extract_header(content, start))
+        if not display:
+            display = content.splitlines()[start - 1].strip()
         symbols.append(
             _Symbol(
                 _identifier(path, kind, qualified, start),
@@ -378,8 +439,9 @@ def _analyze_java(path: str, content: str) -> tuple[list[_Symbol], list[_Referen
                 kind,
                 start,
                 end,
-                content.splitlines()[start - 1].strip(),
+                display,
                 parent.symbol_id if parent else None,
+                canonicalize_java(qualified_name=qualified, display_signature=display),
             )
         )
         declaration_offsets.add(match.start(1))
@@ -505,7 +567,8 @@ def _analyze(payload: dict[str, Any]) -> dict[str, object]:
     return {
         "request_id": payload.get("request_id"),
         "parser_name": parser_name,
-        "parser_version": "2",
+        "parser_version": "4",
+        "signature_extractor_version": SIGNATURE_EXTRACTOR_VERSION,
         "state": state,
         "symbols": [_symbol_payload(path, item) for item in symbols],
         "references": [_reference_payload(path, item) for item in references],

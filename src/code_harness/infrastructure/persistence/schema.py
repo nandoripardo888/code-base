@@ -170,3 +170,9 @@ MIGRATION_3 = (
 )
 
 MIGRATION_4 = ("ALTER TABLE index_runs ADD COLUMN owner_pid INTEGER",)
+
+MIGRATION_5 = (
+    "ALTER TABLE symbols ADD COLUMN canonical_signature TEXT",
+    "ALTER TABLE files ADD COLUMN signature_extractor_version TEXT",
+    "UPDATE symbols SET canonical_signature = NULL WHERE canonical_signature IS NULL",
+)

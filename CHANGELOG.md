@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Added capability statuses, structured warnings, strategy outcomes, and
+  recoverable typed errors shared by Python, CLI, and MCP.
+- Made `find_references` structural-first with optional Ripgrep and controlled
+  degradation; `search_regex` remains Ripgrep-only with clearer doctor diagnosis.
+- Defaulted outline/symbol responses to compact payloads without bodies; added
+  `display_signature` / `canonical_signature` with schema migration v5.
+- Separated `index_state` from `service_state`, exposed per-capability health, and
+  cached semantic probe failures until config change or `doctor --deep`.
+- Added limited camelCase/snake_case lexical expansion, query-oriented context
+  windows, stable `list_files` pagination, read truncation metadata, and richer
+  match evidence/spans.
 - Added deterministic hybrid ranking across lexical, structural, path, reference,
   and optional semantic candidates.
 - Added controlled context expansion with current-file validation and conservative

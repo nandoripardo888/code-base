@@ -13,7 +13,8 @@ from code_harness.domain.models.structural import (
     CodeSymbol,
     StructuralSearchResult,
 )
-from code_harness.domain.models.tool_result import ToolResult
+from code_harness.domain.models.tool_result import ToolResult, warning_message
+from code_harness.domain.models.capability import ToolWarning
 
 
 def _source(path: str, content: str, content_hash: str = "hash") -> IndexedSource:
@@ -25,7 +26,17 @@ class FakeSearchCode:
         self.hits = hits
 
     def execute(self, request: object) -> ToolResult[tuple[HybridSearchHit, ...]]:
-        return ToolResult(self.hits, 1, warnings=("search warning",))
+        return ToolResult(
+            self.hits,
+            1,
+            warnings=(
+                ToolWarning(
+                    code="tool_warning",
+                    message="search warning",
+                    recoverable=True,
+                ),
+            ),
+        )
 
 
 class FakeReader:
@@ -124,7 +135,7 @@ def test_context_builder_expands_references_and_deduplicates_parent() -> None:
     result = tool.execute(BuildContextRequest("work", max_tokens=1_000))
 
     assert {item.role for item in result.data.snippets} == {"definition", "reference"}
-    assert "search warning" in result.warnings
+    assert any(warning_message(item) == "search warning" for item in result.warnings)
     assert result.data.omitted_results >= 1
 
 
@@ -146,8 +157,10 @@ def test_context_builder_reports_unavailable_or_stale_expansion() -> None:
         FakeReader(sources),
     ).execute(BuildContextRequest("work"))
 
-    assert any("not ready" in warning for warning in no_index.warnings)
-    assert any("stale context expansion" in warning for warning in stale.warnings)
+    assert any("not ready" in warning_message(warning) for warning in no_index.warnings)
+    assert any(
+        "stale context expansion" in warning_message(warning) for warning in stale.warnings
+    )
 
 
 def test_context_builder_clips_complete_lines_to_budget() -> None:
@@ -189,4 +202,4 @@ def test_context_builder_revalidates_seed_immediately_before_selection() -> None
     ).execute(BuildContextRequest("work", max_expansion_depth=0))
 
     assert result.data.snippets == ()
-    assert any("stale context snippet" in warning for warning in result.warnings)
+    assert any("stale context snippet" in warning_message(warning) for warning in result.warnings)

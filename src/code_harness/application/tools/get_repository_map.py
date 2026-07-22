@@ -3,8 +3,10 @@ from pathlib import PurePosixPath
 
 from code_harness.application.dto.requests import GetRepositoryMapRequest
 from code_harness.application.tools._timing import timed
+from code_harness.application.tools.index_state import resolve_index_state
 from code_harness.domain.enums import IndexState
 from code_harness.domain.errors import CodeHarnessError
+from code_harness.domain.models.capability import ToolWarning
 from code_harness.domain.models.project import Project
 from code_harness.domain.models.repository_map import (
     RepositoryDirectory,
@@ -26,10 +28,10 @@ _KIND_PRIORITY = {
     "interface": 1,
     "enum": 1,
     "record": 1,
-    "procedure": 2,
-    "function": 2,
-    "method": 3,
-    "constructor": 3,
+    "constructor": 2,
+    "procedure": 3,
+    "function": 3,
+    "method": 4,
 }
 
 
@@ -50,6 +52,10 @@ def _freeze(directory: _MutableDirectory) -> RepositoryDirectory:
     )
 
 
+def _normalize_path(path: str) -> str:
+    return path.replace("\\", "/").removeprefix("./")
+
+
 class GetRepositoryMapTool:
     def __init__(
         self,
@@ -64,7 +70,7 @@ class GetRepositoryMapTool:
         self._reader = reader
 
     def execute(self, request: GetRepositoryMapRequest) -> ToolResult[RepositoryMap]:
-        def build() -> RepositoryMap:
+        def build() -> tuple[RepositoryMap, tuple[ToolWarning, ...]]:
             discovered = self._catalog.list_files(
                 include_globs=request.include_globs,
                 exclude_globs=request.exclude_globs,
@@ -73,21 +79,35 @@ class GetRepositoryMapTool:
             filtered = tuple(
                 source
                 for source in discovered
-                if not languages or (source.language or "").casefold() in languages
+                if (
+                    (not languages or (source.language or "").casefold() in languages)
+                    and (
+                        not request.path
+                        or source.path == request.path
+                        or source.path.startswith(f"{request.path.rstrip('/')}/")
+                    )
+                )
             )
+            if request.max_depth is not None:
+                depth_limited: list[SourceFile] = []
+                for source in filtered:
+                    depth = len(PurePosixPath(source.path).parts) - 1
+                    if depth <= request.max_depth:
+                        depth_limited.append(source)
+                filtered = tuple(depth_limited)
             selected = filtered[: request.max_files]
-            warnings: list[str] = []
-            index_state: str | None = None
+            warnings: list[ToolWarning] = []
+            index_state = resolve_index_state(self._store, self._project)
             symbol_results: tuple[StructuralSearchResult, ...] = ()
+            include_symbols = request.effective_include_symbols
             try:
                 status = self._store.get_status(self._project)
-                index_state = status.state.value
-                if (
+                if include_symbols and (
                     status.state in (IndexState.READY, IndexState.READY_WITH_WARNINGS)
                     and status.structural_schema_ready
                 ):
                     collected: list[StructuralSearchResult] = []
-                    selected_paths = tuple(source.path for source in selected)
+                    selected_paths = tuple(_normalize_path(source.path) for source in selected)
                     for offset in range(0, len(selected_paths), 400):
                         batch = selected_paths[offset : offset + 400]
                         collected.extend(
@@ -101,38 +121,64 @@ class GetRepositoryMapTool:
                             )
                         )
                     symbol_results = tuple(collected)
-                else:
+                elif include_symbols:
                     warnings.append(
-                        "Structural index is not ready; repository map contains files only."
+                        ToolWarning(
+                            code="structural_index_not_ready",
+                            message=(
+                                "Structural index is not ready; repository map contains files only."
+                            ),
+                            recoverable=True,
+                            capability="structural",
+                            remediation="Run index_project before requesting repository symbols.",
+                        )
                     )
             except CodeHarnessError as error:
                 warnings.append(
-                    f"Structural repository map is unavailable ({error.code.value}); "
-                    "returned files only."
+                    ToolWarning(
+                        code=error.code.value,
+                        message=(
+                            f"Structural repository map is unavailable ({error.code.value}); "
+                            "returned files only."
+                        ),
+                        recoverable=True,
+                        capability="structural",
+                        remediation=error.remediation,
+                    )
                 )
 
-            symbols, validation_warnings = self._validated_symbols(
-                symbol_results,
-                request.max_symbols_per_file,
-            )
-            warnings.extend(validation_warnings)
-            tree = self._tree(selected, symbols)
+            symbols: dict[str, tuple[RepositorySymbol, ...]] = {}
+            if include_symbols:
+                symbols, validation_warnings = self._validated_symbols(
+                    symbol_results,
+                    request.max_symbols_per_file,
+                )
+                warnings.extend(validation_warnings)
+            if request.mode == "summary" and not include_symbols:
+                tree = self._tree(selected, {})
+            elif not request.include_files:
+                tree = self._tree((), symbols)
+            else:
+                tree = self._tree(selected, symbols)
             unique_warnings = tuple(dict.fromkeys(warnings))
-            return RepositoryMap(
-                tree,
-                len(filtered),
-                len(selected),
-                max(0, len(filtered) - len(selected)),
-                index_state,
+            return (
+                RepositoryMap(
+                    tree,
+                    len(filtered),
+                    len(selected),
+                    max(0, len(filtered) - len(selected)),
+                    index_state,
+                    tuple(warning.message for warning in unique_warnings),
+                ),
                 unique_warnings,
             )
 
-        repository_map, elapsed_ms = timed(build)
+        (repository_map, warnings), elapsed_ms = timed(build)
         return ToolResult(
             repository_map,
             elapsed_ms,
             truncated=repository_map.omitted_files > 0,
-            warnings=repository_map.warnings,
+            warnings=warnings,
             index_state=repository_map.index_state,
         )
 
@@ -140,24 +186,42 @@ class GetRepositoryMapTool:
         self,
         results: tuple[StructuralSearchResult, ...],
         max_per_file: int,
-    ) -> tuple[dict[str, tuple[RepositorySymbol, ...]], list[str]]:
+    ) -> tuple[dict[str, tuple[RepositorySymbol, ...]], list[ToolWarning]]:
         grouped: dict[str, list[StructuralSearchResult]] = {}
         for result in results:
             if result.symbol is not None:
-                grouped.setdefault(result.symbol.location.path, []).append(result)
+                path = _normalize_path(result.symbol.location.path)
+                grouped.setdefault(path, []).append(result)
 
         mapped: dict[str, tuple[RepositorySymbol, ...]] = {}
-        warnings: list[str] = []
+        warnings: list[ToolWarning] = []
         for path, values in grouped.items():
             try:
                 source = self._reader.load(path)
             except CodeHarnessError as error:
                 warnings.append(
-                    f"Skipped symbols for {path}: current file is unavailable ({error.code.value})."
+                    ToolWarning(
+                        code=error.code.value,
+                        message=(
+                            f"Skipped symbols for {path}: current file is unavailable "
+                            f"({error.code.value})."
+                        ),
+                        recoverable=True,
+                        capability="filesystem",
+                        remediation=error.remediation,
+                    )
                 )
                 continue
             if any(value.file_hash != source.content_hash for value in values):
-                warnings.append(f"Skipped stale repository-map symbols for {path}; reindex it.")
+                warnings.append(
+                    ToolWarning(
+                        code="stale_structural_result",
+                        message=f"Skipped stale repository-map symbols for {path}; reindex it.",
+                        recoverable=True,
+                        capability="structural",
+                        remediation="Run index_project to refresh the structural index.",
+                    )
+                )
                 continue
             values.sort(
                 key=lambda value: (
@@ -185,19 +249,21 @@ class GetRepositoryMapTool:
         symbols: dict[str, tuple[RepositorySymbol, ...]],
     ) -> RepositoryDirectory:
         root = _MutableDirectory(".", "")
+        normalized_symbols = {_normalize_path(path): value for path, value in symbols.items()}
         for source in files:
-            parts = PurePosixPath(source.path).parts
+            parts = PurePosixPath(_normalize_path(source.path)).parts
             current = root
             for index, name in enumerate(parts[:-1], start=1):
                 path = "/".join(parts[:index])
                 current = current.directories.setdefault(name, _MutableDirectory(name, path))
+            file_path = _normalize_path(source.path)
             current.files.append(
                 RepositoryFile(
                     parts[-1],
-                    source.path,
+                    file_path,
                     source.language,
                     source.size_bytes,
-                    symbols.get(source.path, ()),
+                    normalized_symbols.get(file_path, ()),
                 )
             )
         return _freeze(root)

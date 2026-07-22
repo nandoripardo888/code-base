@@ -9,6 +9,10 @@ from typing import Any
 
 from code_harness.domain.errors import EmbeddingUnavailableError
 from code_harness.domain.models.semantic import EmbeddingIdentity, Vector
+from code_harness.infrastructure.embeddings.health_cache import (
+    DEFAULT_SEMANTIC_HEALTH_CACHE,
+    SemanticHealthCache,
+)
 
 
 class NativeEmbeddingSupervisor:
@@ -26,6 +30,7 @@ class NativeEmbeddingSupervisor:
         system_trust: bool = True,
         ca_bundle_path: Path | None = None,
         command: Sequence[str] | None = None,
+        health_cache: SemanticHealthCache | None = None,
     ) -> None:
         self._model_name = model_name
         self._batch_size = batch_size
@@ -46,6 +51,15 @@ class NativeEmbeddingSupervisor:
         self._identity: EmbeddingIdentity | None = None
         self._active: subprocess.Popen[str] | None = None
         self._lock = threading.Lock()
+        self._health_cache = health_cache or DEFAULT_SEMANTIC_HEALTH_CACHE
+        self._cache_key = self._health_cache.cache_key(
+            provider_id="fastembed",
+            model_id=model_name,
+            configuration_hash=str(cache_dir),
+        )
+
+    def invalidate_health_cache(self) -> None:
+        self._health_cache.invalidate(self._cache_key)
 
     @property
     def identity(self) -> EmbeddingIdentity:
@@ -89,6 +103,13 @@ class NativeEmbeddingSupervisor:
             _stop_process(process)
 
     def _run(self, operation: str, **values: object) -> dict[str, Any]:
+        cached = self._health_cache.get(self._cache_key)
+        if cached is not None:
+            raise EmbeddingUnavailableError(
+                cached.message,
+                remediation=cached.remediation
+                or "Install compatible NumPy/ONNX Runtime wheels or disable semantic search.",
+            )
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         payload: dict[str, object] = {
             "operation": operation,
@@ -114,7 +135,9 @@ class NativeEmbeddingSupervisor:
                 creationflags=creationflags,
             )
         except OSError as error:
-            raise EmbeddingUnavailableError(f"Could not start embedding worker: {error}") from error
+            message = f"Could not start embedding worker: {error}"
+            self._remember_failure(message)
+            raise EmbeddingUnavailableError(message) from error
         with self._lock:
             self._active = process
         try:
@@ -130,9 +153,11 @@ class NativeEmbeddingSupervisor:
                 )
             except subprocess.TimeoutExpired as error:
                 _stop_process(process)
-                raise EmbeddingUnavailableError(
+                message = (
                     f"Embedding worker timed out after {self._timeout_seconds:g} seconds."
-                ) from error
+                )
+                self._remember_failure(message)
+                raise EmbeddingUnavailableError(message) from error
         finally:
             with self._lock:
                 if self._active is process:
@@ -144,17 +169,40 @@ class NativeEmbeddingSupervisor:
                     "the Python/OpenSSL runtime is incompatible; recreate the virtual "
                     "environment with an official Python installation"
                 )
-            raise EmbeddingUnavailableError(f"Embedding worker crashed: {detail}")
+            message = f"Embedding worker crashed: {detail}"
+            self._remember_failure(message)
+            raise EmbeddingUnavailableError(message)
         try:
             decoded = json.loads(stdout)
         except json.JSONDecodeError as error:
-            raise EmbeddingUnavailableError("Embedding worker returned invalid JSON.") from error
+            message = "Embedding worker returned invalid JSON."
+            self._remember_failure(message)
+            raise EmbeddingUnavailableError(message) from error
         if not isinstance(decoded, dict):
-            raise EmbeddingUnavailableError("Embedding worker returned an invalid response.")
+            message = "Embedding worker returned an invalid response."
+            self._remember_failure(message)
+            raise EmbeddingUnavailableError(message)
         worker_error = decoded.get("error")
         if isinstance(worker_error, dict):
-            raise EmbeddingUnavailableError(str(worker_error.get("message", "Worker failed.")))
+            message = str(worker_error.get("message", "Worker failed."))
+            self._remember_failure(message)
+            raise EmbeddingUnavailableError(message)
         return decoded
+
+    def _remember_failure(self, message: str) -> None:
+        remediation = (
+            "Install compatible NumPy/ONNX Runtime wheels or disable semantic search."
+        )
+        if "X86_V2" in message or "onnxruntime" in message.casefold():
+            remediation = (
+                "Install CPU-compatible NumPy/ONNX Runtime wheels for this machine, "
+                "or disable CODE_HARNESS_SEMANTIC."
+            )
+        self._health_cache.put(
+            self._cache_key,
+            message=message,
+            remediation=remediation,
+        )
 
 
 def _vector(value: object) -> Vector:

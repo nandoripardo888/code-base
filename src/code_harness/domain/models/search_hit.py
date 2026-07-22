@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from code_harness.domain.enums import MatchType
@@ -11,6 +12,11 @@ class SearchHit:
     match_type: MatchType
     matched_terms: tuple[str, ...]
     reason: str | None = None
+    match_line: int | None = None
+    start_column: int | None = None
+    end_column: int | None = None
+    validated: bool = False
+    evidence: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)

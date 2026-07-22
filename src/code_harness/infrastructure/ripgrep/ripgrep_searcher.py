@@ -1,10 +1,11 @@
+import re
 import subprocess
 from pathlib import Path
 
 from code_harness.domain.enums import ErrorCode, MatchType
 from code_harness.domain.errors import (
     CodeHarnessError,
-    InvalidQueryError,
+    RipgrepTimeoutError,
     RipgrepUnavailableError,
 )
 from code_harness.domain.models.search_hit import SearchHit, SearchOutcome
@@ -55,6 +56,7 @@ class RipgrepSearcher:
                 command,
                 cwd=self._root,
                 capture_output=True,
+                stdin=subprocess.DEVNULL,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
@@ -64,10 +66,7 @@ class RipgrepSearcher:
         except FileNotFoundError as error:
             raise RipgrepUnavailableError(self._executable) from error
         except subprocess.TimeoutExpired as error:
-            raise InvalidQueryError(
-                "Ripgrep search exceeded timeout_seconds.",
-                timeout_seconds=timeout_seconds,
-            ) from error
+            raise RipgrepTimeoutError(timeout_seconds) from error
 
         stderr = completed.stderr.strip().replace(str(self._root), ".")
         if completed.returncode not in (0, 1):
@@ -96,17 +95,47 @@ class RipgrepSearcher:
             except CodeHarnessError as error:
                 warnings.append(f"Skipped stale or unreadable result {record.path}: {error.code}")
                 continue
+            line_text = source.snippet.content.splitlines()[
+                max(0, record.line_number - start_line)
+            ] if source.snippet.content else ""
+            if regex:
+                start_column = record.start_column
+                end_column = record.end_column
+                if start_column is None and line_text:
+                    # Recalculate when Ripgrep omitted submatches.
+                    flags = 0 if case_sensitive else re.IGNORECASE
+                    matched = re.search(query, line_text, flags)
+                    if matched is not None:
+                        start_column = matched.start() + 1
+                        end_column = matched.end()
+            else:
+                haystack = line_text if case_sensitive else line_text.casefold()
+                needle = query if case_sensitive else query.casefold()
+                column = haystack.find(needle)
+                start_column = column + 1 if column >= 0 else None
+                end_column = (
+                    start_column + len(query) - 1 if start_column is not None else None
+                )
             hits.append(
                 SearchHit(
                     snippet=source.snippet,
                     score=1.0 if not regex else 0.9,
-                    match_type=MatchType.EXACT if not regex else MatchType.REGEX,
+                    match_type=MatchType.EXACT_LITERAL if not regex else MatchType.REGEX,
                     matched_terms=(query,),
                     reason=(
                         "Current file contains the exact requested text."
                         if not regex
                         else "Current file line matches the requested regular expression."
                     ),
+                    match_line=record.line_number,
+                    start_column=start_column,
+                    end_column=end_column,
+                    validated=True,
+                    evidence={
+                        "candidate_source": "ripgrep",
+                        "validated": True,
+                        "regex": regex,
+                    },
                 )
             )
             warnings.extend(source.warnings)

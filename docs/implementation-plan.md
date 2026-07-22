@@ -19,9 +19,9 @@ plugins are adapters.
 5. **Hybrid context (complete):** deterministic classification, parallel candidate
    generation, fused ranking, diversity, disk validation, controlled expansion,
    token budgets, and repository maps.
-6. **MCP adapter (next):** optional SDK, thin handlers, serializers, and contract
-   tests.
-7. **Hardening:** benchmarks, recovery, resource limits, large-project tests, and
+6. **MCP adapter (complete):** optional SDK, thin handlers, serializers, contract
+   tests, and `code-harness mcp serve`.
+7. **Hardening (next):** benchmarks, recovery, resource limits, large-project tests, and
    release packaging.
 
 Every phase must preserve lexical operation and safe degradation when its own

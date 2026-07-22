@@ -1,6 +1,8 @@
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 
 from code_harness.domain.enums import DiagnosticStatus, IndexMode, IndexState
+from code_harness.domain.models.capability import CapabilityStatus
 from code_harness.domain.models.structural import AnalyzeResult
 
 
@@ -97,6 +99,8 @@ class IndexStatus:
     semantic_model_id: str | None = None
     last_run: IndexRunSummary | None = None
     warnings: tuple[str, ...] = ()
+    service_state: str | None = None
+    capabilities: tuple[CapabilityStatus, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +114,7 @@ class DiagnosticCheck:
     name: str
     status: DiagnosticStatus
     message: str
+    details: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

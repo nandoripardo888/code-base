@@ -36,7 +36,7 @@ class IndexedTextSearcher:
         timeout_seconds: float,
     ) -> SearchOutcome:
         if regex:
-            return self._fallback.search(
+            fallback = self._fallback.search(
                 query=query,
                 regex=True,
                 include_globs=include_globs,
@@ -45,6 +45,18 @@ class IndexedTextSearcher:
                 max_results=max_results,
                 context_lines=context_lines,
                 timeout_seconds=timeout_seconds,
+            )
+            index_state = IndexState.NOT_INITIALIZED.value
+            try:
+                status = self._store.get_status(self._project)
+                index_state = status.state.value
+            except CodeHarnessError:
+                index_state = IndexState.FAILED.value
+            return SearchOutcome(
+                fallback.hits,
+                truncated=fallback.truncated,
+                warnings=fallback.warnings,
+                index_state=index_state,
             )
 
         indexed_hits: tuple[SearchHit, ...] = ()
@@ -128,6 +140,16 @@ class IndexedTextSearcher:
                 start = max(1, line_number - context_lines)
                 end = min(len(lines), line_number + context_lines)
                 content = "".join(lines[start - 1 : end])
+                column = haystack.find(needle)
+                start_column = column + 1 if column >= 0 else None
+                end_column = (
+                    start_column + len(query) - 1 if start_column is not None else None
+                )
+                match_type = (
+                    MatchType.EXACT_LITERAL
+                    if haystack.strip() == needle
+                    else MatchType.SUBSTRING
+                )
                 hits.append(
                     SearchHit(
                         snippet=CodeSnippet(
@@ -137,9 +159,14 @@ class IndexedTextSearcher:
                             source.content_hash,
                         ),
                         score=1.0 / (1.0 + abs(candidate.rank)),
-                        match_type=MatchType.FULL_TEXT,
+                        match_type=match_type,
                         matched_terms=(query,),
                         reason="SQLite FTS candidate validated against the current file.",
+                        match_line=line_number,
+                        start_column=start_column,
+                        end_column=end_column,
+                        validated=True,
+                        evidence={"candidate_source": "fts", "validated": True},
                     )
                 )
                 if len(hits) >= max_results:

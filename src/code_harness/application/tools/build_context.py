@@ -1,11 +1,14 @@
+from collections import Counter
 from dataclasses import dataclass, replace
 
 from code_harness.application.context import estimate_tokens
+from code_harness.application.context.query_windows import render_windows, select_query_windows
 from code_harness.application.dto.requests import BuildContextRequest, SearchCodeRequest
 from code_harness.application.tools._timing import timed
 from code_harness.application.tools.search_code import SearchCodeTool
 from code_harness.domain.enums import IndexState, MatchType
 from code_harness.domain.errors import CodeHarnessError
+from code_harness.domain.models.capability import ToolWarning
 from code_harness.domain.models.code_chunk import CodeSnippet
 from code_harness.domain.models.code_location import CodeLocation
 from code_harness.domain.models.context import ContextBundle, ContextSnippet
@@ -13,11 +16,20 @@ from code_harness.domain.models.hybrid import HybridSearchHit
 from code_harness.domain.models.index_report import IndexedSource
 from code_harness.domain.models.project import Project
 from code_harness.domain.models.structural import StructuralSearchResult
-from code_harness.domain.models.tool_result import ToolResult
+from code_harness.domain.models.tool_result import ToolResult, normalize_warnings
 from code_harness.domain.protocols.index_source_reader import IndexSourceReader
 from code_harness.domain.protocols.repository_store import RepositoryStore
 
 _ROLE_PRIORITY = {"definition": 0, "primary": 1, "parent": 2, "reference": 3}
+_OMISSION_REASONS = (
+    "duplicate",
+    "file_limit",
+    "low_score",
+    "token_budget",
+    "stale_result",
+    "invalid_range",
+    "expansion_limit",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +73,7 @@ class BuildContextTool:
         self._reader = reader
 
     def execute(self, request: BuildContextRequest) -> ToolResult[ContextBundle]:
-        def build() -> ContextBundle:
+        def build() -> tuple[ContextBundle, tuple[ToolWarning, ...], str | None]:
             search = self._search_code.execute(
                 SearchCodeRequest(
                     request.query,
@@ -73,45 +85,75 @@ class BuildContextTool:
                     10.0,
                 )
             )
-            warnings = list(search.warnings)
+            warnings = list(normalize_warnings(search.warnings))
             pending = [self._seed(hit) for hit in search.data]
-            expansions, expansion_warnings = self._expand(
+            expansions, expansion_warnings, expansion_limited = self._expand(
                 search.data,
                 request.max_expansion_depth,
                 request.max_snippets * 3,
             )
             pending.extend(expansions)
-            warnings.extend(expansion_warnings)
-            original_count = len(pending)
-            pending = self._deduplicate(pending)
+            warnings.extend(normalize_warnings(expansion_warnings))
+            considered = len(pending)
+            pending, duplicate_count = self._deduplicate(pending)
             available = request.max_tokens - request.reserved_tokens
             metadata_tokens = estimate_tokens(
-                f"estimated_tokens={available}/{available}; omitted_results={original_count}"
+                f"estimated_tokens={available}/{available}; omitted_results={considered}"
             )
-            snippets, selection_warnings = self._apply_budget(
+            snippets, selection_warnings, omitted, flags = self._apply_budget(
                 request,
                 pending,
                 metadata_tokens,
             )
-            warnings.extend(selection_warnings)
-            omitted = max(0, original_count - len(snippets)) + int(search.truncated)
+            warnings.extend(normalize_warnings(selection_warnings))
+            omitted["duplicate"] = omitted.get("duplicate", 0) + duplicate_count
+            if search.truncated:
+                omitted["expansion_limit"] = omitted.get("expansion_limit", 0) + 1
+                flags["results_truncated"] = True
+            if expansion_limited:
+                omitted["expansion_limit"] = omitted.get("expansion_limit", 0) + 1
+                flags["expansion_limited"] = True
+            selected = len(snippets)
+            omitted_total = max(0, considered - selected)
+            # Keep invariant: considered = selected + omitted_results
+            if sum(omitted.values()) != omitted_total:
+                remainder = omitted_total - sum(omitted.values())
+                if remainder > 0:
+                    omitted["low_score"] = omitted.get("low_score", 0) + remainder
             estimated = metadata_tokens + sum(item.estimated_tokens for item in snippets)
-            unique_warnings = tuple(dict.fromkeys(warnings))
-            return ContextBundle(
-                request.query,
-                snippets,
-                omitted,
-                estimated,
-                available,
+            unique_warnings = normalize_warnings(warnings)
+            return (
+                ContextBundle(
+                    request.query,
+                    snippets,
+                    omitted_total,
+                    estimated,
+                    available,
+                    tuple(warning.message for warning in unique_warnings),
+                    considered_results=considered,
+                    selected_results=selected,
+                    omitted={key: omitted[key] for key in _OMISSION_REASONS if omitted.get(key)},
+                    results_truncated=flags["results_truncated"],
+                    snippet_truncated=flags["snippet_truncated"],
+                    budget_exhausted=flags["budget_exhausted"],
+                    expansion_limited=flags["expansion_limited"],
+                ),
                 unique_warnings,
+                search.index_state,
             )
 
-        bundle, elapsed_ms = timed(build)
+        (bundle, warnings, index_state), elapsed_ms = timed(build)
         return ToolResult(
             bundle,
             elapsed_ms,
-            truncated=bundle.omitted_results > 0,
-            warnings=bundle.warnings,
+            truncated=(
+                bundle.omitted_results > 0
+                or bundle.results_truncated
+                or bundle.snippet_truncated
+                or bundle.budget_exhausted
+            ),
+            warnings=warnings,
+            index_state=index_state,
         )
 
     @staticmethod
@@ -133,18 +175,18 @@ class BuildContextTool:
         hits: tuple[HybridSearchHit, ...],
         max_depth: int,
         limit: int,
-    ) -> tuple[list[_PendingSnippet], list[str]]:
+    ) -> tuple[list[_PendingSnippet], list[str], bool]:
         if max_depth == 0:
-            return [], []
+            return [], [], False
         try:
             status = self._store.get_status(self._project)
         except CodeHarnessError as error:
-            return [], [f"Context expansion is unavailable ({error.code.value})."]
+            return [], [f"Context expansion is unavailable ({error.code.value})."], False
         if (
             status.state not in (IndexState.READY, IndexState.READY_WITH_WARNINGS)
             or not status.structural_schema_ready
         ):
-            return [], ["Structural index is not ready; context was not expanded."]
+            return [], ["Structural index is not ready; context was not expanded."], False
 
         symbol_ids = tuple(
             dict.fromkeys(
@@ -155,12 +197,13 @@ class BuildContextTool:
             )
         )
         if not symbol_ids:
-            return [], []
+            return [], [], False
         current = self._store.find_symbols_by_ids(self._project.project_id, symbol_ids)
         seen_symbols = set(symbol_ids)
         seen_references: set[str] = set()
         expanded: list[_PendingSnippet] = []
         warnings: list[str] = []
+        limited = False
         for depth in range(1, max_depth + 1):
             next_parent_ids: list[str] = []
             for result in current:
@@ -192,7 +235,7 @@ class BuildContextTool:
                     if pending is not None:
                         expanded.append(pending)
                     if len(expanded) >= limit:
-                        return expanded, warnings
+                        return expanded, warnings, True
             parents = self._store.find_symbols_by_ids(
                 self._project.project_id,
                 tuple(next_parent_ids),
@@ -211,11 +254,11 @@ class BuildContextTool:
                 if pending is not None:
                     expanded.append(pending)
                 if len(expanded) >= limit:
-                    return expanded, warnings
+                    return expanded, warnings, True
             current = parents
             if not current:
                 break
-        return expanded, warnings
+        return expanded, warnings, limited
 
     def _validated_structural(
         self,
@@ -262,7 +305,7 @@ class BuildContextTool:
         )
 
     @staticmethod
-    def _deduplicate(values: list[_PendingSnippet]) -> list[_PendingSnippet]:
+    def _deduplicate(values: list[_PendingSnippet]) -> tuple[list[_PendingSnippet], int]:
         ordered = sorted(
             values,
             key=lambda item: (
@@ -274,29 +317,41 @@ class BuildContextTool:
             ),
         )
         selected: list[_PendingSnippet] = []
+        duplicates = 0
         for value in ordered:
             if any(_overlaps(value, existing) for existing in selected):
+                duplicates += 1
                 continue
             selected.append(value)
-        return selected
+        return selected, duplicates
 
     def _apply_budget(
         self,
         request: BuildContextRequest,
         pending: list[_PendingSnippet],
         metadata_tokens: int,
-    ) -> tuple[tuple[ContextSnippet, ...], list[str]]:
+    ) -> tuple[tuple[ContextSnippet, ...], list[str], dict[str, int], dict[str, bool]]:
         available = request.max_tokens - request.reserved_tokens
         remaining = max(0, available - metadata_tokens)
         files: set[str] = set()
         selected: list[ContextSnippet] = []
         warnings: list[str] = []
+        omitted: Counter[str] = Counter()
+        flags = {
+            "results_truncated": False,
+            "snippet_truncated": False,
+            "budget_exhausted": False,
+            "expansion_limited": False,
+        }
         sources: dict[str, IndexedSource | CodeHarnessError] = {}
         for item in pending:
             if len(selected) >= request.max_snippets:
-                break
+                omitted["expansion_limit"] += 1
+                flags["results_truncated"] = True
+                continue
             path = item.snippet.location.path
             if path not in files and len(files) >= request.max_files:
+                omitted["file_limit"] += 1
                 continue
             if path not in sources:
                 try:
@@ -305,36 +360,51 @@ class BuildContextTool:
                     sources[path] = error
             source = sources[path]
             if isinstance(source, CodeHarnessError):
+                omitted["invalid_range"] += 1
                 warnings.append(
                     f"Skipped context snippet for {path}: "
                     f"current file is unavailable ({source.code.value})."
                 )
                 continue
             if source.content_hash != item.snippet.file_hash:
+                omitted["stale_result"] += 1
                 warnings.append(f"Skipped stale context snippet for {path}; reindex it.")
                 continue
             location = item.snippet.location
             lines = source.content.splitlines(keepends=True)
             end_line = min(location.end_line, max(1, len(lines)))
-            item = replace(
+            windows = select_query_windows(
+                content=source.content,
+                start_line=location.start_line,
+                end_line=end_line,
+                query=request.query,
+            )
+            rendered, window_start, window_end = render_windows(source.content, windows)
+            if not rendered:
+                omitted["invalid_range"] += 1
+                continue
+            focused = replace(
                 item,
                 snippet=CodeSnippet(
-                    CodeLocation(path, location.start_line, end_line),
-                    "".join(lines[location.start_line - 1 : end_line]),
+                    CodeLocation(path, window_start, window_end),
+                    rendered,
                     source.language,
                     source.content_hash,
                 ),
             )
-            estimate = estimate_tokens(_header(item) + item.snippet.content)
-            selected_item = item
+            estimate = estimate_tokens(_header(focused) + focused.snippet.content)
+            selected_item = focused
             truncated = False
             if estimate > remaining:
-                clipped = self._clip(item, remaining)
+                clipped = self._clip(focused, remaining)
                 if clipped is None:
+                    omitted["token_budget"] += 1
+                    flags["budget_exhausted"] = True
                     continue
                 selected_item = clipped
                 estimate = estimate_tokens(_header(selected_item) + selected_item.snippet.content)
                 truncated = True
+                flags["snippet_truncated"] = True
                 warnings.append(f"Truncated context snippet for {path} to fit the token budget.")
             selected.append(
                 ContextSnippet(
@@ -347,13 +417,17 @@ class BuildContextTool:
                     selected_item.reason,
                     selected_item.source_match_types,
                     truncated,
+                    ranges=tuple(
+                        (window.start_line, window.end_line, window.reason) for window in windows
+                    ),
                 )
             )
             remaining -= estimate
             files.add(path)
             if remaining <= 0:
+                flags["budget_exhausted"] = True
                 break
-        return tuple(selected), warnings
+        return tuple(selected), warnings, dict(omitted), flags
 
     @staticmethod
     def _clip(item: _PendingSnippet, available_tokens: int) -> _PendingSnippet | None:

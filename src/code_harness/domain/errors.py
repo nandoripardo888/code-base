@@ -3,6 +3,44 @@ from typing import Any
 
 from code_harness.domain.enums import ErrorCode
 
+_RECOVERABLE_CODES = frozenset(
+    {
+        ErrorCode.RIPGREP_UNAVAILABLE,
+        ErrorCode.RIPGREP_TIMEOUT,
+        ErrorCode.EMBEDDING_UNAVAILABLE,
+        ErrorCode.PARSER_UNAVAILABLE,
+        ErrorCode.PARSER_TIMEOUT,
+        ErrorCode.PARSER_CIRCUIT_OPEN,
+        ErrorCode.INDEX_NOT_READY,
+    }
+)
+
+_ERROR_CAPABILITIES: dict[ErrorCode, str] = {
+    ErrorCode.RIPGREP_UNAVAILABLE: "ripgrep",
+    ErrorCode.RIPGREP_TIMEOUT: "ripgrep",
+    ErrorCode.EMBEDDING_UNAVAILABLE: "semantic",
+    ErrorCode.PARSER_UNAVAILABLE: "structural",
+    ErrorCode.PARSER_TIMEOUT: "structural",
+    ErrorCode.PARSER_CRASH: "structural",
+    ErrorCode.PARSER_CIRCUIT_OPEN: "structural",
+    ErrorCode.INDEX_NOT_READY: "catalog",
+    ErrorCode.INDEX_CORRUPTED: "catalog",
+}
+
+_DEFAULT_REMEDIATIONS: dict[ErrorCode, str] = {
+    ErrorCode.RIPGREP_UNAVAILABLE: (
+        "Install Ripgrep or configure CODE_HARNESS_RG with the full path to rg."
+    ),
+    ErrorCode.RIPGREP_TIMEOUT: "Retry with a narrower query or increase the timeout.",
+    ErrorCode.EMBEDDING_UNAVAILABLE: (
+        "Install compatible semantic dependencies or disable semantic search."
+    ),
+    ErrorCode.PARSER_UNAVAILABLE: "Install parser support for the language or reindex.",
+    ErrorCode.PARSER_TIMEOUT: "Retry indexing or increase the parser timeout.",
+    ErrorCode.PARSER_CIRCUIT_OPEN: "Wait for the parser circuit to close or reindex.",
+    ErrorCode.INDEX_NOT_READY: "Run index_project before structural or indexed searches.",
+}
+
 
 class CodeHarnessError(Exception):
     def __init__(
@@ -11,11 +49,21 @@ class CodeHarnessError(Exception):
         message: str,
         *,
         details: Mapping[str, Any] | None = None,
+        recoverable: bool | None = None,
+        capability: str | None = None,
+        remediation: str | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.details = dict(details or {})
+        self.recoverable = (
+            bool(recoverable) if recoverable is not None else code in _RECOVERABLE_CODES
+        )
+        self.capability = capability if capability is not None else _ERROR_CAPABILITIES.get(code)
+        self.remediation = (
+            remediation if remediation is not None else _DEFAULT_REMEDIATIONS.get(code)
+        )
 
 
 class ProjectNotFoundError(CodeHarnessError):
@@ -69,6 +117,16 @@ class RipgrepUnavailableError(CodeHarnessError):
             ErrorCode.RIPGREP_UNAVAILABLE,
             f"Ripgrep executable is unavailable: {executable}",
             details={"executable": executable},
+            remediation="Run code-harness doctor and configure CODE_HARNESS_RG.",
+        )
+
+
+class RipgrepTimeoutError(CodeHarnessError):
+    def __init__(self, timeout_seconds: float) -> None:
+        super().__init__(
+            ErrorCode.RIPGREP_TIMEOUT,
+            f"Ripgrep timed out after {timeout_seconds} seconds.",
+            details={"timeout_seconds": timeout_seconds},
         )
 
 
@@ -120,8 +178,8 @@ class ParserCircuitOpenError(CodeHarnessError):
 
 
 class EmbeddingUnavailableError(CodeHarnessError):
-    def __init__(self, message: str) -> None:
-        super().__init__(ErrorCode.EMBEDDING_UNAVAILABLE, message)
+    def __init__(self, message: str, *, remediation: str | None = None) -> None:
+        super().__init__(ErrorCode.EMBEDDING_UNAVAILABLE, message, remediation=remediation)
 
 
 class InvalidQueryError(CodeHarnessError):
@@ -136,3 +194,12 @@ class ResultLimitExceededError(CodeHarnessError):
             f"File exceeds the configured read limit of {limit} bytes: {path}",
             details={"path": path, "limit": limit},
         )
+
+
+class CursorStaleError(CodeHarnessError):
+    def __init__(self, message: str = "Pagination cursor is stale for the current index.") -> None:
+        super().__init__(ErrorCode.CURSOR_STALE, message)
+
+
+def is_recoverable_error(error: BaseException) -> bool:
+    return isinstance(error, CodeHarnessError) and error.recoverable

@@ -19,15 +19,15 @@ def test_python_api_executes_lexical_workflow(fixture_repository: Path) -> None:
     regex = harness.search_regex(r"public\s+void\s+montarAgendaConsultor")
     source = harness.read_range("src/AgendaService.java", 3, 6)
 
-    assert "ignored.sql" not in {item.path for item in files.data}
+    assert "ignored.sql" not in {item.path for item in files.data.items}
     assert path_matches.data[0].source_file.path == "src/AgendaService.java"
     assert {hit.snippet.location.path for hit in literal.data} == {
         "database/PKG_AGENDA.pck",
         "src/agenda.py",
     }
     assert regex.data[0].match_type is MatchType.REGEX
-    assert source.data.location.start_line == 3
-    assert len(source.data.file_hash) == 64
+    assert source.data.snippet.location.start_line == 3
+    assert len(source.data.snippet.file_hash) == 64
 
 
 def test_python_api_reports_invalid_regex(fixture_repository: Path) -> None:

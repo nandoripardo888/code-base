@@ -26,7 +26,9 @@ semantic = [
   "onnxruntime==1.27.0",
   "truststore==0.10.4",
 ]
-mcp = []
+mcp = [
+  "mcp>=1.9,<2",
+]
 all = [
   "fastembed==0.8.0",
   "huggingface-hub==1.24.0",
@@ -35,12 +37,14 @@ all = [
   "tree-sitter>=0.25,<0.27",
   "tree-sitter-java>=0.23.5,<0.24",
   "tree-sitter-python>=0.25,<0.26",
+  "mcp>=1.9,<2",
 ]
 dev = [
   "mypy>=1.16,<2",
   "pytest>=8.4,<9",
   "pytest-cov>=6.2,<7",
   "ruff>=0.12,<1",
+  "mcp>=1.9,<2",
 ]
 
 [project.scripts]

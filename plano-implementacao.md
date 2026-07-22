@@ -6,7 +6,7 @@ evitando que falhas do Tree-sitter derrubem a CLI ou o servidor.
 
 ## 0. Controle de execução
 
-Última atualização: **20 de julho de 2026**.
+Última atualização: **21 de julho de 2026**.
 
 Este documento define o destino arquitetural e a ordem de implementação. A
 fotografia detalhada do que está disponível e validado fica em
@@ -14,10 +14,10 @@ fotografia detalhada do que está disponível e validado fica em
 
 ### Marco atual
 
-**Fases 0, 1, 2, 3, 4 e 5 concluídas localmente. Fase 6 é a próxima.**
+**Fases 0, 1, 2, 3, 4, 5 e 6 concluídas localmente. Fase 7 é a próxima.**
 
-O repositório chegou ao item 24 da sequência recomendada. O próximo trabalho é o
-item 25, `feat: add mcp adapter`.
+O repositório chegou ao item 25 da sequência recomendada. O próximo trabalho é o
+item 26, `test: add end-to-end repository scenarios`.
 
 | Fase | Estado | Evidência resumida |
 |---|---|---|
@@ -27,8 +27,8 @@ item 25, `feat: add mcp adapter`.
 | 3 — Estrutural | Concluída localmente | Supervisor isolado, parsers, símbolos, referências, tools e chunks validados |
 | 4 — Semântica | Concluída localmente | Provider opcional, cache por hash, vetores locais e semantic search validados |
 | 5 — Híbrida/contexto | Concluída localmente | Ranking, contexto por orçamento e mapa validados |
-| 6 — MCP | Próxima | Sem SDK ou adaptador MCP |
-| 7 — Hardening | Não iniciada | Existem somente artefatos preliminares |
+| 6 — MCP | Concluída localmente | Extra opcional, handlers finos, `mcp serve` e contratos validados |
+| 7 — Hardening | Próxima | Existem somente artefatos preliminares |
 
 ### Legenda de acompanhamento
 
@@ -1851,18 +1851,18 @@ CLI. A suíte completa passou com 114 testes e 86,98% de cobertura.
 
 ### Fase 6 — Adaptador MCP
 
-**Status: próxima.**
+**Status: concluída localmente.**
 
 #### Entregas
 
-- [ ] dependência MCP opcional;
-- [ ] servidor;
-- [ ] schemas;
-- [ ] handlers finos;
-- [ ] serializers;
-- [ ] mapeamento de erros;
-- [ ] teste de contrato funcional;
-- [ ] comando `code-harness mcp serve`.
+- [x] dependência MCP opcional;
+- [x] servidor;
+- [x] schemas;
+- [x] handlers finos;
+- [x] serializers;
+- [x] mapeamento de erros;
+- [x] teste de contrato funcional;
+- [x] comando `code-harness mcp serve`.
 
 #### Critério de saída
 
@@ -1870,11 +1870,14 @@ Nenhum módulo fora de `interfaces/mcp` ou `bootstrap` poderá importar o SDK MC
 
 Excluir a pasta MCP deverá manter API Python, CLI e testes do core funcionais.
 
+Validação local em 21 de julho de 2026: ruff, mypy e 126 testes com 86,28% de
+cobertura.
+
 ---
 
 ### Fase 7 — Hardening
 
-**Status: não iniciada; existem artefatos preliminares.**
+**Status: próxima; existem artefatos preliminares.**
 
 #### Entregas
 
@@ -1935,8 +1938,8 @@ tenha exatamente um commit por linha.
 22. [x] `feat: add hybrid ranking`
 23. [x] `feat: add context builder`
 24. [x] `feat: add repository map`
-25. [ ] **PRÓXIMO:** `feat: add mcp adapter`
-26. [ ] `test: add end-to-end repository scenarios`
+25. [x] `feat: add mcp adapter`
+26. [ ] **PRÓXIMO:** `test: add end-to-end repository scenarios`
 27. [ ] `perf: add indexing and search benchmarks`
 28. [ ] `docs: finalize user and troubleshooting guides`
 
@@ -1960,18 +1963,18 @@ reproduzível; critérios dependentes de fases futuras permanecem abertos.
 8. [x] embeddings forem implementados como opcionais;
 9. [x] busca híbrida combinar resultados semânticos e exatos;
 10. [x] `build_context` respeitar o orçamento;
-11. [ ] o MCP apenas adaptar chamadas;
-12. [ ] remover o MCP implementado não afetar o core;
+11. [x] o MCP apenas adaptar chamadas;
+12. [x] remover o MCP implementado não afetar o core;
 13. [ ] a suíte passar em execuções confirmadas de CI no Windows e Linux;
 14. [x] caminhos fora da raiz serem rejeitados;
 15. [x] nenhum comando da base de código ser executado;
 16. [x] o estado do índice refletir warnings parciais;
 17. [ ] o índice poder ser reconstruído integralmente;
 18. [x] tools retornarem objetos estruturados;
-19. [ ] CLI e MCP apresentarem resultados equivalentes;
+19. [x] CLI e MCP apresentarem resultados equivalentes;
 20. [ ] documentação final descrever arquitetura, configuração e diagnóstico.
 
-**Progresso global comprovado: 12 de 20 critérios.**
+**Progresso global comprovado: 15 de 20 critérios.**
 
 ---
 
@@ -2096,7 +2099,7 @@ A arquitetura oficial será:
                         └─────────────────┘
 ```
 
-O MCP será uma porta de entrada. As tools e o mecanismo de investigação serão o produto principal.
+O MCP é uma porta de entrada. As tools e o mecanismo de investigação são o produto principal.
 
-A etapa seguinte é iniciar a **Fase 6**, expondo as application tools por um
-adaptador MCP fino e opcional.
+A etapa seguinte é iniciar a **Fase 7**, com hardening, recuperação, benchmarks e
+documentação final.

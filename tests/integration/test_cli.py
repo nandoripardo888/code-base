@@ -34,7 +34,9 @@ def test_cli_init_list_search_and_read(copied_repository: Path, tmp_path: Path) 
     assert initialized.exit_code == 0, initialized.output
     assert json.loads(initialized.stdout)["active"] is True
     assert listed.exit_code == 0, listed.output
-    assert any(item["path"] == "src/agenda.py" for item in json.loads(listed.stdout)["data"])
+    assert any(
+        item["path"] == "src/agenda.py" for item in json.loads(listed.stdout)["data"]["items"]
+    )
     assert searched.exit_code == 0, searched.output
     assert json.loads(searched.stdout)["data"]
     assert read.exit_code == 0, read.output
@@ -56,6 +58,13 @@ def test_cli_returns_stable_error_envelope(fixture_repository: Path) -> None:
 
     assert result.exit_code == 2
     assert json.loads(result.stderr)["error"]["code"] == "path_outside_project"
+
+
+def test_cli_mcp_serve_help_is_available() -> None:
+    result = runner.invoke(app, ["mcp", "serve", "--help"])
+
+    assert result.exit_code == 0
+    assert "MCP" in result.stdout or "stdio" in result.stdout.lower() or "Serve" in result.stdout
 
 
 def test_cli_version() -> None:

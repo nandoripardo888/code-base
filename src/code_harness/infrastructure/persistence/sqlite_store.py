@@ -34,6 +34,7 @@ from code_harness.domain.models.structural import (
     StructuralSearchResult,
 )
 from code_harness.infrastructure.filesystem.ignore_rules import compile_globs
+from code_harness.infrastructure.parsers.signature_extractor import SIGNATURE_EXTRACTOR_VERSION
 from code_harness.infrastructure.persistence.connection import connect_database
 from code_harness.infrastructure.persistence.migrations import apply_migrations
 
@@ -326,7 +327,8 @@ class SQLiteRepositoryStore:
         connection.execute(
             """
             UPDATE files SET parser_name = ?, parser_version = ?, parse_state = ?,
-                             parse_error = ?, chunking_version = ?
+                             parse_error = ?, chunking_version = ?,
+                             signature_extractor_version = ?
             WHERE file_id = ?
             """,
             (
@@ -335,6 +337,7 @@ class SQLiteRepositoryStore:
                 analysis.state.value,
                 parse_error,
                 update.chunking_version,
+                SIGNATURE_EXTRACTOR_VERSION,
                 file_id,
             ),
         )
@@ -345,8 +348,8 @@ class SQLiteRepositoryStore:
                 INSERT INTO symbols(
                     symbol_id, file_id, project_id, name, qualified_name, kind,
                     start_line, end_line, start_column, end_column, signature,
-                    parent_symbol_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    parent_symbol_id, canonical_signature
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     symbol.symbol_id,
@@ -361,6 +364,7 @@ class SQLiteRepositoryStore:
                     location.end_column,
                     symbol.signature,
                     symbol.parent_symbol_id,
+                    symbol.canonical_signature,
                 ),
             )
         for reference in analysis.references:
@@ -1015,6 +1019,7 @@ def _row_location(row: sqlite3.Row) -> CodeLocation:
 
 
 def _symbol_result(row: sqlite3.Row) -> StructuralSearchResult:
+    keys = set(row.keys())
     symbol = CodeSymbol(
         row["symbol_id"],
         row["name"],
@@ -1023,16 +1028,25 @@ def _symbol_result(row: sqlite3.Row) -> StructuralSearchResult:
         _row_location(row),
         row["signature"],
         row["parent_symbol_id"],
+        row["canonical_signature"] if "canonical_signature" in keys else None,
     )
     return StructuralSearchResult(symbol, None, "", row["content_hash"])
 
 
 def _reference_result(row: sqlite3.Row) -> StructuralSearchResult:
+    source_symbol_id = row["source_symbol_id"]
+    keys = set(row.keys())
+    target_symbol_id = row["target_symbol_id"] if "target_symbol_id" in keys else None
+    has_target = bool(target_symbol_id)
     reference = CodeReference(
         row["reference_id"],
         row["target_name"],
         row["kind"],
         _row_location(row),
-        row["source_symbol_id"],
+        source_symbol_id,
+        source="structural",
+        target_symbol_id=target_symbol_id,
+        confidence=1.0 if has_target else (0.85 if source_symbol_id else 0.75),
+        resolution="symbol_id" if has_target else "name_only",
     )
     return StructuralSearchResult(None, reference, "", row["content_hash"])

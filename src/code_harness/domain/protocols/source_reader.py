@@ -10,6 +10,7 @@ class SourceReader(Protocol):
         *,
         max_chars: int,
         max_lines: int,
+        include_line_numbers: bool = False,
     ) -> SourceRead: ...
 
     def read_range(
@@ -19,4 +20,5 @@ class SourceReader(Protocol):
         start_line: int,
         end_line: int,
         max_chars: int,
+        include_line_numbers: bool = False,
     ) -> SourceRead: ...

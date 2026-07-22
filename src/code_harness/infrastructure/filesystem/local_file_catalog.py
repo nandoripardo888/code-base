@@ -78,6 +78,7 @@ class LocalFileCatalog:
                 ),
                 check=False,
                 capture_output=True,
+                stdin=subprocess.DEVNULL,
                 timeout=15.0,
             )
         except (OSError, subprocess.TimeoutExpired):

@@ -20,8 +20,9 @@ from code_harness.application.dto.requests import (
 from code_harness.bootstrap.container import ApplicationContainer, build_container
 from code_harness.bootstrap.settings import Settings
 from code_harness.domain.enums import IndexMode
-from code_harness.domain.models.code_chunk import CodeSnippet
+from code_harness.domain.models.code_chunk import SourceRead
 from code_harness.domain.models.context import ContextBundle
+from code_harness.domain.models.file_listing import FileListingPage
 from code_harness.domain.models.file_match import FileMatch
 from code_harness.domain.models.hybrid import HybridSearchHit
 from code_harness.domain.models.index_report import DoctorReport, IndexReport, IndexStatus
@@ -59,8 +60,20 @@ class CodeHarness:
     def prepare_semantic_model(self) -> ToolResult[SemanticPreparationReport]:
         return self._container.prepare_semantic_model.execute()
 
-    def get_file_outline(self, path: str) -> ToolResult[tuple[StructuralSearchResult, ...]]:
-        return self._container.get_file_outline.execute(GetFileOutlineRequest(path))
+    def get_file_outline(
+        self,
+        path: str,
+        *,
+        include_content: bool | None = None,
+        response_format: str = "compact",
+    ) -> ToolResult[tuple[StructuralSearchResult, ...]]:
+        return self._container.get_file_outline.execute(
+            GetFileOutlineRequest(
+                path,
+                include_content=include_content,
+                response_format=response_format,
+            )
+        )
 
     def find_symbol(
         self,
@@ -68,8 +81,18 @@ class CodeHarness:
         *,
         max_results: int = 50,
         exact: bool = False,
+        include_content: bool | None = None,
+        response_format: str = "compact",
     ) -> ToolResult[tuple[StructuralSearchResult, ...]]:
-        return self._container.find_symbol.execute(FindSymbolRequest(query, max_results, exact))
+        return self._container.find_symbol.execute(
+            FindSymbolRequest(
+                query,
+                max_results,
+                exact,
+                include_content=include_content,
+                response_format=response_format,
+            )
+        )
 
     def find_definition(
         self, query: str, *, max_results: int = 20
@@ -87,9 +110,21 @@ class CodeHarness:
         include_globs: tuple[str, ...] = (),
         exclude_globs: tuple[str, ...] = (),
         max_results: int = 10_000,
-    ) -> ToolResult[tuple[SourceFile, ...]]:
+        cursor: str | None = None,
+        sort: str = "path",
+        sort_direction: str = "asc",
+        include_total_count: bool = True,
+    ) -> ToolResult[FileListingPage]:
         return self._container.list_files.execute(
-            ListFilesRequest(include_globs, exclude_globs, max_results)
+            ListFilesRequest(
+                include_globs,
+                exclude_globs,
+                max_results,
+                cursor,
+                sort,
+                sort_direction,
+                include_total_count,
+            )
         )
 
     def search_files(
@@ -234,6 +269,10 @@ class CodeHarness:
         languages: tuple[str, ...] = (),
         max_files: int = 200,
         max_symbols_per_file: int = 10,
+        mode: str = "detailed",
+        path: str | None = None,
+        max_depth: int | None = None,
+        include_symbols: bool | None = None,
     ) -> ToolResult[RepositoryMap]:
         return self._container.get_repository_map.execute(
             GetRepositoryMapRequest(
@@ -242,6 +281,10 @@ class CodeHarness:
                 languages,
                 max_files,
                 max_symbols_per_file,
+                mode=mode,
+                path=path,
+                max_depth=max_depth,
+                include_symbols=include_symbols,
             )
         )
 
@@ -251,8 +294,11 @@ class CodeHarness:
         *,
         max_chars: int = 200_000,
         max_lines: int = 5_000,
-    ) -> ToolResult[CodeSnippet]:
-        return self._container.read_file.execute(ReadFileRequest(path, max_chars, max_lines))
+        include_line_numbers: bool = False,
+    ) -> ToolResult[SourceRead]:
+        return self._container.read_file.execute(
+            ReadFileRequest(path, max_chars, max_lines, include_line_numbers)
+        )
 
     def read_range(
         self,
@@ -261,7 +307,8 @@ class CodeHarness:
         end_line: int,
         *,
         max_chars: int = 200_000,
-    ) -> ToolResult[CodeSnippet]:
+        include_line_numbers: bool = False,
+    ) -> ToolResult[SourceRead]:
         return self._container.read_range.execute(
-            ReadRangeRequest(path, start_line, end_line, max_chars)
+            ReadRangeRequest(path, start_line, end_line, max_chars, include_line_numbers)
         )

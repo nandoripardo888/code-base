@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -17,12 +20,21 @@ def create_server(project: Path | str | None = None) -> FastMCP:
     root = resolve_active_project(Path(project) if project is not None else None)
     settings = Settings.for_root(root)
     container = build_container(settings)
+
+    @asynccontextmanager
+    async def lifespan(_server: FastMCP) -> AsyncIterator[dict[str, Any]]:
+        try:
+            yield {"container": container}
+        finally:
+            container.shutdown()
+
     server = FastMCP(
         "code-harness",
         instructions=(
             "Local-first, traceable code retrieval for the active project. "
             "Tools return structured JSON envelopes with data, timings, and warnings."
         ),
+        lifespan=lifespan,
     )
     register_handlers(server, container, settings)
     return server

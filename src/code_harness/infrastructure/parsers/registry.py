@@ -40,6 +40,9 @@ class StructuralAnalyzerRegistry:
         timeouts = 0
         spawn_ms = 0
         request_ms = 0
+        parser_cache_hits = 0
+        worker_count = 0
+        max_concurrent_analyses = 0
         for analyzer in self._analyzers:
             snapshot = getattr(analyzer, "metrics_snapshot", None)
             if not callable(snapshot):
@@ -51,6 +54,12 @@ class StructuralAnalyzerRegistry:
             timeouts += int(getattr(metrics, "timeouts", 0) or 0)
             spawn_ms += int(getattr(metrics, "spawn_ms", 0) or 0)
             request_ms += int(getattr(metrics, "request_ms", 0) or 0)
+            parser_cache_hits += int(getattr(metrics, "parser_cache_hits", 0) or 0)
+            worker_count += int(getattr(metrics, "worker_count", 0) or 0)
+            max_concurrent_analyses = max(
+                max_concurrent_analyses,
+                int(getattr(metrics, "max_concurrent_analyses", 0) or 0),
+            )
         return ParserRuntimeMetrics(
             processes_created=processes_created,
             distinct_pids=distinct_pids,
@@ -58,4 +67,7 @@ class StructuralAnalyzerRegistry:
             timeouts=timeouts,
             spawn_ms=spawn_ms,
             request_ms=request_ms,
+            parser_cache_hits=parser_cache_hits,
+            worker_count=worker_count,
+            max_concurrent_analyses=max_concurrent_analyses,
         )

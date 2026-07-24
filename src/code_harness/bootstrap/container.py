@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+import atexit
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any
 
 from code_harness.application.indexing import IndexCoordinator
 from code_harness.application.tools import (
@@ -31,6 +34,7 @@ from code_harness.domain.models.project import Project
 from code_harness.domain.models.tool_result import ToolResult
 from code_harness.domain.protocols.embedding_provider import EmbeddingProvider
 from code_harness.domain.protocols.repository_store import RepositoryStore
+from code_harness.domain.protocols.structural_analyzer import StructuralAnalyzer
 from code_harness.infrastructure.diagnostics import LocalDiagnosticProvider
 from code_harness.infrastructure.diagnostics.capability_reporter import LocalCapabilityReporter
 from code_harness.infrastructure.embeddings import (
@@ -76,6 +80,9 @@ class ApplicationContainer:
     get_repository_map: GetRepositoryMapTool
     prepare_semantic_model: PrepareSemanticModelTool
     execution: ExecutionContainer | None = None
+    _analyzer: StructuralAnalyzer | None = field(default=None, repr=False, compare=False)
+    _embedding_provider: EmbeddingProvider | None = field(default=None, repr=False, compare=False)
+    _shutdown_done: list[bool] = field(default_factory=lambda: [False], repr=False, compare=False)
 
     def with_index_state[T](self, result: ToolResult[T]) -> ToolResult[T]:
         if result.index_state is not None:
@@ -84,6 +91,24 @@ class ApplicationContainer:
             result,
             index_state=resolve_index_state(self.store, self.project),
         )
+
+    def shutdown(self) -> None:
+        if self._shutdown_done[0]:
+            return
+        self._shutdown_done[0] = True
+        if self._analyzer is not None:
+            self._analyzer.shutdown()
+        provider = self._embedding_provider
+        if provider is not None:
+            shutdown = getattr(provider, "shutdown", None)
+            if callable(shutdown):
+                shutdown()
+
+    def __enter__(self) -> ApplicationContainer:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.shutdown()
 
 
 def build_container(settings: Settings) -> ApplicationContainer:
@@ -120,7 +145,9 @@ def build_container(settings: Settings) -> ApplicationContainer:
         enabled=settings.parsers_enabled,
         timeout_seconds=settings.parser_timeout_seconds,
         failure_threshold=settings.parser_failure_threshold,
+        failure_window_seconds=settings.parser_failure_window_seconds,
         circuit_reset_seconds=settings.parser_circuit_reset_seconds,
+        worker_count=settings.parser_workers,
     )
     analyzer = StructuralAnalyzerRegistry((parser_supervisor,))
     searcher = IndexedTextSearcher(project, store, index_reader, ripgrep_searcher)
@@ -134,6 +161,7 @@ def build_container(settings: Settings) -> ApplicationContainer:
         vector_index=store,
         chunk_target_chars=settings.chunk_target_chars,
         chunk_max_chars=settings.chunk_max_chars,
+        parser_workers=settings.parser_workers,
     )
     capability_reporter = LocalCapabilityReporter(
         semantic_enabled=settings.semantic_enabled,
@@ -172,7 +200,7 @@ def build_container(settings: Settings) -> ApplicationContainer:
         project=project,
         store=store,
     )
-    return ApplicationContainer(
+    container = ApplicationContainer(
         project=project,
         store=store,
         initialize_index=InitializeIndexTool(project, store),
@@ -208,7 +236,11 @@ def build_container(settings: Settings) -> ApplicationContainer:
             settings.embedding_cache_path,
         ),
         execution=_build_execution_container(settings, project, guard),
+        _analyzer=analyzer,
+        _embedding_provider=embedding_provider,
     )
+    atexit.register(container.shutdown)
+    return container
 
 
 def _build_execution_container(
@@ -221,3 +253,9 @@ def _build_execution_container(
     from code_harness.bootstrap.execution import build_execution_container
 
     return build_execution_container(settings, project, guard)
+
+
+@asynccontextmanager
+async def container_lifespan(_app: Any) -> AsyncIterator[dict[str, Any]]:
+    """FastMCP lifespan hook; concrete servers bind their own container shutdown."""
+    yield {}

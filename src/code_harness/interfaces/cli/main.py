@@ -63,6 +63,11 @@ class CliState:
             self._container = build_container(Settings.for_root(root))
         return self._container
 
+    def shutdown(self) -> None:
+        if self._container is not None:
+            self._container.shutdown()
+            self._container = None
+
 
 def _exit_code(error: CodeHarnessError) -> int:
     if error.code is ErrorCode.PROJECT_NOT_FOUND or error.code is ErrorCode.FILE_NOT_FOUND:
@@ -131,7 +136,9 @@ def root_options(
     if version:
         typer.echo(__version__)
         raise typer.Exit()
-    ctx.obj = CliState(project, output)
+    state = CliState(project, output)
+    ctx.obj = state
+    ctx.call_on_close(state.shutdown)
 
 
 @app.command("init")
@@ -144,12 +151,15 @@ def initialize(
     def operation() -> dict[str, object]:
         registered = register_active_project(root)
         container = build_container(Settings.for_root(registered))
-        initialized = container.initialize_index.execute()
-        return {
-            "root": str(registered),
-            "active": True,
-            "index_state": initialized.index_state,
-        }
+        try:
+            initialized = container.initialize_index.execute()
+            return {
+                "root": str(registered),
+                "active": True,
+                "index_state": initialized.index_state,
+            }
+        finally:
+            container.shutdown()
 
     _execute(state, operation)
 

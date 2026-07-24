@@ -1,7 +1,11 @@
+from __future__ import annotations
+
 from collections.abc import Callable
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from math import isfinite
+from threading import get_ident
 from time import perf_counter_ns
 
 from code_harness.application.indexing.change_detector import detect_changes
@@ -23,6 +27,7 @@ from code_harness.domain.models.index_report import (
     IndexedSource,
     IndexReport,
     IndexTimings,
+    StoredFile,
 )
 from code_harness.domain.models.project import Project
 from code_harness.domain.models.semantic import (
@@ -31,6 +36,7 @@ from code_harness.domain.models.semantic import (
     EmbeddingBatch,
     EmbeddingRecord,
 )
+from code_harness.domain.models.source_file import SourceFile
 from code_harness.domain.models.structural import AnalyzeRequest, AnalyzeResult
 from code_harness.domain.protocols.embedding_provider import EmbeddingProvider
 from code_harness.domain.protocols.file_catalog import FileCatalog
@@ -90,6 +96,41 @@ class _ParserMetricsDelta:
     timeouts: int = 0
     spawn_ms: int = 0
     request_ms: int = 0
+    parser_cache_hits: int = 0
+    worker_count: int = 0
+    max_concurrent_analyses: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _IndexJob:
+    kind: str
+    source_file: SourceFile
+    previous: StoredFile | None = None
+
+    @classmethod
+    def new(cls, source_file: SourceFile) -> _IndexJob:
+        return cls(kind="new", source_file=source_file)
+
+    @classmethod
+    def candidate(cls, source_file: SourceFile, previous: StoredFile) -> _IndexJob:
+        return cls(kind="candidate", source_file=source_file, previous=previous)
+
+
+@dataclass(frozen=True, slots=True)
+class _BuildOutcome:
+    path: str
+    status: str
+    update: FileIndexUpdate | None = None
+    warnings: tuple[str, ...] = ()
+    changed: bool = False
+    newly_discovered: bool = False
+    remove_stale: bool = False
+    read_hash_ms: float = 0.0
+    analysis_ms: float = 0.0
+    chunk_build_ms: float = 0.0
+    file_bytes: int = 0
+    files_read: int = 0
+    analyzed: bool = False
 
 
 def _parser_metrics_snapshot(analyzer: StructuralAnalyzer | None) -> _ParserMetricsDelta:
@@ -106,6 +147,9 @@ def _parser_metrics_snapshot(analyzer: StructuralAnalyzer | None) -> _ParserMetr
         timeouts=int(getattr(metrics, "timeouts", 0) or 0),
         spawn_ms=int(getattr(metrics, "spawn_ms", 0) or 0),
         request_ms=int(getattr(metrics, "request_ms", 0) or 0),
+        parser_cache_hits=int(getattr(metrics, "parser_cache_hits", 0) or 0),
+        worker_count=int(getattr(metrics, "worker_count", 0) or 0),
+        max_concurrent_analyses=int(getattr(metrics, "max_concurrent_analyses", 0) or 0),
     )
 
 
@@ -120,6 +164,12 @@ def _parser_metrics_delta(
         timeouts=max(0, after.timeouts - before.timeouts),
         spawn_ms=max(0, after.spawn_ms - before.spawn_ms),
         request_ms=max(0, after.request_ms - before.request_ms),
+        parser_cache_hits=max(0, after.parser_cache_hits - before.parser_cache_hits),
+        worker_count=after.worker_count or before.worker_count,
+        max_concurrent_analyses=max(
+            before.max_concurrent_analyses,
+            after.max_concurrent_analyses,
+        ),
     )
 
 
@@ -128,25 +178,24 @@ def _build_timings(
     *,
     total_ms: int,
     parser_delta: _ParserMetricsDelta,
+    parser_workers: int,
 ) -> IndexTimings:
     samples = sorted(bucket.analysis_samples_ms)
     analyzed = len(samples)
     avg = (sum(samples) / analyzed) if analyzed else 0.0
     files_per_second = (analyzed / (total_ms / 1000.0)) if total_ms > 0 and analyzed else 0.0
-    avg_file_bytes = (
-        bucket.file_bytes_total / bucket.files_read if bucket.files_read else 0.0
-    )
+    avg_file_bytes = bucket.file_bytes_total / bucket.files_read if bucket.files_read else 0.0
     # Spawn cost is reported separately; subtract it from wall analysis so phase sums
     # do not double-count one-shot worker startup.
-    analysis_ms = max(0, int(round(bucket.analysis_ms)) - parser_delta.spawn_ms)
+    analysis_ms = max(0, round(bucket.analysis_ms) - parser_delta.spawn_ms)
     return IndexTimings(
-        discovery_ms=int(round(bucket.discovery_ms)),
-        read_hash_ms=int(round(bucket.read_hash_ms)),
+        discovery_ms=round(bucket.discovery_ms),
+        read_hash_ms=round(bucket.read_hash_ms),
         worker_init_ms=parser_delta.spawn_ms,
         analysis_ms=analysis_ms,
-        chunk_build_ms=int(round(bucket.chunk_build_ms)),
-        commit_ms=int(round(bucket.commit_ms)),
-        embedding_ms=int(round(bucket.embedding_ms)),
+        chunk_build_ms=round(bucket.chunk_build_ms),
+        commit_ms=round(bucket.commit_ms),
+        embedding_ms=round(bucket.embedding_ms),
         total_ms=total_ms,
         analyzed_files=analyzed,
         files_per_second=round(files_per_second, 3),
@@ -154,6 +203,9 @@ def _build_timings(
         distinct_pids=parser_delta.distinct_pids,
         worker_restarts=parser_delta.restarts,
         worker_timeouts=parser_delta.timeouts,
+        parser_cache_hits=parser_delta.parser_cache_hits,
+        parser_workers=parser_workers,
+        max_concurrent_analyses=parser_delta.max_concurrent_analyses,
         avg_file_bytes=round(avg_file_bytes, 1),
         analysis_ms_avg=round(avg, 3),
         analysis_ms_p50=round(_percentile(samples, 50), 3),
@@ -175,8 +227,11 @@ class IndexCoordinator:
         vector_index: VectorIndex | None = None,
         chunk_target_chars: int = 4_000,
         chunk_max_chars: int = 8_000,
+        parser_workers: int = 1,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
+        if not 1 <= parser_workers <= 8:
+            raise ValueError("parser_workers must be between 1 and 8")
         self._project = project
         self._catalog = catalog
         self._reader = reader
@@ -186,7 +241,9 @@ class IndexCoordinator:
         self._vector_index = vector_index
         self._chunk_target_chars = chunk_target_chars
         self._chunk_max_chars = chunk_max_chars
+        self._parser_workers = parser_workers
         self._clock = clock
+        self._owner_thread_id: int | None = None
 
     def index(
         self,
@@ -194,6 +251,7 @@ class IndexCoordinator:
         *,
         progress: IndexProgressCallback | None = None,
     ) -> IndexReport:
+        self._owner_thread_id = get_ident()
         self._store.initialize(self._project)
         started = self._clock()
         total_started = perf_counter_ns()
@@ -219,80 +277,50 @@ class IndexCoordinator:
                 chunking_version=CHUNKING_VERSION,
             )
             timings.discovery_ms = _elapsed_ms_precise(discovery_started)
+
+            jobs = [_IndexJob.new(source_file) for source_file in plan.new]
+            jobs.extend(
+                _IndexJob.candidate(source_file, previous)
+                for source_file, previous in plan.candidates
+            )
+            analyze_total = len(jobs)
+            outcomes = self._run_jobs(jobs, mode, progress=progress, analyze_total=analyze_total)
+
             updates: list[FileIndexUpdate] = []
             removed_paths = [item.path for item in plan.removed]
             warnings: list[str] = []
             new_count = 0
             changed_count = 0
             unchanged_count = len(plan.unchanged)
-            analyze_total = len(plan.new) + len(plan.candidates)
-            analyze_current = 0
 
-            for source_file in plan.new:
-                analyze_current += 1
-                _emit(
-                    progress,
-                    IndexProgressEvent(
-                        IndexProgressPhase.ANALYZING,
-                        current=analyze_current,
-                        total=analyze_total,
-                        path=source_file.path,
-                    ),
-                )
-                try:
-                    source = self._load_source(source_file.path, timings)
-                except CodeHarnessError as error:
-                    warnings.append(
-                        f"Skipped unreadable file {source_file.path}: {error.code.value}."
-                    )
-                    continue
-                new_count += 1
-                if mode is not IndexMode.VERIFY:
-                    updates.append(self._build_update(source, warnings, timings))
-
-            for source_file, previous in plan.candidates:
-                analyze_current += 1
-                _emit(
-                    progress,
-                    IndexProgressEvent(
-                        IndexProgressPhase.ANALYZING,
-                        current=analyze_current,
-                        total=analyze_total,
-                        path=source_file.path,
-                    ),
-                )
-                try:
-                    source = self._load_source(source_file.path, timings)
-                except CodeHarnessError as error:
-                    warnings.append(
-                        f"Removed stale entry for unreadable file {source_file.path}: "
-                        f"{error.code.value}."
-                    )
-                    if mode is not IndexMode.VERIFY:
-                        removed_paths.append(source_file.path)
-                    continue
-                strategy_changed = (
-                    source.language in {"java", "python", "plsql"}
-                    and self._analyzer is not None
-                    and previous.parser_version != self._analyzer.version
-                ) or previous.chunking_version != CHUNKING_VERSION
-                if source.content_hash == previous.content_hash and not strategy_changed:
+            for outcome in outcomes:
+                timings.read_hash_ms += outcome.read_hash_ms
+                timings.analysis_ms += outcome.analysis_ms
+                timings.chunk_build_ms += outcome.chunk_build_ms
+                timings.file_bytes_total += outcome.file_bytes
+                timings.files_read += outcome.files_read
+                if outcome.analyzed:
+                    timings.analysis_samples_ms.append(outcome.analysis_ms)
+                warnings.extend(outcome.warnings)
+                if outcome.newly_discovered:
+                    new_count += 1
+                if outcome.changed:
+                    changed_count += 1
+                if outcome.status == "unchanged":
                     unchanged_count += 1
-                    if mode is not IndexMode.VERIFY and (
-                        source.size_bytes != previous.size_bytes
-                        or source.modified_at_ns != previous.modified_at_ns
-                    ):
-                        updates.append(FileIndexUpdate(source, update_content=False))
-                else:
-                    if source.content_hash != previous.content_hash:
-                        changed_count += 1
-                    if mode is not IndexMode.VERIFY:
-                        updates.append(self._build_update(source, warnings, timings))
+                if outcome.remove_stale and mode is not IndexMode.VERIFY:
+                    removed_paths.append(outcome.path)
+                if outcome.update is not None and mode is not IndexMode.VERIFY:
+                    updates.append(outcome.update)
 
             if mode is IndexMode.VERIFY and (
                 new_count or changed_count or plan.removed or warnings
             ):
                 warnings.append("Index verification found differences from the working tree.")
+
+            updates.sort(key=lambda item: item.source.path)
+            removed_paths = sorted(set(removed_paths))
+            warnings = sorted(warnings)
 
             if self._embedding_provider is not None and self._vector_index is not None:
                 _emit(
@@ -305,11 +333,12 @@ class IndexCoordinator:
             embedding_started = perf_counter_ns()
             embedding_batch, embedding_failures = self._prepare_embeddings(
                 updates,
-                tuple(dict.fromkeys(removed_paths)),
+                tuple(removed_paths),
                 mode,
                 warnings,
             )
             timings.embedding_ms = _elapsed_ms_precise(embedding_started)
+            warnings = sorted(warnings)
             finished = self._clock()
             state = IndexState.READY_WITH_WARNINGS if warnings else IndexState.READY
             report = IndexReport(
@@ -352,8 +381,10 @@ class IndexCoordinator:
                 ),
             )
             commit_started = perf_counter_ns()
-            self._store.commit_files(report, tuple(updates), tuple(dict.fromkeys(removed_paths)))
+            self._assert_owner_thread()
+            self._store.commit_files(report, tuple(updates), tuple(removed_paths))
             try:
+                self._assert_owner_thread()
                 self._store.commit_embeddings(embedding_batch)
             except Exception as error:
                 code = error.code.value if isinstance(error, CodeHarnessError) else "storage_error"
@@ -361,25 +392,25 @@ class IndexCoordinator:
                 report = replace(
                     report,
                     state=IndexState.READY_WITH_WARNINGS,
-                    warnings=(*report.warnings, semantic_warning),
+                    warnings=tuple(sorted((*report.warnings, semantic_warning))),
                     warning_files=len(report.warnings) + 1,
                     generated_embeddings=0,
                     reused_embeddings=0,
                     embedded_chunks=0,
                     embedding_failures=report.embedding_failures + 1,
                 )
+            self._assert_owner_thread()
             self._store.complete_run(run_id, report)
             timings.commit_ms = _elapsed_ms_precise(commit_started)
-            parser_delta = _parser_metrics_delta(
-                parser_before,
-                _parser_metrics_snapshot(self._analyzer),
-            )
+            parser_after = _parser_metrics_snapshot(self._analyzer)
+            parser_delta = _parser_metrics_delta(parser_before, parser_after)
             report = replace(
                 report,
                 timings=_build_timings(
                     timings,
                     total_ms=_elapsed_ms(total_started),
                     parser_delta=parser_delta,
+                    parser_workers=self._parser_workers,
                 ),
             )
             _emit(
@@ -393,27 +424,178 @@ class IndexCoordinator:
             )
             return report
         except Exception as error:
+            self._assert_owner_thread()
             self._store.fail_run(run_id, self._clock().isoformat(), str(error))
             raise
 
-    def _load_source(self, path: str, timings: _TimingBucket) -> IndexedSource:
+    def _run_jobs(
+        self,
+        jobs: list[_IndexJob],
+        mode: IndexMode,
+        *,
+        progress: IndexProgressCallback | None,
+        analyze_total: int,
+    ) -> list[_BuildOutcome]:
+        if not jobs:
+            return []
+
+        max_in_flight = max(1, self._parser_workers * 2)
+        outcomes: list[_BuildOutcome] = []
+        pending: dict[Future[_BuildOutcome], _IndexJob] = {}
+        job_iter = iter(jobs)
+        analyze_current = 0
+
+        with ThreadPoolExecutor(max_workers=self._parser_workers) as executor:
+            try:
+                while True:
+                    while len(pending) < max_in_flight:
+                        try:
+                            job = next(job_iter)
+                        except StopIteration:
+                            break
+                        pending[executor.submit(self._process_job, job, mode)] = job
+                    if not pending:
+                        break
+                    done, _ = wait(tuple(pending), return_when=FIRST_COMPLETED)
+                    for future in done:
+                        del pending[future]
+                        outcome = future.result()
+                        outcomes.append(outcome)
+                        analyze_current += 1
+                        _emit(
+                            progress,
+                            IndexProgressEvent(
+                                IndexProgressPhase.ANALYZING,
+                                current=analyze_current,
+                                total=analyze_total,
+                                path=outcome.path,
+                            ),
+                        )
+            except Exception:
+                for future in pending:
+                    future.cancel()
+                if pending:
+                    wait(tuple(pending))
+                raise
+
+        outcomes.sort(key=lambda item: item.path)
+        return outcomes
+
+    def _process_job(self, job: _IndexJob, mode: IndexMode) -> _BuildOutcome:
+        path = job.source_file.path
+        if job.kind == "new":
+            read_started = perf_counter_ns()
+            try:
+                source = self._reader.load(path)
+            except CodeHarnessError as error:
+                return _BuildOutcome(
+                    path=path,
+                    status="unreadable_new",
+                    warnings=(f"Skipped unreadable file {path}: {error.code.value}.",),
+                    read_hash_ms=_elapsed_ms_precise(read_started),
+                )
+            read_hash_ms = _elapsed_ms_precise(read_started)
+            if mode is IndexMode.VERIFY:
+                return _BuildOutcome(
+                    path=path,
+                    status="new",
+                    newly_discovered=True,
+                    read_hash_ms=read_hash_ms,
+                    file_bytes=source.size_bytes,
+                    files_read=1,
+                )
+            update, warnings, analysis_ms, chunk_build_ms = self._build_update(source)
+            return _BuildOutcome(
+                path=path,
+                status="new",
+                update=update,
+                warnings=warnings,
+                newly_discovered=True,
+                read_hash_ms=read_hash_ms,
+                analysis_ms=analysis_ms,
+                chunk_build_ms=chunk_build_ms,
+                file_bytes=source.size_bytes,
+                files_read=1,
+                analyzed=True,
+            )
+
+        previous = job.previous
+        assert previous is not None
         read_started = perf_counter_ns()
         try:
             source = self._reader.load(path)
-        except CodeHarnessError:
-            timings.read_hash_ms += _elapsed_ms_precise(read_started)
-            raise
-        timings.read_hash_ms += _elapsed_ms_precise(read_started)
-        timings.file_bytes_total += source.size_bytes
-        timings.files_read += 1
-        return source
+        except CodeHarnessError as error:
+            return _BuildOutcome(
+                path=path,
+                status="unreadable_stale",
+                warnings=(f"Removed stale entry for unreadable file {path}: {error.code.value}.",),
+                remove_stale=True,
+                read_hash_ms=_elapsed_ms_precise(read_started),
+            )
+        read_hash_ms = _elapsed_ms_precise(read_started)
+
+        strategy_changed = (
+            source.language in {"java", "python", "plsql"}
+            and self._analyzer is not None
+            and previous.parser_version != self._analyzer.version
+        ) or previous.chunking_version != CHUNKING_VERSION
+
+        if source.content_hash == previous.content_hash and not strategy_changed:
+            if mode is not IndexMode.VERIFY and (
+                source.size_bytes != previous.size_bytes
+                or source.modified_at_ns != previous.modified_at_ns
+            ):
+                return _BuildOutcome(
+                    path=path,
+                    status="metadata_only",
+                    update=FileIndexUpdate(source, update_content=False),
+                    read_hash_ms=read_hash_ms,
+                    file_bytes=source.size_bytes,
+                    files_read=1,
+                )
+            return _BuildOutcome(
+                path=path,
+                status="unchanged",
+                read_hash_ms=read_hash_ms,
+                file_bytes=source.size_bytes,
+                files_read=1,
+            )
+
+        changed = source.content_hash != previous.content_hash
+        if mode is IndexMode.VERIFY:
+            return _BuildOutcome(
+                path=path,
+                status="changed" if changed else "unchanged",
+                changed=changed,
+                read_hash_ms=read_hash_ms,
+                file_bytes=source.size_bytes,
+                files_read=1,
+            )
+
+        update, warnings, analysis_ms, chunk_build_ms = self._build_update(source)
+        if update.analysis is not None and update.analysis.state.value == "failed":
+            status = "failed_with_fallback"
+        else:
+            status = "changed"
+        return _BuildOutcome(
+            path=path,
+            status=status,
+            update=update,
+            warnings=warnings,
+            changed=changed,
+            read_hash_ms=read_hash_ms,
+            analysis_ms=analysis_ms,
+            chunk_build_ms=chunk_build_ms,
+            file_bytes=source.size_bytes,
+            files_read=1,
+            analyzed=True,
+        )
 
     def _build_update(
         self,
         indexed_source: IndexedSource,
-        warnings: list[str],
-        timings: _TimingBucket,
-    ) -> FileIndexUpdate:
+    ) -> tuple[FileIndexUpdate, tuple[str, ...], float, float]:
+        warnings: list[str] = []
         analyze_started = perf_counter_ns()
         if self._analyzer is None or not self._analyzer.supports(indexed_source.language or ""):
             analysis = textual_fallback(indexed_source)
@@ -439,8 +621,6 @@ class IndexCoordinator:
                 analysis = textual_fallback(indexed_source, message)
                 analysis = replace(analysis, parser_version=self._analyzer.version)
         analysis_ms = _elapsed_ms_precise(analyze_started)
-        timings.analysis_ms += analysis_ms
-        timings.analysis_samples_ms.append(analysis_ms)
 
         chunk_started = perf_counter_ns()
         analysis = build_chunks(
@@ -455,11 +635,16 @@ class IndexCoordinator:
             message = f"invalid_structure: {error}"
             warnings.append(f"Structural analysis failed for {indexed_source.path}: {message}")
             analysis = textual_fallback(indexed_source, message)
-        timings.chunk_build_ms += _elapsed_ms_precise(chunk_started)
-        return FileIndexUpdate(
-            indexed_source,
-            analysis=analysis,
-            chunking_version=CHUNKING_VERSION,
+        chunk_build_ms = _elapsed_ms_precise(chunk_started)
+        return (
+            FileIndexUpdate(
+                indexed_source,
+                analysis=analysis,
+                chunking_version=CHUNKING_VERSION,
+            ),
+            tuple(warnings),
+            analysis_ms,
+            chunk_build_ms,
         )
 
     def _prepare_embeddings(
@@ -555,6 +740,10 @@ class IndexCoordinator:
             code = error.code.value if isinstance(error, CodeHarnessError) else "invalid_embedding"
             warnings.append(f"Semantic indexing unavailable ({code}): {error}")
             return EmbeddingBatch(), 1
+
+    def _assert_owner_thread(self) -> None:
+        if self._owner_thread_id is not None and get_ident() != self._owner_thread_id:
+            raise RuntimeError("SQLite writes must run on the IndexCoordinator owner thread.")
 
 
 def _validate_analysis(indexed_source: IndexedSource, analysis: AnalyzeResult) -> None:

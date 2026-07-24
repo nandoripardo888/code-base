@@ -101,6 +101,9 @@ def _print_index_summary(payload: dict[str, Any]) -> None:
         f"distinct_pids={timings.get('distinct_pids')} "
         f"restarts={timings.get('worker_restarts')} "
         f"timeouts={timings.get('worker_timeouts')} "
+        f"parser_cache_hits={timings.get('parser_cache_hits')} "
+        f"parser_workers={timings.get('parser_workers', payload.get('parser_workers'))} "
+        f"max_concurrent={timings.get('max_concurrent_analyses')} "
         f"avg_file_bytes={timings.get('avg_file_bytes')} "
         f"analysis_p50={timings.get('analysis_ms_p50')} "
         f"analysis_p95={timings.get('analysis_ms_p95')} "
@@ -109,41 +112,152 @@ def _print_index_summary(payload: dict[str, Any]) -> None:
     )
 
 
-def _run_index(arguments: Namespace) -> dict[str, Any]:
+def _percentile(sorted_values: list[float], percentile: float) -> float:
+    if not sorted_values:
+        return 0.0
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    rank = (len(sorted_values) - 1) * (percentile / 100.0)
+    low = int(rank)
+    high = min(low + 1, len(sorted_values) - 1)
+    weight = rank - low
+    return sorted_values[low] * (1.0 - weight) + sorted_values[high] * weight
+
+
+def _summarize_metric(values: list[float]) -> dict[str, float]:
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    if len(ordered) % 2:
+        median = ordered[mid]
+    else:
+        median = (ordered[mid - 1] + ordered[mid]) / 2.0
+    return {
+        "min": round(ordered[0], 3),
+        "median": round(median, 3),
+        "max": round(ordered[-1], 3),
+        "p95": round(_percentile(ordered, 95), 3),
+        "n": float(len(ordered)),
+    }
+
+
+def _run_index_once(arguments: Namespace) -> dict[str, Any]:
     repository = arguments.repository.resolve()
     if arguments.wipe_index:
         _wipe_index(repository)
 
+    os.environ["CODE_HARNESS_PARSER_WORKERS"] = str(arguments.parser_workers)
     harness = CodeHarness.open(repository)
-    mode = IndexMode(arguments.mode)
-    wall_started = perf_counter()
-    result = harness.index_project(mode=mode.value)
-    wall_ms = (perf_counter() - wall_started) * 1000
-    report = to_primitive(result.data)
-    assert isinstance(report, dict)
+    try:
+        mode = IndexMode(arguments.mode)
+        wall_started = perf_counter()
+        result = harness.index_project(mode=mode.value)
+        wall_ms = (perf_counter() - wall_started) * 1000
+        report = to_primitive(result.data)
+        assert isinstance(report, dict)
 
-    payload = {
-        "kind": "index",
+        return {
+            "kind": "index",
+            "recorded_at": datetime.now(UTC).isoformat(),
+            "label": arguments.label,
+            "transport": arguments.transport,
+            "parser_workers": arguments.parser_workers,
+            "repository": str(repository),
+            "mode": mode.value,
+            "wall_ms": round(wall_ms, 3),
+            "tool_elapsed_ms": result.elapsed_ms,
+            "peak_rss_bytes": _peak_rss_bytes(),
+            "report": report,
+        }
+    finally:
+        harness.close()
+
+
+def _run_index(arguments: Namespace) -> dict[str, Any]:
+    repeats = max(1, int(getattr(arguments, "repeats", 1) or 1))
+    discard_first = bool(getattr(arguments, "discard_first", False))
+    total_runs = repeats + (1 if discard_first and repeats >= 1 else 0)
+
+    runs: list[dict[str, Any]] = []
+    for index in range(total_runs):
+        role = "warmup" if discard_first and index == 0 else "measured"
+        print(f"--- run {index + 1}/{total_runs} ({role}) workers={arguments.parser_workers} ---")
+        payload = _run_index_once(arguments)
+        payload["run_index"] = index
+        payload["run_role"] = role
+        _print_index_summary(payload)
+        runs.append(payload)
+
+    measured = [item for item in runs if item["run_role"] == "measured"]
+    if not measured:
+        measured = runs
+
+    total_ms_values = [
+        float((item["report"].get("timings") or {}).get("total_ms") or item["wall_ms"])
+        for item in measured
+    ]
+    wall_ms_values = [float(item["wall_ms"]) for item in measured]
+    files_per_second = [
+        float((item["report"].get("timings") or {}).get("files_per_second") or 0.0)
+        for item in measured
+    ]
+    processes = [
+        int((item["report"].get("timings") or {}).get("processes_created") or 0)
+        for item in measured
+    ]
+    restarts = [
+        int((item["report"].get("timings") or {}).get("worker_restarts") or 0) for item in measured
+    ]
+    timeouts = [
+        int((item["report"].get("timings") or {}).get("worker_timeouts") or 0) for item in measured
+    ]
+
+    summary = {
+        "kind": "index_series",
         "recorded_at": datetime.now(UTC).isoformat(),
         "label": arguments.label,
         "transport": arguments.transport,
         "parser_workers": arguments.parser_workers,
-        "repository": str(repository),
-        "mode": mode.value,
-        "wall_ms": round(wall_ms, 3),
-        "tool_elapsed_ms": result.elapsed_ms,
-        "peak_rss_bytes": _peak_rss_bytes(),
-        "report": report,
+        "repository": str(arguments.repository.resolve()),
+        "mode": arguments.mode,
+        "repeats": repeats,
+        "discard_first": discard_first,
+        "measured_runs": len(measured),
+        "aggregate": {
+            "total_ms": _summarize_metric(total_ms_values),
+            "wall_ms": _summarize_metric(wall_ms_values),
+            "files_per_second": _summarize_metric(files_per_second),
+            "processes_created": {
+                "min": min(processes) if processes else 0,
+                "max": max(processes) if processes else 0,
+            },
+            "worker_restarts": {
+                "min": min(restarts) if restarts else 0,
+                "max": max(restarts) if restarts else 0,
+            },
+            "worker_timeouts": {
+                "min": min(timeouts) if timeouts else 0,
+                "max": max(timeouts) if timeouts else 0,
+            },
+        },
+        "runs": runs,
     }
-    _print_index_summary(payload)
+
+    agg = summary["aggregate"]["total_ms"]
+    print(
+        "aggregate_total_ms "
+        f"min={agg['min']} median={agg['median']} max={agg['max']} p95={agg['p95']} "
+        f"n={int(agg['n'])}"
+    )
+
     if arguments.output is not None:
         arguments.output.parent.mkdir(parents=True, exist_ok=True)
+        payload_to_write: dict[str, Any] = summary if total_runs > 1 else measured[0]
         arguments.output.write_text(
-            json.dumps(payload, ensure_ascii=True, indent=2) + "\n",
+            json.dumps(payload_to_write, ensure_ascii=True, indent=2) + "\n",
             encoding="utf-8",
         )
         print(f"wrote {arguments.output}")
-    return payload
+    return summary if total_runs > 1 else measured[0]
 
 
 def _run_lexical(arguments: Namespace) -> None:
@@ -191,12 +305,23 @@ def main() -> None:
         "--parser-workers",
         type=int,
         default=1,
-        help="Documented worker count for this run (actual pool lands in later phases).",
+        help="Worker pool size (sets CODE_HARNESS_PARSER_WORKERS for this run).",
     )
     index.add_argument(
         "--wipe-index",
         action="store_true",
         help="Delete .code-harness before indexing (cold baseline).",
+    )
+    index.add_argument(
+        "--repeats",
+        type=int,
+        default=1,
+        help="Number of measured runs to record (default: 1).",
+    )
+    index.add_argument(
+        "--discard-first",
+        action="store_true",
+        help="Run one extra warmup iteration and exclude it from aggregates.",
     )
     index.add_argument(
         "--output",

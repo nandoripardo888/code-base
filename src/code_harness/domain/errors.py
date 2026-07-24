@@ -160,11 +160,17 @@ class ParserTimeoutError(CodeHarnessError):
 
 
 class ParserCrashError(CodeHarnessError):
-    def __init__(self, path: str, message: str = "Structural parser worker failed.") -> None:
+    def __init__(
+        self,
+        path: str,
+        message: str = "Structural parser worker failed.",
+        *,
+        opens_circuit: bool = True,
+    ) -> None:
         super().__init__(
             ErrorCode.PARSER_CRASH,
             message,
-            details={"path": path},
+            details={"path": path, "opens_circuit": opens_circuit},
         )
 
 

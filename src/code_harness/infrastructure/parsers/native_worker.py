@@ -1,18 +1,39 @@
 """Isolated structural parser worker.
 
 This module is the only process boundary allowed to load parser implementations.
-It intentionally communicates through one JSON request and one JSON response.
+
+Modes:
+
+* one-shot (default): one JSON request on stdin until EOF, one JSON response
+* persistent (``--loop``): NDJSON request/response lines; Language/Parser cached
 """
 
+from __future__ import annotations
+
+import argparse
 import ast
 import hashlib
 import importlib
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass
 from typing import Any
 
+from code_harness.infrastructure.parsers.native_protocol import (
+    ANALYSIS_VERSION,
+    ERROR_KIND_ANALYSIS,
+    ERROR_KIND_PROTOCOL,
+    OPERATION_ANALYZE,
+    OPERATION_HEALTH,
+    OPERATION_SHUTDOWN,
+    PROTOCOL_VERSION,
+    WORKER_IMPLEMENTATION_VERSION,
+    build_error_response,
+    build_success_response,
+    validate_request,
+)
 from code_harness.infrastructure.parsers.signature_extractor import (
     SIGNATURE_EXTRACTOR_VERSION,
     canonicalize_java,
@@ -21,6 +42,10 @@ from code_harness.infrastructure.parsers.signature_extractor import (
     java_signatures_from_node,
     normalize_display,
 )
+
+# Real Language/Parser reuse inside a persistent worker process.
+_PARSER_CACHE: dict[str, Any] = {}
+_PARSER_CACHE_STATS: dict[str, int] = {"hits": 0, "misses": 0}
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,17 +254,39 @@ def _analyze_python(path: str, content: str) -> tuple[list[_Symbol], list[_Refer
     return visitor.symbols, visitor.references, []
 
 
-def _tree_sitter_analysis(
-    path: str, language: str, content: str
-) -> tuple[list[_Symbol], list[_Reference], list[str]] | None:
+def _get_tree_sitter_parser(language: str) -> tuple[Any | None, bool]:
+    """Return ``(parser, cache_hit)``, building Language/Parser once per language."""
+    cached = _PARSER_CACHE.get(language)
+    if cached is not None:
+        _PARSER_CACHE_STATS["hits"] += 1
+        return cached, True
     try:
         tree_sitter = importlib.import_module("tree_sitter")
         grammar = importlib.import_module(f"tree_sitter_{language}")
     except ImportError:
-        return None
-    source = content.encode("utf-8")
+        return None, False
     language_object = tree_sitter.Language(grammar.language())
     parser = tree_sitter.Parser(language_object)
+    _PARSER_CACHE[language] = parser
+    _PARSER_CACHE_STATS["misses"] += 1
+    return parser, False
+
+
+def parser_cache_stats() -> dict[str, int]:
+    return {
+        "hits": int(_PARSER_CACHE_STATS["hits"]),
+        "misses": int(_PARSER_CACHE_STATS["misses"]),
+        "size": len(_PARSER_CACHE),
+    }
+
+
+def _tree_sitter_analysis(
+    path: str, language: str, content: str
+) -> tuple[list[_Symbol], list[_Reference], list[str], bool] | None:
+    parser, cache_hit = _get_tree_sitter_parser(language)
+    if parser is None:
+        return None
+    source = content.encode("utf-8")
     root = parser.parse(source).root_node
     symbols: list[_Symbol] = []
     references: list[_Reference] = []
@@ -351,7 +398,7 @@ def _tree_sitter_analysis(
 
     visit(root)
     warnings = ["Tree-sitter reported syntax errors."] if root.has_error else []
-    return symbols, references, warnings
+    return symbols, references, warnings, cache_hit
 
 
 _JAVA_TYPE = re.compile(r"\b(class|interface|enum|record)\s+([A-Za-z_$][\w$]*)", re.MULTILINE)
@@ -545,11 +592,12 @@ def _analyze(payload: dict[str, Any]) -> dict[str, object]:
     path = str(payload["path"])
     language = str(payload["language"]).casefold()
     content = str(payload["content"])
+    cache_hit = False
     tree_sitter_result = (
         _tree_sitter_analysis(path, language, content) if language in {"java", "python"} else None
     )
     if tree_sitter_result is not None:
-        symbols, references, warnings = tree_sitter_result
+        symbols, references, warnings, cache_hit = tree_sitter_result
         parser_name = f"tree-sitter-{language}"
     elif language == "python":
         symbols, references, warnings = _analyze_python(path, content)
@@ -563,30 +611,161 @@ def _analyze(payload: dict[str, Any]) -> dict[str, object]:
     else:
         raise ValueError(f"Unsupported structural language: {language}")
     state = "fallback" if warnings and not symbols else "ready"
+    cache = parser_cache_stats()
     return {
         "request_id": payload.get("request_id"),
         "parser_name": parser_name,
-        "parser_version": "4",
+        "parser_version": ANALYSIS_VERSION,
         "signature_extractor_version": SIGNATURE_EXTRACTOR_VERSION,
         "state": state,
         "symbols": [_symbol_payload(path, item) for item in symbols],
         "references": [_reference_payload(path, item) for item in references],
         "chunks": [_chunk_payload(path, content, item) for item in symbols],
         "warnings": warnings,
+        "parser_cache_hit": cache_hit,
+        "parser_cache_hits": cache["hits"],
+        "parser_cache_misses": cache["misses"],
     }
 
 
-def main() -> None:
+def _health_result() -> dict[str, object]:
+    cache = parser_cache_stats()
+    return {
+        "status": "ok",
+        "worker_version": WORKER_IMPLEMENTATION_VERSION,
+        "analysis_version": ANALYSIS_VERSION,
+        "protocol_version": PROTOCOL_VERSION,
+        "worker_implementation_version": WORKER_IMPLEMENTATION_VERSION,
+        "pid": os.getpid(),
+        "parser_cache_hits": cache["hits"],
+        "parser_cache_misses": cache["misses"],
+        "parser_cache_size": cache["size"],
+    }
+
+
+def _process_loop_request(raw: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Handle one NDJSON request. Returns (response, should_exit)."""
+    try:
+        request = validate_request(raw)
+    except ValueError as error:
+        request_id = raw.get("request_id") if isinstance(raw, dict) else None
+        if not isinstance(request_id, str):
+            request_id = None
+        return (
+            build_error_response(
+                request_id=request_id,
+                kind=ERROR_KIND_PROTOCOL,
+                error_type=type(error).__name__,
+                message=str(error),
+            ),
+            False,
+        )
+
+    request_id = str(request["request_id"])
+    operation = str(request["operation"])
+    payload = dict(request["payload"])
+
+    if operation == OPERATION_SHUTDOWN:
+        return (
+            build_success_response(request_id=request_id, result={"status": "shutdown"}),
+            True,
+        )
+    if operation == OPERATION_HEALTH:
+        return (
+            build_success_response(request_id=request_id, result=_health_result()),
+            False,
+        )
+    if operation != OPERATION_ANALYZE:
+        return (
+            build_error_response(
+                request_id=request_id,
+                kind=ERROR_KIND_PROTOCOL,
+                error_type="ValueError",
+                message=f"Unsupported operation: {operation}",
+            ),
+            False,
+        )
+
+    try:
+        result = _analyze(payload)
+    except Exception as error:  # typed error for the supervisor; worker stays alive
+        return (
+            build_error_response(
+                request_id=request_id,
+                kind=ERROR_KIND_ANALYSIS,
+                error_type=type(error).__name__,
+                message=str(error),
+            ),
+            False,
+        )
+    return build_success_response(request_id=request_id, result=result), False
+
+
+def _run_one_shot() -> None:
+    """Legacy single-request mode for tests, diagnosis, and rollback."""
     try:
         payload = json.loads(sys.stdin.read())
         if payload.get("operation") == "health":
-            response: dict[str, object] = {"status": "ok", "worker_version": "1"}
+            response: dict[str, object] = {
+                "status": "ok",
+                "worker_version": WORKER_IMPLEMENTATION_VERSION,
+                "analysis_version": ANALYSIS_VERSION,
+                "protocol_version": PROTOCOL_VERSION,
+            }
         else:
             response = _analyze(payload)
     except Exception as error:  # the parent receives a typed parser crash
         response = {"error": f"{type(error).__name__}: {error}"}
     sys.stdout.write(json.dumps(response, ensure_ascii=True))
     sys.stdout.flush()
+
+
+def _run_loop() -> None:
+    """Persistent NDJSON loop: one request line ? one response line."""
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        try:
+            raw = json.loads(line)
+        except json.JSONDecodeError as error:
+            response = build_error_response(
+                request_id=None,
+                kind=ERROR_KIND_PROTOCOL,
+                error_type=type(error).__name__,
+                message=f"Invalid JSON request: {error}",
+            )
+            sys.stdout.write(json.dumps(response, ensure_ascii=True) + "\n")
+            sys.stdout.flush()
+            continue
+        if not isinstance(raw, dict):
+            response = build_error_response(
+                request_id=None,
+                kind=ERROR_KIND_PROTOCOL,
+                error_type="TypeError",
+                message="Parser request must be a JSON object.",
+            )
+            sys.stdout.write(json.dumps(response, ensure_ascii=True) + "\n")
+            sys.stdout.flush()
+            continue
+        response, should_exit = _process_loop_request(raw)
+        sys.stdout.write(json.dumps(response, ensure_ascii=True) + "\n")
+        sys.stdout.flush()
+        if should_exit:
+            break
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Native structural parser worker.")
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help="Run persistent NDJSON request/response loop on stdin/stdout.",
+    )
+    args = parser.parse_args(argv)
+    if args.loop:
+        _run_loop()
+    else:
+        _run_one_shot()
 
 
 if __name__ == "__main__":

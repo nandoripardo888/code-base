@@ -54,6 +54,15 @@ class CodeHarness:
     def open(cls, root: str | Path) -> CodeHarness:
         return cls(build_container(Settings.for_root(root)))
 
+    def close(self) -> None:
+        self._container.shutdown()
+
+    def __enter__(self) -> CodeHarness:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
     def _execution(self) -> ExecutionContainer:
         if self._container.execution is None:
             raise ExecutionDisabledError()

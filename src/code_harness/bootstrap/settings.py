@@ -45,7 +45,9 @@ class Settings:
     max_file_size_bytes: int = 2_000_000
     parsers_enabled: bool = True
     parser_timeout_seconds: float = 10.0
+    parser_workers: int = 1
     parser_failure_threshold: int = 3
+    parser_failure_window_seconds: float = 60.0
     parser_circuit_reset_seconds: float = 60.0
     chunk_target_chars: int = 4_000
     chunk_max_chars: int = 8_000
@@ -71,6 +73,16 @@ class Settings:
     mcp_expose_execution: bool = False
 
     def __post_init__(self) -> None:
+        if not 1 <= self.parser_workers <= 8:
+            raise ValueError("parser_workers must be between 1 and 8")
+        if self.parser_timeout_seconds <= 0:
+            raise ValueError("parser_timeout_seconds must be greater than zero")
+        if self.parser_failure_threshold <= 0:
+            raise ValueError("parser_failure_threshold must be greater than zero")
+        if self.parser_failure_window_seconds <= 0:
+            raise ValueError("parser_failure_window_seconds must be greater than zero")
+        if self.parser_circuit_reset_seconds <= 0:
+            raise ValueError("parser_circuit_reset_seconds must be greater than zero")
         if self.embedding_batch_size <= 0:
             raise ValueError("embedding_batch_size must be greater than zero")
         if self.embedding_window_chars <= 0:
@@ -129,6 +141,21 @@ class Settings:
             not in {"0", "false", "off", "no"},
             parser_timeout_seconds=float(
                 os.environ.get("CODE_HARNESS_PARSER_TIMEOUT_SECONDS", "10")
+            ),
+            parser_workers=int(
+                os.environ.get(
+                    "CODE_HARNESS_PARSER_WORKERS",
+                    str(min(4, os.cpu_count() or 1)),
+                )
+            ),
+            parser_failure_threshold=int(
+                os.environ.get("CODE_HARNESS_PARSER_FAILURE_THRESHOLD", "3")
+            ),
+            parser_failure_window_seconds=float(
+                os.environ.get("CODE_HARNESS_PARSER_FAILURE_WINDOW_SECONDS", "60")
+            ),
+            parser_circuit_reset_seconds=float(
+                os.environ.get("CODE_HARNESS_PARSER_CIRCUIT_RESET_SECONDS", "60")
             ),
             semantic_enabled=_env_flag("CODE_HARNESS_SEMANTIC"),
             embedding_provider=os.environ.get("CODE_HARNESS_EMBEDDING_PROVIDER", "local"),

@@ -58,6 +58,9 @@ class IndexTimings:
     distinct_pids: int = 0
     worker_restarts: int = 0
     worker_timeouts: int = 0
+    parser_cache_hits: int = 0
+    parser_workers: int = 1
+    max_concurrent_analyses: int = 0
     avg_file_bytes: float = 0.0
     analysis_ms_avg: float = 0.0
     analysis_ms_p50: float = 0.0

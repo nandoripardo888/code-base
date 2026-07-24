@@ -16,9 +16,7 @@ class IndexProjectTool:
         *,
         progress: IndexProgressCallback | None = None,
     ) -> ToolResult[IndexReport]:
-        report, elapsed_ms = timed(
-            lambda: self._coordinator.index(request.mode, progress=progress)
-        )
+        report, elapsed_ms = timed(lambda: self._coordinator.index(request.mode, progress=progress))
         return ToolResult(
             report,
             elapsed_ms,

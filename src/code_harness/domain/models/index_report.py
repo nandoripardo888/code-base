@@ -41,6 +41,31 @@ class FileIndexUpdate:
 
 
 @dataclass(frozen=True, slots=True)
+class IndexTimings:
+    """Structural phase timings collected during one indexing run."""
+
+    discovery_ms: int = 0
+    read_hash_ms: int = 0
+    worker_init_ms: int = 0
+    analysis_ms: int = 0
+    chunk_build_ms: int = 0
+    commit_ms: int = 0
+    embedding_ms: int = 0
+    total_ms: int = 0
+    analyzed_files: int = 0
+    files_per_second: float = 0.0
+    processes_created: int = 0
+    distinct_pids: int = 0
+    worker_restarts: int = 0
+    worker_timeouts: int = 0
+    avg_file_bytes: float = 0.0
+    analysis_ms_avg: float = 0.0
+    analysis_ms_p50: float = 0.0
+    analysis_ms_p95: float = 0.0
+    analysis_ms_p99: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
 class IndexReport:
     project_id: str
     mode: IndexMode
@@ -63,6 +88,7 @@ class IndexReport:
     reused_embeddings: int = 0
     embedded_chunks: int = 0
     embedding_failures: int = 0
+    timings: IndexTimings | None = None
 
 
 @dataclass(frozen=True, slots=True)

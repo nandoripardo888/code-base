@@ -31,6 +31,16 @@ class _CircuitState:
     opened_at: float | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ParserRuntimeMetrics:
+    processes_created: int = 0
+    distinct_pids: int = 0
+    restarts: int = 0
+    timeouts: int = 0
+    spawn_ms: int = 0
+    request_ms: int = 0
+
+
 class NativeParserSupervisor:
     """Runs every parser request in a disposable, supervised child process."""
 
@@ -61,6 +71,12 @@ class NativeParserSupervisor:
         self._problem_payloads: set[tuple[str, str, str]] = set()
         self._active: subprocess.Popen[str] | None = None
         self._lock = threading.Lock()
+        self._processes_created = 0
+        self._pids: set[int] = set()
+        self._restarts = 0
+        self._timeouts = 0
+        self._spawn_ms = 0
+        self._request_ms = 0
 
     @property
     def name(self) -> str:
@@ -117,8 +133,20 @@ class NativeParserSupervisor:
         if process is not None and process.poll() is None:
             _stop_process(process)
 
+    def metrics_snapshot(self) -> ParserRuntimeMetrics:
+        with self._lock:
+            return ParserRuntimeMetrics(
+                processes_created=self._processes_created,
+                distinct_pids=len(self._pids),
+                restarts=self._restarts,
+                timeouts=self._timeouts,
+                spawn_ms=self._spawn_ms,
+                request_ms=self._request_ms,
+            )
+
     def _run(self, payload: dict[str, object], path: str) -> dict[str, Any]:
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        spawn_started = time.perf_counter()
         try:
             process = subprocess.Popen(
                 self._command,
@@ -132,8 +160,14 @@ class NativeParserSupervisor:
             )
         except OSError as error:
             raise ParserCrashError(path, f"Could not start parser worker: {error}") from error
+        spawn_ms = max(0, int(round((time.perf_counter() - spawn_started) * 1000)))
         with self._lock:
             self._active = process
+            self._processes_created += 1
+            self._spawn_ms += spawn_ms
+            if process.pid is not None:
+                self._pids.add(process.pid)
+        request_started = time.perf_counter()
         try:
             try:
                 stdout, stderr = process.communicate(
@@ -143,10 +177,14 @@ class NativeParserSupervisor:
                     timeout=self._timeout_seconds,
                 )
             except subprocess.TimeoutExpired as error:
+                with self._lock:
+                    self._timeouts += 1
                 _stop_process(process)
                 raise ParserTimeoutError(path, self._timeout_seconds) from error
         finally:
+            request_ms = max(0, int(round((time.perf_counter() - request_started) * 1000)))
             with self._lock:
+                self._request_ms += request_ms
                 if self._active is process:
                     self._active = None
         if process.returncode != 0:

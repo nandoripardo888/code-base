@@ -1,6 +1,7 @@
 from code_harness.domain.errors import ParserUnavailableError
 from code_harness.domain.models.structural import AnalyzeRequest, AnalyzeResult
 from code_harness.domain.protocols.structural_analyzer import StructuralAnalyzer
+from code_harness.infrastructure.parsers.native_supervisor import ParserRuntimeMetrics
 
 
 class StructuralAnalyzerRegistry:
@@ -31,3 +32,30 @@ class StructuralAnalyzerRegistry:
     def shutdown(self) -> None:
         for analyzer in self._analyzers:
             analyzer.shutdown()
+
+    def metrics_snapshot(self) -> ParserRuntimeMetrics:
+        processes_created = 0
+        distinct_pids = 0
+        restarts = 0
+        timeouts = 0
+        spawn_ms = 0
+        request_ms = 0
+        for analyzer in self._analyzers:
+            snapshot = getattr(analyzer, "metrics_snapshot", None)
+            if not callable(snapshot):
+                continue
+            metrics = snapshot()
+            processes_created += int(getattr(metrics, "processes_created", 0) or 0)
+            distinct_pids += int(getattr(metrics, "distinct_pids", 0) or 0)
+            restarts += int(getattr(metrics, "restarts", 0) or 0)
+            timeouts += int(getattr(metrics, "timeouts", 0) or 0)
+            spawn_ms += int(getattr(metrics, "spawn_ms", 0) or 0)
+            request_ms += int(getattr(metrics, "request_ms", 0) or 0)
+        return ParserRuntimeMetrics(
+            processes_created=processes_created,
+            distinct_pids=distinct_pids,
+            restarts=restarts,
+            timeouts=timeouts,
+            spawn_ms=spawn_ms,
+            request_ms=request_ms,
+        )

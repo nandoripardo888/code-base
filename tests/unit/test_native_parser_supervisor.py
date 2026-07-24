@@ -54,6 +54,22 @@ def test_supervisor_times_out_and_stops_worker() -> None:
     with pytest.raises(ParserTimeoutError):
         supervisor.analyze(_request())
 
+    metrics = supervisor.metrics_snapshot()
+    assert metrics.timeouts == 1
+    assert metrics.processes_created == 1
+    supervisor.shutdown()
+
+
+def test_supervisor_records_process_metrics_for_successful_analyze() -> None:
+    supervisor = NativeParserSupervisor(timeout_seconds=5)
+
+    supervisor.analyze(_request())
+    metrics = supervisor.metrics_snapshot()
+
+    assert metrics.processes_created == 1
+    assert metrics.distinct_pids == 1
+    assert metrics.timeouts == 0
+    assert metrics.restarts == 0
     supervisor.shutdown()
 
 

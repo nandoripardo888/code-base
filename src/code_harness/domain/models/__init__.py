@@ -18,6 +18,7 @@ from code_harness.domain.models.index_report import (
     IndexReport,
     IndexRunSummary,
     IndexStatus,
+    IndexTimings,
     StoredFile,
 )
 from code_harness.domain.models.project import Project
@@ -75,6 +76,7 @@ __all__ = [
     "IndexReport",
     "IndexRunSummary",
     "IndexStatus",
+    "IndexTimings",
     "IndexedSource",
     "Project",
     "QueryClassification",

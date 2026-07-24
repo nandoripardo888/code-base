@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 from code_harness.application.indexing import IndexCoordinator
 from code_harness.application.tools import (
@@ -45,6 +48,9 @@ from code_harness.infrastructure.persistence import SQLiteRepositoryStore
 from code_harness.infrastructure.persistence.fts_searcher import IndexedTextSearcher
 from code_harness.infrastructure.ripgrep import RipgrepSearcher
 
+if TYPE_CHECKING:
+    from code_harness.bootstrap.execution import ExecutionContainer
+
 
 @dataclass(frozen=True, slots=True)
 class ApplicationContainer:
@@ -69,6 +75,7 @@ class ApplicationContainer:
     build_context: BuildContextTool
     get_repository_map: GetRepositoryMapTool
     prepare_semantic_model: PrepareSemanticModelTool
+    execution: ExecutionContainer | None = None
 
     def with_index_state[T](self, result: ToolResult[T]) -> ToolResult[T]:
         if result.index_state is not None:
@@ -200,4 +207,17 @@ def build_container(settings: Settings) -> ApplicationContainer:
             embedding_provider,
             settings.embedding_cache_path,
         ),
+        execution=_build_execution_container(settings, project, guard),
     )
+
+
+def _build_execution_container(
+    settings: Settings,
+    project: Project,
+    guard: PathGuard,
+) -> ExecutionContainer | None:
+    if not settings.execution_enabled:
+        return None
+    from code_harness.bootstrap.execution import build_execution_container
+
+    return build_execution_container(settings, project, guard)

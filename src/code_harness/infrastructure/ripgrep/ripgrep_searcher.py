@@ -95,9 +95,11 @@ class RipgrepSearcher:
             except CodeHarnessError as error:
                 warnings.append(f"Skipped stale or unreadable result {record.path}: {error.code}")
                 continue
-            line_text = source.snippet.content.splitlines()[
-                max(0, record.line_number - start_line)
-            ] if source.snippet.content else ""
+            line_text = (
+                source.snippet.content.splitlines()[max(0, record.line_number - start_line)]
+                if source.snippet.content
+                else ""
+            )
             if regex:
                 start_column = record.start_column
                 end_column = record.end_column
@@ -113,9 +115,7 @@ class RipgrepSearcher:
                 needle = query if case_sensitive else query.casefold()
                 column = haystack.find(needle)
                 start_column = column + 1 if column >= 0 else None
-                end_column = (
-                    start_column + len(query) - 1 if start_column is not None else None
-                )
+                end_column = start_column + len(query) - 1 if start_column is not None else None
             hits.append(
                 SearchHit(
                     snippet=source.snippet,

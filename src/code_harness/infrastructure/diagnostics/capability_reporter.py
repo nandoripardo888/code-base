@@ -36,9 +36,7 @@ class LocalCapabilityReporter:
             if ripgrep.execution_test == "passed"
             else CapabilityState.UNAVAILABLE
         )
-        semantic_state, semantic_cause, semantic_remediation = self._semantic_capability(
-            status
-        )
+        semantic_state, semantic_cause, semantic_remediation = self._semantic_capability(status)
         return (
             CapabilityStatus(
                 "filesystem",
@@ -122,8 +120,7 @@ class LocalCapabilityReporter:
             return (
                 CapabilityState.UNAVAILABLE,
                 cached.message or "embedding_unavailable",
-                cached.remediation
-                or "Install a NumPy/runtime build compatible with this CPU.",
+                cached.remediation or "Install a NumPy/runtime build compatible with this CPU.",
             )
         if not self._semantic_model_id:
             return CapabilityState.UNKNOWN, "Semantic model is not configured.", None

@@ -13,7 +13,11 @@ from code_harness.domain.models.capability import (
     ToolWarning,
 )
 from code_harness.domain.models.tool_result import ToolResult, warning_message
-from code_harness.interfaces.serialization import serialize_error, serialize_tool_result, to_primitive
+from code_harness.interfaces.serialization import (
+    serialize_error,
+    serialize_tool_result,
+    to_primitive,
+)
 
 
 def test_capability_status_serializes_with_iso_timestamp() -> None:
@@ -95,3 +99,13 @@ def test_serialize_error_includes_recoverable_fields() -> None:
             "remediation": error.remediation,
         }
     }
+
+
+def test_execution_disabled_error_serializes_with_capability() -> None:
+    from code_harness.domain.errors import ExecutionDisabledError
+
+    error = ExecutionDisabledError()
+    payload = serialize_error(error)
+    assert payload["error"]["code"] == ErrorCode.EXECUTION_DISABLED.value
+    assert payload["error"]["capability"] == "execution"
+    assert payload["error"]["remediation"]

@@ -12,9 +12,7 @@ from code_harness.domain.models.tool_result import ToolResult
 
 def to_primitive(value: Any) -> Any:
     if is_dataclass(value) and not isinstance(value, type):
-        payload = {
-            field.name: to_primitive(getattr(value, field.name)) for field in fields(value)
-        }
+        payload = {field.name: to_primitive(getattr(value, field.name)) for field in fields(value)}
         if isinstance(value, ToolWarning):
             return {key: item for key, item in payload.items() if item is not None}
         from code_harness.domain.models.search_hit import SearchHit

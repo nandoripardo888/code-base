@@ -48,3 +48,16 @@ context:
 
 mcp:
   expose_index_commands: false
+  expose_execution: false
+
+execution:
+  enabled: false
+  backend: host
+  require_approval: true
+  default_timeout_seconds: 60
+  max_timeout_seconds: 1800
+  max_output_bytes: 200000
+  allow_elevated: false
+  # State directory outside the project workspace:
+  # home: ${CODE_HARNESS_HOME}/executions
+  home: null

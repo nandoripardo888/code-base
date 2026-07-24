@@ -5,13 +5,18 @@ import pytest
 from code_harness.application.dto.requests import FindReferencesRequest
 from code_harness.application.tools.structural import FindReferencesTool
 from code_harness.domain.enums import CapabilityState, ErrorCode, IndexState
-from code_harness.domain.errors import CodeHarnessError, IndexCorruptedError, RipgrepUnavailableError
+from code_harness.domain.errors import (
+    CodeHarnessError,
+    IndexCorruptedError,
+    RipgrepUnavailableError,
+)
 from code_harness.domain.models.code_location import CodeLocation
-from code_harness.domain.models.index_report import IndexedSource, IndexStatus
+from code_harness.domain.models.index_report import IndexedSource
 from code_harness.domain.models.project import Project
 from code_harness.domain.models.search_hit import SearchHit, SearchOutcome
 from code_harness.domain.models.structural import CodeReference, StructuralSearchResult
 from code_harness.domain.models.tool_result import warning_message
+
 
 @dataclass(frozen=True)
 class FakeStatus:
@@ -64,9 +69,7 @@ class FakeStore:
             if item.symbol is not None and item.symbol.symbol_id in wanted
         )
 
-    def get_outline(
-        self, project_id: str, path: str
-    ) -> tuple[StructuralSearchResult, ...]:
+    def get_outline(self, project_id: str, path: str) -> tuple[StructuralSearchResult, ...]:
         return tuple(
             item
             for item in self._symbols
@@ -148,8 +151,8 @@ def _lexical_hit(
     content: str = "validarAgenda();\n",
     content_hash: str = "hash-other",
 ) -> SearchHit:
-    from code_harness.domain.models.code_chunk import CodeSnippet
     from code_harness.domain.enums import MatchType
+    from code_harness.domain.models.code_chunk import CodeSnippet
 
     location = CodeLocation(path, line, line)
     return SearchHit(
@@ -178,9 +181,7 @@ def test_find_references_returns_structural_when_ripgrep_unavailable() -> None:
     assert result.data[0].reference.source == "structural"
     assert result.data[0].reference.validated is True
     assert any(outcome.strategy == "ripgrep" for outcome in result.strategies)
-    assert any(
-        outcome.state is CapabilityState.UNAVAILABLE for outcome in result.strategies
-    )
+    assert any(outcome.state is CapabilityState.UNAVAILABLE for outcome in result.strategies)
     assert any("Ripgrep" in warning_message(warning) for warning in result.warnings)
 
 
@@ -310,15 +311,9 @@ def test_find_references_qualified_excludes_private_homonyms_in_other_classes() 
         "}\n"
     )
     source = _source("src/Demo.java", content)
-    class_a = CodeSymbol(
-        "classA", "A", "A", "class", CodeLocation("src/Demo.java", 1, 4)
-    )
-    class_b = CodeSymbol(
-        "classB", "B", "B", "class", CodeLocation("src/Demo.java", 5, 8)
-    )
-    class_c = CodeSymbol(
-        "classC", "C", "C", "class", CodeLocation("src/Demo.java", 9, 12)
-    )
+    class_a = CodeSymbol("classA", "A", "A", "class", CodeLocation("src/Demo.java", 1, 4))
+    class_b = CodeSymbol("classB", "B", "B", "class", CodeLocation("src/Demo.java", 5, 8))
+    class_c = CodeSymbol("classC", "C", "C", "class", CodeLocation("src/Demo.java", 9, 12))
     method_a = CodeSymbol(
         "methodA",
         "carregar",
@@ -482,8 +477,7 @@ def test_find_references_marks_lexical_definition_for_resolved_symbol() -> None:
     result = tool.execute(FindReferencesRequest("FrmTestePessoa.carregarListagem"))
 
     assert any(
-        item.reference is not None and item.reference.kind == "definition"
-        for item in result.data
+        item.reference is not None and item.reference.kind == "definition" for item in result.data
     )
 
 

@@ -45,9 +45,7 @@ class GetIndexStatusTool:
         )
 
 
-def _service_state(
-    status: IndexStatus, capabilities: tuple[CapabilityStatus, ...]
-) -> str:
+def _service_state(status: IndexStatus, capabilities: tuple[CapabilityStatus, ...]) -> str:
     required_failed = [
         item
         for item in capabilities

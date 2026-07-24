@@ -41,9 +41,13 @@ over stdio.
 - build current-file-validated context within a conservative token estimate;
 - paginate file listings and return read truncation metadata for agents;
 - return a structured repository tree (symbols in detailed mode);
-- expose the same application tools over optional MCP stdio via `mcp serve`.
+- expose the same application tools over optional MCP stdio via `mcp serve`;
+- optionally inspect proposed process/PowerShell commands without running them
+  (`CODE_HARNESS_EXECUTION=1`, CLI `execution inspect-*`; disabled by default).
 
-No repository code is executed. The analyzed repository is treated as read-only.
+By default no repository code is executed and the analyzed repository is treated
+as read-only. Optional agent execution remains opt-in and is inspection-only in
+the current release (see `docs/adr/0005-execution-trust-boundary.md`).
 
 ## Requirements
 

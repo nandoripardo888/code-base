@@ -43,3 +43,29 @@ def test_serialize_tool_result_omits_empty_strategies() -> None:
         "warnings": [],
         "index_state": None,
     }
+
+
+def test_serialize_command_inspection() -> None:
+    from code_harness.domain.enums import CommandKind, PolicyDecision
+    from code_harness.domain.models.execution import ApprovalDigest, CommandInspection
+
+    inspection = CommandInspection(
+        kind=CommandKind.PROCESS,
+        decision=PolicyDecision.ALLOW,
+        requested_capabilities=(),
+        required_capabilities=(),
+        approval_required=False,
+        reasons=(),
+        risks=(),
+        blocks=(),
+        approval_digest=ApprovalDigest(value="abc"),
+        cwd=".",
+        timeout_seconds=60.0,
+        max_output_bytes=100,
+        executable="git",
+        args=("status",),
+    )
+    payload = serialize_tool_result(ToolResult(inspection, elapsed_ms=3))
+    assert payload["data"]["decision"] == "allow"
+    assert payload["data"]["approval_digest"]["value"] == "abc"
+    assert payload["data"]["executable"] == "git"

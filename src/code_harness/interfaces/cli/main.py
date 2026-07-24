@@ -28,7 +28,9 @@ from code_harness.bootstrap.settings import Settings
 from code_harness.bootstrap.tls import configure_application_tls
 from code_harness.domain.enums import ErrorCode, IndexMode
 from code_harness.domain.errors import CodeHarnessError, InvalidQueryError
+from code_harness.interfaces.cli.execution_commands import execution_app
 from code_harness.interfaces.cli.renderers import OutputFormat, render_error, render_value
+from code_harness.interfaces.cli.renderers.progress import IndexProgressPrinter
 from code_harness.version import __version__
 
 app = typer.Typer(
@@ -46,6 +48,7 @@ app.add_typer(files_app, name="files")
 app.add_typer(search_app, name="search")
 app.add_typer(models_app, name="models")
 app.add_typer(mcp_app, name="mcp")
+app.add_typer(execution_app, name="execution")
 
 
 @dataclass(slots=True)
@@ -71,11 +74,21 @@ def _exit_code(error: CodeHarnessError) -> int:
         ErrorCode.PARSER_CRASH,
         ErrorCode.PARSER_CIRCUIT_OPEN,
         ErrorCode.EMBEDDING_UNAVAILABLE,
+        ErrorCode.EXECUTION_DISABLED,
+        ErrorCode.EXECUTION_NOT_SUPPORTED,
     ):
         return 4
     if error.code in (ErrorCode.INDEX_NOT_READY, ErrorCode.INDEX_CORRUPTED):
         return 5
-    if error.code in (ErrorCode.INVALID_QUERY, ErrorCode.PATH_OUTSIDE_PROJECT):
+    if error.code in (
+        ErrorCode.INVALID_QUERY,
+        ErrorCode.PATH_OUTSIDE_PROJECT,
+        ErrorCode.INVALID_PATH_KIND,
+        ErrorCode.INVALID_EXECUTION_REQUEST,
+        ErrorCode.EXECUTION_POLICY_DENIED,
+        ErrorCode.EXECUTION_APPROVAL_REQUIRED,
+        ErrorCode.EXECUTION_ELEVATED_SESSION,
+    ):
         return 2
     return 6
 
@@ -151,7 +164,11 @@ def index_project(
 ) -> None:
     state: CliState = ctx.obj
     request = IndexProjectRequest(mode)
-    _execute(state, lambda: state.container().index_project.execute(request))
+    progress = IndexProgressPrinter()
+    _execute(
+        state,
+        lambda: state.container().index_project.execute(request, progress=progress),
+    )
 
 
 @app.command("status")

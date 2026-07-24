@@ -125,7 +125,14 @@ class SearchCodeTool:
                     truncated = truncated or strategy_truncated
 
             # Prefer stable strategy order in responses.
-            order = {"symbol": 0, "fts": 1, "ripgrep": 2, "references": 3, "paths": 4, "semantic": 5}
+            order = {
+                "symbol": 0,
+                "fts": 1,
+                "ripgrep": 2,
+                "references": 3,
+                "paths": 4,
+                "semantic": 5,
+            }
             strategies.sort(key=lambda item: order.get(item.strategy, 99))
 
             valid, validation_warnings = self._validate_candidates(request, candidates)
@@ -194,8 +201,7 @@ class SearchCodeTool:
             )
         state = CapabilityState.READY
         if not candidates and any(
-            warning.code in {"ripgrep_unavailable", "embedding_unavailable"}
-            for warning in warnings
+            warning.code in {"ripgrep_unavailable", "embedding_unavailable"} for warning in warnings
         ):
             state = CapabilityState.UNAVAILABLE
         return (
@@ -241,7 +247,7 @@ class SearchCodeTool:
                     HybridCandidate(
                         CodeSnippet(
                             symbol.location,
-                            item.content,
+                            item.content or "",
                             None,
                             item.file_hash,
                         ),
@@ -294,7 +300,7 @@ class SearchCodeTool:
                     HybridCandidate(
                         CodeSnippet(
                             reference.location,
-                            item.content,
+                            item.content or "",
                             None,
                             item.file_hash,
                         ),
@@ -353,9 +359,7 @@ class SearchCodeTool:
             )
         warnings = list(normalize_warnings(result.warnings, capability="semantic"))
         state = CapabilityState.READY
-        if not result.data and any(
-            warning.code == "embedding_unavailable" for warning in warnings
-        ):
+        if not result.data and any(warning.code == "embedding_unavailable" for warning in warnings):
             state = CapabilityState.UNAVAILABLE
         return (
             [

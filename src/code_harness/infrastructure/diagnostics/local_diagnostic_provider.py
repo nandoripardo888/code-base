@@ -4,6 +4,7 @@ import ssl
 import sys
 from math import isfinite
 from pathlib import Path
+from typing import Any, cast
 
 from code_harness.domain.enums import DiagnosticStatus
 from code_harness.domain.errors import CodeHarnessError
@@ -42,8 +43,9 @@ class LocalDiagnosticProvider:
     def run(self, *, deep: bool = False) -> DoctorReport:
         if deep and self._capability_reporter is not None:
             self._capability_reporter.invalidate_semantic_health()
-            if hasattr(self._embedding_provider, "invalidate_health_cache"):
-                self._embedding_provider.invalidate_health_cache()
+            provider = self._embedding_provider
+            if provider is not None and hasattr(provider, "invalidate_health_cache"):
+                cast("Any", provider).invalidate_health_cache()
         checks = [
             DiagnosticCheck(
                 "project",

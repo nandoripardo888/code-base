@@ -16,7 +16,6 @@ from typing import Any
 from code_harness.infrastructure.parsers.signature_extractor import (
     SIGNATURE_EXTRACTOR_VERSION,
     canonicalize_java,
-    canonicalize_plsql,
     canonicalize_python,
     extract_header,
     java_signatures_from_node,

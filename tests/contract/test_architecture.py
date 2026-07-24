@@ -76,3 +76,35 @@ def test_cli_does_not_import_mcp_adapter_at_module_level() -> None:
     cli_main = Path("src/code_harness/interfaces/cli/main.py")
     imported = _module_level_project_imports(cli_main)
     assert not any(name.startswith("code_harness.interfaces.mcp") for name in imported)
+
+
+def test_container_does_not_import_execution_at_module_level() -> None:
+    container = Path("src/code_harness/bootstrap/container.py")
+    imported = _module_level_project_imports(container)
+    assert "code_harness.bootstrap.execution" not in imported
+    assert not any("infrastructure.execution" in name for name in imported)
+
+
+def test_execution_application_avoids_process_host_apis() -> None:
+    forbidden = {
+        "subprocess",
+        "ctypes",
+        "win32api",
+        "win32job",
+        "win32process",
+        "win32security",
+        "pythoncom",
+    }
+    root = Path("src/code_harness/application/execution")
+    for source in root.rglob("*.py"):
+        imported = _all_imports(source)
+        top_levels = {name.split(".", 1)[0] for name in imported}
+        assert forbidden.isdisjoint(top_levels), source
+
+
+def test_bootstrap_execution_avoids_process_host_apis() -> None:
+    source = Path("src/code_harness/bootstrap/execution.py")
+    imported = _all_imports(source)
+    top_levels = {name.split(".", 1)[0] for name in imported}
+    assert "subprocess" not in top_levels
+    assert "ctypes" not in top_levels

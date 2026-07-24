@@ -153,9 +153,7 @@ class NativeEmbeddingSupervisor:
                 )
             except subprocess.TimeoutExpired as error:
                 _stop_process(process)
-                message = (
-                    f"Embedding worker timed out after {self._timeout_seconds:g} seconds."
-                )
+                message = f"Embedding worker timed out after {self._timeout_seconds:g} seconds."
                 self._remember_failure(message)
                 raise EmbeddingUnavailableError(message) from error
         finally:
@@ -190,9 +188,7 @@ class NativeEmbeddingSupervisor:
         return decoded
 
     def _remember_failure(self, message: str) -> None:
-        remediation = (
-            "Install compatible NumPy/ONNX Runtime wheels or disable semantic search."
-        )
+        remediation = "Install compatible NumPy/ONNX Runtime wheels or disable semantic search."
         if "X86_V2" in message or "onnxruntime" in message.casefold():
             remediation = (
                 "Install CPU-compatible NumPy/ONNX Runtime wheels for this machine, "

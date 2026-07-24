@@ -1,8 +1,8 @@
 from code_harness.infrastructure.parsers.signature_extractor import (
+    _strip_java_annotations,
     canonicalize_java,
     canonicalize_python,
     extract_header,
-    _strip_java_annotations,
 )
 
 
@@ -43,7 +43,10 @@ def test_canonicalize_python_uses_annotations() -> None:
 
 
 def test_canonicalize_java_ignores_annotation_arguments() -> None:
-    display = '@Command\n@NotifyChange({"selectedCategoria1", "selectedCategoria2"})\npublic void setSelectedCategoria1(TesteCategoria1 value)'
+    display = (
+        '@Command\n@NotifyChange({"selectedCategoria1", "selectedCategoria2"})\n'
+        "public void setSelectedCategoria1(TesteCategoria1 value)"
+    )
     canonical = canonicalize_java(
         qualified_name="FrmTestePessoa.setSelectedCategoria1",
         display_signature=display,

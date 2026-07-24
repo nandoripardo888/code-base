@@ -1,5 +1,12 @@
-from pathlib import Path
+from __future__ import annotations
 
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from code_harness.application.dto.execution_requests import (
+    InspectPowerShellRequest,
+    InspectProcessRequest,
+)
 from code_harness.application.dto.requests import (
     BuildContextRequest,
     FindDefinitionRequest,
@@ -19,9 +26,11 @@ from code_harness.application.dto.requests import (
 )
 from code_harness.bootstrap.container import ApplicationContainer, build_container
 from code_harness.bootstrap.settings import Settings
-from code_harness.domain.enums import IndexMode
+from code_harness.domain.enums import ExecutionCapability, IndexMode
+from code_harness.domain.errors import ExecutionDisabledError
 from code_harness.domain.models.code_chunk import SourceRead
 from code_harness.domain.models.context import ContextBundle
+from code_harness.domain.models.execution import CommandInspection
 from code_harness.domain.models.file_listing import FileListingPage
 from code_harness.domain.models.file_match import FileMatch
 from code_harness.domain.models.hybrid import HybridSearchHit
@@ -30,9 +39,11 @@ from code_harness.domain.models.project import Project
 from code_harness.domain.models.repository_map import RepositoryMap
 from code_harness.domain.models.search_hit import SearchHit
 from code_harness.domain.models.semantic import SemanticPreparationReport
-from code_harness.domain.models.source_file import SourceFile
 from code_harness.domain.models.structural import StructuralSearchResult
 from code_harness.domain.models.tool_result import ToolResult
+
+if TYPE_CHECKING:
+    from code_harness.bootstrap.execution import ExecutionContainer
 
 
 class CodeHarness:
@@ -40,8 +51,65 @@ class CodeHarness:
         self._container = container
 
     @classmethod
-    def open(cls, root: str | Path) -> "CodeHarness":
+    def open(cls, root: str | Path) -> CodeHarness:
         return cls(build_container(Settings.for_root(root)))
+
+    def _execution(self) -> ExecutionContainer:
+        if self._container.execution is None:
+            raise ExecutionDisabledError()
+        return self._container.execution
+
+    def inspect_process(
+        self,
+        executable: str,
+        args: tuple[str, ...] = (),
+        *,
+        cwd: str = ".",
+        timeout_seconds: float | None = None,
+        max_output_bytes: int | None = None,
+        requested_capabilities: tuple[ExecutionCapability | str, ...] = (),
+        reason: str | None = None,
+    ) -> ToolResult[CommandInspection]:
+        capabilities = tuple(
+            item if isinstance(item, ExecutionCapability) else ExecutionCapability(item)
+            for item in requested_capabilities
+        )
+        return self._execution().inspect_process.execute(
+            InspectProcessRequest(
+                executable,
+                args,
+                cwd,
+                timeout_seconds,
+                max_output_bytes,
+                capabilities,
+                reason,
+            )
+        )
+
+    def inspect_powershell(
+        self,
+        script: str,
+        *,
+        cwd: str = ".",
+        timeout_seconds: float | None = None,
+        max_output_bytes: int | None = None,
+        requested_capabilities: tuple[ExecutionCapability | str, ...] = (),
+        reason: str | None = None,
+    ) -> ToolResult[CommandInspection]:
+        capabilities = tuple(
+            item if isinstance(item, ExecutionCapability) else ExecutionCapability(item)
+            for item in requested_capabilities
+        )
+        return self._execution().inspect_powershell.execute(
+            InspectPowerShellRequest(
+                script,
+                cwd,
+                timeout_seconds,
+                max_output_bytes,
+                capabilities,
+                reason,
+            )
+        )
 
     def initialize_index(self) -> ToolResult[Project]:
         return self._container.initialize_index.execute()

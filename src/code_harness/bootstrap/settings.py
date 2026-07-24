@@ -16,6 +16,26 @@ def _default_model_cache() -> Path:
     return base / "code-harness" / "models"
 
 
+def _code_harness_home() -> Path:
+    override = os.environ.get("CODE_HARNESS_HOME")
+    if override:
+        return Path(override).expanduser()
+    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
+        return Path(os.environ["LOCALAPPDATA"]) / "code-harness"
+    return Path.home() / ".code-harness"
+
+
+def _default_execution_home() -> Path:
+    override = os.environ.get("CODE_HARNESS_EXECUTION_HOME")
+    if override:
+        return Path(override).expanduser()
+    return _code_harness_home() / "executions"
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).casefold() in {"1", "true", "on", "yes"}
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     root: Path
@@ -40,6 +60,15 @@ class Settings:
     system_trust_enabled: bool = True
     ca_bundle_path: Path | None = None
     mcp_expose_index_commands: bool = False
+    execution_enabled: bool = False
+    execution_backend: str = "host"
+    execution_require_approval: bool = True
+    execution_default_timeout_seconds: float = 60.0
+    execution_max_timeout_seconds: float = 1_800.0
+    execution_max_output_bytes: int = 200_000
+    execution_allow_elevated: bool = False
+    execution_home: Path = field(default_factory=_default_execution_home)
+    mcp_expose_execution: bool = False
 
     def __post_init__(self) -> None:
         if self.embedding_batch_size <= 0:
@@ -52,11 +81,30 @@ class Settings:
             )
         if self.embedding_timeout_seconds <= 0:
             raise ValueError("embedding_timeout_seconds must be greater than zero")
+        if self.execution_backend not in {"host", "host_supervised", "windows_sandbox"}:
+            raise ValueError(
+                "execution_backend must be one of: host, host_supervised, windows_sandbox"
+            )
+        if self.execution_default_timeout_seconds <= 0:
+            raise ValueError("execution_default_timeout_seconds must be greater than zero")
+        if self.execution_max_timeout_seconds <= 0:
+            raise ValueError("execution_max_timeout_seconds must be greater than zero")
+        if self.execution_default_timeout_seconds > self.execution_max_timeout_seconds:
+            raise ValueError(
+                "execution_default_timeout_seconds must not exceed execution_max_timeout_seconds"
+            )
+        if self.execution_max_output_bytes <= 0:
+            raise ValueError("execution_max_output_bytes must be greater than zero")
+        if self.mcp_expose_execution and not self.execution_enabled:
+            raise ValueError("mcp_expose_execution requires execution_enabled")
 
     @property
     def project(self) -> Project:
         identity = os.path.normcase(str(self.root)).encode("utf-8")
         return Project(sha256(identity).hexdigest()[:32], str(self.root))
+
+    def execution_project_home(self) -> Path:
+        return self.execution_home / self.project.project_id
 
     @classmethod
     def for_root(cls, root: str | Path) -> "Settings":
@@ -72,6 +120,7 @@ class Settings:
             os.environ.get("CODE_HARNESS_MODEL_CACHE", str(_default_model_cache()))
         ).expanduser()
         configured_ca = os.environ.get("CODE_HARNESS_CA_BUNDLE")
+        configured_execution_home = _default_execution_home().expanduser().resolve(strict=False)
         return cls(
             root=resolved,
             index_path=configured_index.resolve(strict=False),
@@ -81,8 +130,7 @@ class Settings:
             parser_timeout_seconds=float(
                 os.environ.get("CODE_HARNESS_PARSER_TIMEOUT_SECONDS", "10")
             ),
-            semantic_enabled=os.environ.get("CODE_HARNESS_SEMANTIC", "0").casefold()
-            in {"1", "true", "on", "yes"},
+            semantic_enabled=_env_flag("CODE_HARNESS_SEMANTIC"),
             embedding_provider=os.environ.get("CODE_HARNESS_EMBEDDING_PROVIDER", "local"),
             embedding_model=os.environ.get(
                 "CODE_HARNESS_EMBEDDING_MODEL",
@@ -104,8 +152,23 @@ class Settings:
             ca_bundle_path=(
                 Path(configured_ca).expanduser().resolve(strict=False) if configured_ca else None
             ),
-            mcp_expose_index_commands=os.environ.get(
-                "CODE_HARNESS_MCP_EXPOSE_INDEX", "0"
+            mcp_expose_index_commands=_env_flag("CODE_HARNESS_MCP_EXPOSE_INDEX"),
+            execution_enabled=_env_flag("CODE_HARNESS_EXECUTION"),
+            execution_backend=os.environ.get("CODE_HARNESS_EXECUTION_BACKEND", "host"),
+            execution_require_approval=os.environ.get(
+                "CODE_HARNESS_EXECUTION_REQUIRE_APPROVAL", "1"
             ).casefold()
-            in {"1", "true", "on", "yes"},
+            not in {"0", "false", "off", "no"},
+            execution_default_timeout_seconds=float(
+                os.environ.get("CODE_HARNESS_EXECUTION_DEFAULT_TIMEOUT_SECONDS", "60")
+            ),
+            execution_max_timeout_seconds=float(
+                os.environ.get("CODE_HARNESS_EXECUTION_MAX_TIMEOUT_SECONDS", "1800")
+            ),
+            execution_max_output_bytes=int(
+                os.environ.get("CODE_HARNESS_EXECUTION_MAX_OUTPUT_BYTES", "200000")
+            ),
+            execution_allow_elevated=_env_flag("CODE_HARNESS_EXECUTION_ALLOW_ELEVATED"),
+            execution_home=configured_execution_home,
+            mcp_expose_execution=_env_flag("CODE_HARNESS_MCP_EXPOSE_EXECUTION"),
         )

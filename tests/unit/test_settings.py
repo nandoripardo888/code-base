@@ -2,7 +2,6 @@ from pathlib import Path
 
 import pytest
 
-from code_harness.bootstrap import settings as settings_module
 from code_harness.bootstrap.settings import Settings
 from code_harness.infrastructure.ripgrep import discovery as discovery_module
 from code_harness.infrastructure.ripgrep.discovery import probe_ripgrep, resolve_ripgrep_executable
@@ -95,3 +94,5 @@ def test_settings_defaults_mcp_expose_index_to_false(tmp_path: Path) -> None:
     settings = Settings.for_root(tmp_path)
 
     assert not settings.mcp_expose_index_commands
+    assert not settings.execution_enabled
+    assert not settings.mcp_expose_execution

@@ -13,9 +13,10 @@ from code_harness.application.tools._timing import timed
 from code_harness.domain.enums import CapabilityState, IndexState
 from code_harness.domain.errors import CodeHarnessError, is_recoverable_error
 from code_harness.domain.models.capability import StrategyOutcome, ToolWarning
+from code_harness.domain.models.code_location import CodeLocation
 from code_harness.domain.models.index_report import IndexedSource
 from code_harness.domain.models.project import Project
-from code_harness.domain.models.structural import CodeReference, StructuralSearchResult
+from code_harness.domain.models.structural import CodeReference, CodeSymbol, StructuralSearchResult
 from code_harness.domain.models.tool_result import ToolResult, normalize_warnings
 from code_harness.domain.protocols.index_source_reader import IndexSourceReader
 from code_harness.domain.protocols.repository_store import RepositoryStore
@@ -179,21 +180,24 @@ class _StructuralTool:
                 continue
             lines = source.content.splitlines(keepends=True)
             content = "".join(lines[location.start_line - 1 : location.end_line])
-            if require_target_name and result.reference is not None:
-                if result.reference.target_name.casefold() not in content.casefold():
-                    warnings.append(
-                        ToolWarning(
-                            code="invalid_reference_range",
-                            message=(
-                                f"Skipped outdated reference for {location.path}:"
-                                f"{location.start_line}; target no longer present."
-                            ),
-                            recoverable=True,
-                            capability="structural",
-                            remediation="Run index_project to refresh references.",
-                        )
+            if (
+                require_target_name
+                and result.reference is not None
+                and result.reference.target_name.casefold() not in content.casefold()
+            ):
+                warnings.append(
+                    ToolWarning(
+                        code="invalid_reference_range",
+                        message=(
+                            f"Skipped outdated reference for {location.path}:"
+                            f"{location.start_line}; target no longer present."
+                        ),
+                        recoverable=True,
+                        capability="structural",
+                        remediation="Run index_project to refresh references.",
                     )
-                    continue
+                )
+                continue
             if include_content:
                 if max_content_chars is not None and len(content) > max_content_chars:
                     content = content[:max_content_chars]
@@ -374,7 +378,9 @@ class FindReferencesTool(_StructuralTool):
                         raise
                     warning = _warning_from_error(
                         error,
-                        message="Structural references unavailable; continuing with lexical search.",
+                        message=(
+                            "Structural references unavailable; continuing with lexical search."
+                        ),
                     )
                     warnings.append(warning)
                     strategies.append(
@@ -389,9 +395,7 @@ class FindReferencesTool(_StructuralTool):
             else:
                 warning = ToolWarning(
                     code="structural_references_unavailable",
-                    message=(
-                        "Structural index is not ready; returned lexical references only."
-                    ),
+                    message=("Structural index is not ready; returned lexical references only."),
                     recoverable=True,
                     capability="structural",
                     remediation="Run index_project before structural reference lookup.",
@@ -421,18 +425,7 @@ class FindReferencesTool(_StructuralTool):
                     timeout_seconds=request.timeout_seconds,
                 )
                 # Lexical searcher may return string warnings; normalize later.
-                for warning in lexical.warnings:
-                    if isinstance(warning, ToolWarning):
-                        warnings.append(warning)
-                    else:
-                        warnings.append(
-                            ToolWarning(
-                                code="lexical_search_warning",
-                                message=str(warning),
-                                recoverable=True,
-                                capability="ripgrep",
-                            )
-                        )
+                warnings.extend(normalize_warnings(lexical.warnings))
                 for hit in lexical.hits:
                     location = hit.snippet.location
                     reference_id = sha256(
@@ -457,9 +450,7 @@ class FindReferencesTool(_StructuralTool):
                         )
                     )
                 lexical_hits = list(
-                    self._scope_references(
-                        tuple(lexical_hits), target_symbol, simple_name
-                    )
+                    self._scope_references(tuple(lexical_hits), target_symbol, simple_name)
                 )
                 strategies.append(
                     StrategyOutcome(
@@ -474,9 +465,7 @@ class FindReferencesTool(_StructuralTool):
                     raise
                 warning = _warning_from_error(
                     error,
-                    message=(
-                        "Lexical reference search skipped because Ripgrep is unavailable."
-                    ),
+                    message=("Lexical reference search skipped because Ripgrep is unavailable."),
                 )
                 warnings.append(
                     ToolWarning(
@@ -507,20 +496,25 @@ class FindReferencesTool(_StructuralTool):
                 for item in structural_hits
                 if item.reference is not None
             }
-            for hit in lexical_hits:
-                assert hit.reference is not None
-                key = (hit.reference.location.path, hit.reference.location.start_line)
+            for lexical_hit in lexical_hits:
+                assert lexical_hit.reference is not None
+                key = (
+                    lexical_hit.reference.location.path,
+                    lexical_hit.reference.location.start_line,
+                )
                 if key in seen:
                     continue
                 seen.add(key)
-                combined.append(hit)
+                combined.append(lexical_hit)
                 if len(combined) >= request.max_results:
                     break
             return tuple(combined[: request.max_results])
 
         results, elapsed_ms = timed(search)
-        if not results and strategies and all(
-            outcome.state is CapabilityState.UNAVAILABLE for outcome in strategies
+        if (
+            not results
+            and strategies
+            and all(outcome.state is CapabilityState.UNAVAILABLE for outcome in strategies)
         ):
             raise _both_unavailable_error(strategies)
 
@@ -533,7 +527,7 @@ class FindReferencesTool(_StructuralTool):
             strategies=tuple(strategies),
         )
 
-    def _resolve_target(self, query: str):
+    def _resolve_target(self, query: str) -> tuple[CodeSymbol | None, str]:
         simple_name = query.rsplit(".", 1)[-1]
         try:
             matches = self._store.find_symbols(
@@ -548,9 +542,7 @@ class FindReferencesTool(_StructuralTool):
         symbols = [item.symbol for item in matches if item.symbol is not None]
         folded = query.casefold()
         qualified = [
-            symbol
-            for symbol in symbols
-            if (symbol.qualified_name or "").casefold() == folded
+            symbol for symbol in symbols if (symbol.qualified_name or "").casefold() == folded
         ]
         if qualified:
             return qualified[0], qualified[0].name
@@ -561,7 +553,7 @@ class FindReferencesTool(_StructuralTool):
             return symbols[0], symbols[0].name
         return None, simple_name
 
-    def _owner_symbol(self, target_symbol):
+    def _owner_symbol(self, target_symbol: CodeSymbol) -> CodeSymbol:
         if target_symbol.parent_symbol_id:
             try:
                 parents = self._store.find_symbols_by_ids(
@@ -574,9 +566,7 @@ class FindReferencesTool(_StructuralTool):
                 return parents[0].symbol
         # Fallback: nearest enclosing type on the same path.
         try:
-            outline = self._store.get_outline(
-                self._project.project_id, target_symbol.location.path
-            )
+            outline = self._store.get_outline(self._project.project_id, target_symbol.location.path)
         except CodeHarnessError:
             return target_symbol
         enclosing = None
@@ -595,15 +585,17 @@ class FindReferencesTool(_StructuralTool):
                 symbol.location.start_line
                 <= target_symbol.location.start_line
                 <= symbol.location.end_line
-            ):
-                if enclosing is None or (
+            ) and (
+                enclosing is None
+                or (
                     symbol.location.start_line >= enclosing.location.start_line
                     and symbol.location.end_line <= enclosing.location.end_line
-                ):
-                    enclosing = symbol
+                )
+            ):
+                enclosing = symbol
         return enclosing or target_symbol
 
-    def _symbols_named(self, simple_name: str):
+    def _symbols_named(self, simple_name: str) -> tuple[CodeSymbol, ...]:
         try:
             matches = self._store.find_symbols(
                 self._project.project_id,
@@ -616,19 +608,18 @@ class FindReferencesTool(_StructuralTool):
         return tuple(
             item.symbol
             for item in matches
-            if item.symbol is not None
-            and item.symbol.name.casefold() == simple_name.casefold()
+            if item.symbol is not None and item.symbol.name.casefold() == simple_name.casefold()
         )
 
     def _annotate_references(
         self,
         results: tuple[StructuralSearchResult, ...],
-        target_symbol,
+        target_symbol: CodeSymbol | None,
         simple_name: str,
-        owner_symbol=None,
+        owner_symbol: CodeSymbol | None = None,
         *,
         private_target: bool = False,
-        homonym_owners: tuple = (),
+        homonym_owners: tuple[CodeSymbol, ...] = (),
     ) -> tuple[StructuralSearchResult, ...]:
         annotated: list[StructuralSearchResult] = []
         named_symbols = () if target_symbol is not None else self._symbols_named(simple_name)
@@ -653,11 +644,8 @@ class FindReferencesTool(_StructuralTool):
                     target_id = target_symbol.symbol_id
                     resolution = "symbol_id"
                     confidence = 1.0
-                elif private_target:
-                    continue
-                elif any(
-                    _location_in_symbol(reference.location, other)
-                    for other in homonym_owners
+                elif private_target or any(
+                    _location_in_symbol(reference.location, other) for other in homonym_owners
                 ):
                     continue
                 else:
@@ -693,7 +681,7 @@ class FindReferencesTool(_StructuralTool):
     def _scope_references(
         self,
         results: tuple[StructuralSearchResult, ...],
-        target_symbol,
+        target_symbol: CodeSymbol | None,
         simple_name: str,
     ) -> tuple[StructuralSearchResult, ...]:
         named_symbols = self._symbols_named(simple_name)
@@ -710,9 +698,7 @@ class FindReferencesTool(_StructuralTool):
                     if _is_symbol_definition_line(reference.location, symbol)
                 ]
                 if matching_defs:
-                    target_id = (
-                        matching_defs[0].symbol_id if len(matching_defs) == 1 else None
-                    )
+                    target_id = matching_defs[0].symbol_id if len(matching_defs) == 1 else None
                     annotated.append(
                         replace(
                             result,
@@ -757,22 +743,21 @@ class FindReferencesTool(_StructuralTool):
         )
 
 
-def _looks_private(symbol) -> bool:
+def _looks_private(symbol: CodeSymbol) -> bool:
     header = (symbol.signature or symbol.canonical_signature or "").split("(", 1)[0]
     return "private" in header.casefold().split()
 
 
-def _location_in_symbol(location, symbol) -> bool:
-    return (
+def _location_in_symbol(location: CodeLocation, symbol: CodeSymbol) -> bool:
+    return bool(
         location.path == symbol.location.path
         and symbol.location.start_line <= location.start_line <= symbol.location.end_line
     )
 
 
-def _is_symbol_definition_line(location, symbol) -> bool:
-    return (
-        location.path == symbol.location.path
-        and location.start_line == symbol.location.start_line
+def _is_symbol_definition_line(location: CodeLocation, symbol: CodeSymbol) -> bool:
+    return bool(
+        location.path == symbol.location.path and location.start_line == symbol.location.start_line
     )
 
 

@@ -213,9 +213,7 @@ class GetFileOutlineRequest:
         if self.max_depth is not None:
             _require_positive("max_depth", self.max_depth)
         if self.max_content_chars_per_symbol is not None:
-            _require_positive(
-                "max_content_chars_per_symbol", self.max_content_chars_per_symbol
-            )
+            _require_positive("max_content_chars_per_symbol", self.max_content_chars_per_symbol)
 
     @property
     def effective_include_content(self) -> bool:
@@ -244,9 +242,7 @@ class FindSymbolRequest:
         if self.response_format not in {"compact", "full"}:
             raise ValueError("response_format must be 'compact' or 'full'")
         if self.max_content_chars_per_symbol is not None:
-            _require_positive(
-                "max_content_chars_per_symbol", self.max_content_chars_per_symbol
-            )
+            _require_positive("max_content_chars_per_symbol", self.max_content_chars_per_symbol)
         if self.parameter_count is not None and self.parameter_count < 0:
             raise ValueError("parameter_count must be zero or greater")
 

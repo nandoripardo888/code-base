@@ -9,6 +9,11 @@ from code_harness.application.indexing.chunk_builder import (
     build_chunks,
     textual_fallback,
 )
+from code_harness.application.indexing.progress import (
+    IndexProgressCallback,
+    IndexProgressEvent,
+    IndexProgressPhase,
+)
 from code_harness.domain.enums import IndexMode, IndexState
 from code_harness.domain.errors import CodeHarnessError
 from code_harness.domain.models.code_location import CodeLocation
@@ -31,6 +36,11 @@ from code_harness.domain.protocols.vector_index import VectorIndex
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _emit(progress: IndexProgressCallback | None, event: IndexProgressEvent) -> None:
+    if progress is not None:
+        progress(event)
 
 
 class IndexCoordinator:
@@ -59,11 +69,23 @@ class IndexCoordinator:
         self._chunk_max_chars = chunk_max_chars
         self._clock = clock
 
-    def index(self, mode: IndexMode) -> IndexReport:
+    def index(
+        self,
+        mode: IndexMode,
+        *,
+        progress: IndexProgressCallback | None = None,
+    ) -> IndexReport:
         self._store.initialize(self._project)
         started = self._clock()
         run_id = self._store.start_run(self._project.project_id, mode, started.isoformat())
         try:
+            _emit(
+                progress,
+                IndexProgressEvent(
+                    IndexProgressPhase.DISCOVERING,
+                    message="Discovering project files",
+                ),
+            )
             discovered = self._catalog.list_files()
             stored = self._store.list_files(self._project.project_id)
             plan = detect_changes(
@@ -79,8 +101,20 @@ class IndexCoordinator:
             new_count = 0
             changed_count = 0
             unchanged_count = len(plan.unchanged)
+            analyze_total = len(plan.new) + len(plan.candidates)
+            analyze_current = 0
 
             for source_file in plan.new:
+                analyze_current += 1
+                _emit(
+                    progress,
+                    IndexProgressEvent(
+                        IndexProgressPhase.ANALYZING,
+                        current=analyze_current,
+                        total=analyze_total,
+                        path=source_file.path,
+                    ),
+                )
                 try:
                     source = self._reader.load(source_file.path)
                 except CodeHarnessError as error:
@@ -93,6 +127,16 @@ class IndexCoordinator:
                     updates.append(self._build_update(source, warnings))
 
             for source_file, previous in plan.candidates:
+                analyze_current += 1
+                _emit(
+                    progress,
+                    IndexProgressEvent(
+                        IndexProgressPhase.ANALYZING,
+                        current=analyze_current,
+                        total=analyze_total,
+                        path=source_file.path,
+                    ),
+                )
                 try:
                     source = self._reader.load(source_file.path)
                 except CodeHarnessError as error:
@@ -126,6 +170,14 @@ class IndexCoordinator:
             ):
                 warnings.append("Index verification found differences from the working tree.")
 
+            if self._embedding_provider is not None and self._vector_index is not None:
+                _emit(
+                    progress,
+                    IndexProgressEvent(
+                        IndexProgressPhase.EMBEDDING,
+                        message="Preparing semantic embeddings",
+                    ),
+                )
             embedding_batch, embedding_failures = self._prepare_embeddings(
                 updates,
                 tuple(dict.fromkeys(removed_paths)),
@@ -166,6 +218,13 @@ class IndexCoordinator:
                 embedded_chunks=len(embedding_batch.links),
                 embedding_failures=embedding_failures,
             )
+            _emit(
+                progress,
+                IndexProgressEvent(
+                    IndexProgressPhase.COMMITTING,
+                    message="Writing index to disk",
+                ),
+            )
             self._store.commit_files(report, tuple(updates), tuple(dict.fromkeys(removed_paths)))
             try:
                 self._store.commit_embeddings(embedding_batch)
@@ -183,6 +242,15 @@ class IndexCoordinator:
                     embedding_failures=report.embedding_failures + 1,
                 )
             self._store.complete_run(run_id, report)
+            _emit(
+                progress,
+                IndexProgressEvent(
+                    IndexProgressPhase.COMPLETE,
+                    current=analyze_total,
+                    total=analyze_total,
+                    message="Indexing complete",
+                ),
+            )
             return report
         except Exception as error:
             self._store.fail_run(run_id, self._clock().isoformat(), str(error))

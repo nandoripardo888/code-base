@@ -14,6 +14,7 @@ from code_harness.domain.enums import IndexMode, IndexState, MatchType
 from code_harness.domain.errors import EmbeddingUnavailableError
 from code_harness.domain.models.index_report import IndexedSource
 from code_harness.domain.models.semantic import EmbeddingIdentity, Vector
+from code_harness.domain.models.tool_result import warning_message
 from code_harness.infrastructure.embeddings import FakeEmbeddingProvider
 from code_harness.infrastructure.filesystem import (
     LocalFileCatalog,
@@ -146,7 +147,7 @@ def test_semantic_search_skips_stale_results_and_applies_language_filter(
     source = copied_repository / "src" / "agenda.py"
     source.write_text(source.read_text(encoding="utf-8") + "\n# stale\n", encoding="utf-8")
     stale = tool.execute(SemanticSearchRequest("agenda", max_results=50))
-    assert any("stale semantic result" in warning for warning in stale.warnings)
+    assert any("stale semantic result" in warning_message(warning) for warning in stale.warnings)
     assert all(hit.snippet.location.path != "src/agenda.py" for hit in stale.data)
 
 

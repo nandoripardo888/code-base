@@ -86,6 +86,9 @@ def test_cli_indexes_reports_status_and_runs_doctor(
 
     assert initialized.exit_code == 0, initialized.output
     assert indexed.exit_code == 0, indexed.output
+    assert "Indexing: discovering files..." in indexed.stderr
+    assert "Indexing: writing index to disk..." in indexed.stderr
+    assert "Indexing: complete." in indexed.stderr
     assert json.loads(indexed.stdout)["data"]["indexed_files"] > 0
     assert json.loads(repeated.stdout)["data"]["indexed_files"] == 0
     assert json.loads(status.stdout)["data"]["state"] == "ready"
@@ -101,3 +104,153 @@ def test_cli_model_prepare_requires_semantic_configuration(copied_repository: Pa
 
     assert result.exit_code == 4
     assert "embedding_unavailable" in result.stderr
+
+
+def test_cli_execution_inspect_requires_enablement(copied_repository: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "--project",
+            str(copied_repository),
+            "--output",
+            "json",
+            "execution",
+            "inspect-process",
+            "git",
+            "status",
+            "--short",
+        ],
+        env={"CODE_HARNESS_EXECUTION": "0"},
+    )
+
+    assert result.exit_code == 4
+    assert json.loads(result.stderr)["error"]["code"] == "execution_disabled"
+
+
+def test_cli_execution_inspect_process_when_enabled(
+    copied_repository: Path, tmp_path: Path
+) -> None:
+    environment = {
+        "CODE_HARNESS_HOME": str(tmp_path / "state"),
+        "CODE_HARNESS_EXECUTION": "1",
+    }
+    result = runner.invoke(
+        app,
+        [
+            "--project",
+            str(copied_repository),
+            "--output",
+            "json",
+            "execution",
+            "inspect-process",
+            "git",
+            "status",
+            "--short",
+        ],
+        env=environment,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["data"]["decision"] == "allow"
+    assert payload["data"]["kind"] == "process"
+
+
+def test_cli_execution_inspect_powershell_when_enabled(
+    copied_repository: Path, tmp_path: Path
+) -> None:
+    environment = {
+        "CODE_HARNESS_HOME": str(tmp_path / "state"),
+        "CODE_HARNESS_EXECUTION": "1",
+    }
+    script_file = copied_repository / "inspect.ps1"
+    script_file.write_text("Get-ChildItem\n", encoding="utf-8")
+    result = runner.invoke(
+        app,
+        [
+            "--project",
+            str(copied_repository),
+            "--output",
+            "json",
+            "execution",
+            "inspect-powershell",
+            "--script",
+            "Get-ChildItem",
+        ],
+        env=environment,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["data"]["decision"] == "approval_required"
+    assert payload["data"]["kind"] == "powershell"
+
+    from_file = runner.invoke(
+        app,
+        [
+            "--project",
+            str(copied_repository),
+            "--output",
+            "json",
+            "execution",
+            "inspect-powershell",
+            "--file",
+            "inspect.ps1",
+        ],
+        env=environment,
+    )
+    assert from_file.exit_code == 0, from_file.output
+    assert json.loads(from_file.stdout)["data"]["script_hash"]
+
+    both = runner.invoke(
+        app,
+        [
+            "--project",
+            str(copied_repository),
+            "--output",
+            "json",
+            "execution",
+            "inspect-powershell",
+            "--script",
+            "Get-ChildItem",
+            "--file",
+            "inspect.ps1",
+        ],
+        env=environment,
+    )
+    assert both.exit_code == 2
+    assert json.loads(both.stderr)["error"]["code"] == "invalid_query"
+
+    neither = runner.invoke(
+        app,
+        [
+            "--project",
+            str(copied_repository),
+            "--output",
+            "json",
+            "execution",
+            "inspect-powershell",
+        ],
+        env=environment,
+    )
+    assert neither.exit_code == 2
+    assert json.loads(neither.stderr)["error"]["code"] == "invalid_query"
+
+    with_capability = runner.invoke(
+        app,
+        [
+            "--project",
+            str(copied_repository),
+            "--output",
+            "json",
+            "execution",
+            "inspect-process",
+            "git",
+            "status",
+            "--capability",
+            "git_read",
+        ],
+        env=environment,
+    )
+    assert with_capability.exit_code == 0, with_capability.output
+    assert "git_read" in json.loads(with_capability.stdout)["data"]["requested_capabilities"]

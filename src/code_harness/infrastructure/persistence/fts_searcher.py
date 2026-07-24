@@ -142,13 +142,9 @@ class IndexedTextSearcher:
                 content = "".join(lines[start - 1 : end])
                 column = haystack.find(needle)
                 start_column = column + 1 if column >= 0 else None
-                end_column = (
-                    start_column + len(query) - 1 if start_column is not None else None
-                )
+                end_column = start_column + len(query) - 1 if start_column is not None else None
                 match_type = (
-                    MatchType.EXACT_LITERAL
-                    if haystack.strip() == needle
-                    else MatchType.SUBSTRING
+                    MatchType.EXACT_LITERAL if haystack.strip() == needle else MatchType.SUBSTRING
                 )
                 hits.append(
                     SearchHit(

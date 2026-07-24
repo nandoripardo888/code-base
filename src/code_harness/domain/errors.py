@@ -201,5 +201,86 @@ class CursorStaleError(CodeHarnessError):
         super().__init__(ErrorCode.CURSOR_STALE, message)
 
 
+class InvalidPathKindError(CodeHarnessError):
+    def __init__(self, path: str, *, expected: str, actual: str) -> None:
+        super().__init__(
+            ErrorCode.INVALID_PATH_KIND,
+            f"Path kind mismatch for {path}: expected {expected}, found {actual}.",
+            details={"path": path, "expected": expected, "actual": actual},
+        )
+
+
+class ExecutionDisabledError(CodeHarnessError):
+    def __init__(
+        self,
+        message: str = "Command execution is disabled. Set CODE_HARNESS_EXECUTION=1 to enable.",
+    ) -> None:
+        super().__init__(
+            ErrorCode.EXECUTION_DISABLED,
+            message,
+            capability="execution",
+            remediation=(
+                "Enable execution with CODE_HARNESS_EXECUTION=1 after reviewing the trust boundary."
+            ),
+        )
+
+
+class ExecutionNotSupportedError(CodeHarnessError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__(
+            ErrorCode.EXECUTION_NOT_SUPPORTED,
+            message,
+            details=details,
+            capability="execution",
+        )
+
+
+class ExecutionPolicyDeniedError(CodeHarnessError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__(
+            ErrorCode.EXECUTION_POLICY_DENIED,
+            message,
+            details=details,
+            capability="execution",
+        )
+
+
+class ExecutionApprovalRequiredError(CodeHarnessError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__(
+            ErrorCode.EXECUTION_APPROVAL_REQUIRED,
+            message,
+            details=details,
+            capability="execution",
+            recoverable=True,
+            remediation="Approve the exact command digest via the local CLI/API, then retry.",
+        )
+
+
+class ExecutionElevatedSessionError(CodeHarnessError):
+    def __init__(
+        self,
+        message: str = "Execution is blocked because the host session is elevated.",
+    ) -> None:
+        super().__init__(
+            ErrorCode.EXECUTION_ELEVATED_SESSION,
+            message,
+            capability="execution",
+            remediation=(
+                "Run without elevation, or set execution_allow_elevated only after explicit review."
+            ),
+        )
+
+
+class InvalidExecutionRequestError(CodeHarnessError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__(
+            ErrorCode.INVALID_EXECUTION_REQUEST,
+            message,
+            details=details,
+            capability="execution",
+        )
+
+
 def is_recoverable_error(error: BaseException) -> bool:
     return isinstance(error, CodeHarnessError) and error.recoverable

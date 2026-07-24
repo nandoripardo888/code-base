@@ -10,8 +10,8 @@ from code_harness.bootstrap.settings import Settings
 from code_harness.domain.enums import IndexMode, IndexState, ParseState
 from code_harness.domain.errors import ParserCrashError
 from code_harness.domain.models.code_location import CodeLocation
-from code_harness.domain.models.tool_result import warning_message
 from code_harness.domain.models.structural import AnalyzeRequest, AnalyzeResult, CodeReference
+from code_harness.domain.models.tool_result import warning_message
 from code_harness.infrastructure.filesystem import (
     LocalFileCatalog,
     LocalIndexSourceReader,
@@ -142,9 +142,7 @@ def test_references_fall_back_to_lexical_search_without_index(
     result = CodeHarness.open(copied_repository).find_references("AgendaService")
 
     assert result.data
-    assert any(
-        item.reference and item.reference.kind == "unknown_textual" for item in result.data
-    )
+    assert any(item.reference and item.reference.kind == "unknown_textual" for item in result.data)
     assert any("lexical" in warning_message(warning) for warning in result.warnings)
 
 

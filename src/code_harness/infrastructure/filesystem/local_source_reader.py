@@ -64,8 +64,8 @@ class LocalSourceReader:
             if char_truncated:
                 truncated = True
                 reason = "max_chars"
-        end_line = 1 if not selected else selected.count("\n") + (
-            0 if selected.endswith("\n") else 1
+        end_line = (
+            1 if not selected else selected.count("\n") + (0 if selected.endswith("\n") else 1)
         )
         end_line = max(1, min(end_line, total_lines or 1))
         next_start = end_line + 1 if truncated and end_line < total_lines else None
@@ -123,8 +123,8 @@ class LocalSourceReader:
             selected, truncated = _truncate_at_line_boundary(selected, max_chars)
             reason = "max_chars"
             if truncated:
-                actual_end = start_line + selected.count("\n") - (
-                    1 if selected.endswith("\n") else 0
+                actual_end = (
+                    start_line + selected.count("\n") - (1 if selected.endswith("\n") else 0)
                 )
                 actual_end = max(start_line, actual_end)
         next_start = actual_end + 1 if truncated and actual_end < end_line else None

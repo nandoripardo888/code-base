@@ -1,6 +1,6 @@
 from code_harness.application.tools._timing import timed
 from code_harness.domain.models.index_report import DoctorReport
-from code_harness.domain.models.tool_result import ToolResult
+from code_harness.domain.models.tool_result import ToolResult, normalize_warnings
 from code_harness.domain.protocols.diagnostic_provider import DiagnosticProvider
 
 
@@ -13,4 +13,8 @@ class DoctorTool:
         warnings = tuple(
             check.message for check in report.checks if check.status.value == "warning"
         )
-        return ToolResult(report, elapsed_ms, warnings=warnings)
+        return ToolResult(
+            report,
+            elapsed_ms,
+            warnings=normalize_warnings(warnings, code="doctor_warning"),
+        )

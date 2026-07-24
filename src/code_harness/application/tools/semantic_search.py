@@ -109,6 +109,8 @@ class SemanticSearchTool:
             hits,
             elapsed_ms,
             truncated=truncated,
-            warnings=normalize_warnings(warnings, code="embedding_unavailable", capability="semantic"),
+            warnings=normalize_warnings(
+                warnings, code="embedding_unavailable", capability="semantic"
+            ),
             index_state=status.state.value,
         )

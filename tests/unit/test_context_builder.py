@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from code_harness.application.dto.requests import BuildContextRequest
 from code_harness.application.tools.build_context import BuildContextTool
 from code_harness.domain.enums import IndexState, MatchType
+from code_harness.domain.models.capability import ToolWarning
 from code_harness.domain.models.code_chunk import CodeSnippet
 from code_harness.domain.models.code_location import CodeLocation
 from code_harness.domain.models.hybrid import HybridSearchHit, SearchEvidence
@@ -14,7 +15,6 @@ from code_harness.domain.models.structural import (
     StructuralSearchResult,
 )
 from code_harness.domain.models.tool_result import ToolResult, warning_message
-from code_harness.domain.models.capability import ToolWarning
 
 
 def _source(path: str, content: str, content_hash: str = "hash") -> IndexedSource:
@@ -158,9 +158,7 @@ def test_context_builder_reports_unavailable_or_stale_expansion() -> None:
     ).execute(BuildContextRequest("work"))
 
     assert any("not ready" in warning_message(warning) for warning in no_index.warnings)
-    assert any(
-        "stale context expansion" in warning_message(warning) for warning in stale.warnings
-    )
+    assert any("stale context expansion" in warning_message(warning) for warning in stale.warnings)
 
 
 def test_context_builder_clips_complete_lines_to_budget() -> None:

@@ -2,7 +2,9 @@
 
 ## 0. Controle do documento
 
-Última atualização: **23 de julho de 2026**.
+Última atualização: **23 de julho de 2026** (revisão local Grok 4 contra o clone).
+
+Clone validado: repositório Git `code-base` (`origin`: `nandoripardo888/code-base`), pacote Python `code-harness` em `src/code_harness/`, branch `main` em `2434c8e`, working tree limpa.
 
 Este documento define a introdução de uma capacidade opcional de execução de comandos no `code-harness`, com foco inicial em Windows e PowerShell.
 
@@ -10,19 +12,24 @@ O plano **não altera o comportamento atual do produto**: enquanto nenhuma fase 
 
 A execução deverá ser entregue como capacidade separada, desabilitada por padrão e removível sem afetar busca, leitura, indexação, análise estrutural, busca semântica, construção de contexto ou o MCP de recuperação.
 
-### 0.1 Estado atual relevante
+### 0.1 Estado atual relevante (confirmado no clone)
 
 O repositório já possui:
 
-- arquitetura com dependências direcionadas para dentro;
+- arquitetura com dependências direcionadas para dentro (`docs/adr/0001-layered-architecture.md`);
 - application tools compartilhadas pela API Python, CLI e MCP;
-- composição manual em `bootstrap/container.py`;
-- DTOs imutáveis e erros tipados;
-- acesso a arquivos protegido pela raiz do projeto;
-- processos isolados para parsers e embeddings;
-- SQLite versionado para o índice;
-- handlers MCP finos;
-- testes arquiteturais, de contrato e cobertura mínima.
+- composição manual em `src/code_harness/bootstrap/container.py` (`ApplicationContainer` + `build_container`);
+- DTOs imutáveis em `application/dto/requests.py` e erros tipados em `domain/errors.py` + `ErrorCode` em `domain/enums.py`;
+- acesso a arquivos protegido por `PathGuard` (`infrastructure/filesystem/path_guard.py`);
+- processos isolados para parsers e embeddings (workers nativos via `subprocess`);
+- SQLite versionado para o índice (`schema_migrations` + `PRAGMA user_version` em `infrastructure/persistence/`);
+- handlers MCP finos em `interfaces/mcp/handlers.py`, gate `mcp_expose_index_commands`;
+- serialização compartilhada em `interfaces/serialization.py`;
+- CLI Typer monolítica em `interfaces/cli/main.py` com sub-apps `files` / `search` / `models` / `mcp`;
+- testes arquiteturais em `tests/contract/test_architecture.py`;
+- cobertura mínima (`fail_under = 85` em `pyproject.toml`).
+
+**Ainda não existe** nenhum módulo `infrastructure/execution/`, `bootstrap/execution.py`, tool de execução, extra `execution` no `pyproject.toml`, nem campos de execução em `Settings`.
 
 A nova capacidade deverá preservar esses padrões.
 
@@ -48,10 +55,25 @@ Code Harness
     ├── execução supervisionada
     ├── cancelamento
     ├── auditoria
-    └── sandbox opcional
+    └── isolamento opcional (backend windows_sandbox)
 ```
 
 A instalação básica continuará somente leitura.
+
+### 0.3 Pré-requisitos da máquina de desenvolvimento (clone local)
+
+Validados em 23/07/2026 neste host:
+
+| Item | Estado local | Impacto no plano |
+|------|--------------|------------------|
+| Python 3.12 + venv | OK (3.12.5) | — |
+| PowerShell 7 (`pwsh`) | **Ausente** (só Windows PowerShell 5.1) | Bloqueia E3 e parte de E0 (runner/`pwsh --version`); AST de inspeção pode usar o Parser do 5.1 só para smoke, mas o produto exige `pwsh` |
+| `System.Management.Automation.Language.Parser` | Disponível via Windows PowerShell 5.1 | Útil para fixtures de AST; não substitui requisito de PS7 na execução |
+| APIs Job Object (`CreateJobObjectW`, `AssignProcessToJobObject`, `CreateProcessW`, `ResumeThread`, …) | Disponíveis via `ctypes` | E1 viável sem pywin32 obrigatório |
+| `pywin32` (312) | Presente no `.venv`, **não** declarado em `pyproject.toml` | Tratar como opcional no extra `execution`; preferir `ctypes` para Job Object |
+| Windows Sandbox (`Containers-DisposableClientVM`) | **Disabled** | E7 não validável neste host até habilitar o feature |
+| Sessão elevada (Administrador) | **Sim** (`IsInRole(Administrator)=True`) | Risco: testes de execução sob admin ampliam blast radius; rodar testes E1+ em sessão não elevada |
+| `.code-harness/` | gitignored | Adequado para `index.db` e futuro `execution.db` |
 
 ---
 
@@ -109,7 +131,8 @@ A primeira entrega não incluirá:
 - classificação de risco por LLM;
 - alegação de sandbox forte no backend de host;
 - execução implícita de `.bat` ou `.cmd` por shell;
-- exposição de uma tool MCP capaz de aprovar a própria solicitação.
+- exposição de uma tool MCP capaz de aprovar a própria solicitação;
+- uso de Windows PowerShell 5.1 como runner de produção (somente `pwsh` 7+).
 
 ---
 
@@ -123,11 +146,13 @@ mcp_expose_execution = false
 mcp_expose_powershell = false
 ```
 
-Nenhuma dependência Windows deverá ser importada quando a execução estiver desabilitada.
+Nenhuma dependência Windows de execução deverá ser importada no caminho frio quando a execução estiver desabilitada. Em concreto: `build_container` **não** importa `code_harness.infrastructure.execution*` no topo do módulo; o import fica dentro de `build_execution_container` chamado só se `execution_enabled`.
+
+Nota: o repositório já usa `subprocess` em ripgrep/parsers/embeddings; a restrição nova é sobre módulos do *subsistema de execução* e extras Windows (`pywin32`), não sobre banir `subprocess` em toda a infra.
 
 ### 3.2 Inspeção separada da execução
 
-`inspect_command` não poderá executar o comando, carregar perfil PowerShell, importar módulos do projeto ou iniciar scripts do repositório.
+`inspect_process` / `inspect_powershell` não poderão executar o comando do usuário, carregar perfil PowerShell, importar módulos do projeto ou iniciar scripts do repositório analisado. O worker AST interno é código constante do harness, não código do projeto.
 
 ### 3.3 Menor capacidade
 
@@ -167,7 +192,9 @@ host_supervised
 └── credenciais: apenas mitigação parcial
 ```
 
-Se uma solicitação exigir isolamento não suportado, deverá falhar com erro tipado.
+Se uma solicitação exigir isolamento não suportado, deverá falhar com erro tipado (`backend_capability_unavailable`).
+
+**Nomenclatura:** o backend inicial chama-se `host_supervised`, nunca “sandbox”. Isolamento real fica em `windows_sandbox`. Pastas de código usam `backends/`, não `sandbox/` para o host.
 
 ### 3.10 Saída não confiável
 
@@ -198,7 +225,9 @@ Cobrir ao menos:
 17. vazamento pela auditoria;
 18. symlink e normalização de caminho;
 19. diferenças entre PowerShell 7 e Windows PowerShell 5.1;
-20. comandos aparentemente de leitura que executam código do projeto.
+20. comandos aparentemente de leitura que executam código do projeto;
+21. execução sob sessão Administrador (blast radius ampliado neste host);
+22. reutilização acidental de `pywin32` não pinado do venv local.
 
 ---
 
@@ -213,29 +242,38 @@ interfaces ───▶ application ───▶ domain
                infrastructure
 ```
 
-O MCP continuará somente como adaptador.
+O MCP continuará somente como adaptador (`docs/adr/0004-mcp-as-adapter.md`).
 
 ### 5.1 Composição opcional
+
+Estado atual (`ApplicationContainer`, linhas 49–71 de `bootstrap/container.py`): todos os campos são tools/retrieval obrigatórios; **não** há campo opcional.
+
+Ajuste mínimo compatível (campo novo **no final**, com default):
 
 ```python
 @dataclass(frozen=True, slots=True)
 class ApplicationContainer:
-    # tools atuais
+    # ... tools atuais inalterados ...
+    prepare_semantic_model: PrepareSemanticModelTool
     execution: ExecutionContainer | None = None
 ```
 
 ```text
 build_container(settings)
-    ├── monta retrieval/indexação normalmente
-    └── se execution_enabled:
-            build_execution_container(settings, project, guard)
+    ├── monta retrieval/indexação normalmente (como hoje)
+    └── se settings.execution_enabled:
+            execution = build_execution_container(settings, project, guard)
+        senão:
+            execution = None
 ```
+
+`ExecutionContainer` vive em `bootstrap/execution.py` e agrupa só tools/stores de execução. Imports Windows ficam lá, lazy.
 
 ### 5.2 Persistência separada
 
-Não adicionar execução ao `RepositoryStore`, que representa o índice.
+Não adicionar execução ao `RepositoryStore` / `SQLiteRepositoryStore`, que representa o índice (`index.db`).
 
-Criar:
+Criar stores próprios, protocolos em `domain/protocols/`, implementação em `infrastructure/execution/persistence/`:
 
 ```text
 ExecutionStore
@@ -243,11 +281,13 @@ ApprovalStore
 ExecutionArtifactStore
 ```
 
-Banco padrão:
+Banco padrão (espelhando `CODE_HARNESS_INDEX_PATH`):
 
 ```text
 .code-harness/execution.db
 ```
+
+via `CODE_HARNESS_EXECUTION_STORE_PATH` (relativo à raiz do projeto se não absoluto).
 
 O índice permanece em:
 
@@ -255,43 +295,50 @@ O índice permanece em:
 .code-harness/index.db
 ```
 
+Migrations da execução: **mesmo padrão** do índice (`apply_migrations` + tabela `schema_migrations` + `PRAGMA user_version`), mas em arquivo/DB separado. Nome da tabela pode ser `schema_migrations` *dentro* de `execution.db` (não misturar com `index.db`). Evitar o nome confuso `execution_schema_migrations` a menos que se documente a razão; o isolamento já é por arquivo.
+
 ---
 
-## 6. Estrutura proposta
+## 6. Estrutura proposta (alinhada ao layout atual)
+
+Caminhos relativos a `src/code_harness/`. Itens marcados com *(estender)* já existem.
 
 ```text
 src/code_harness/
 ├── domain/
 │   ├── models/
-│   │   ├── command_execution.py
-│   │   ├── command_inspection.py
-│   │   ├── execution_approval.py
-│   │   └── execution_backend.py
+│   │   ├── command_execution.py          # novo
+│   │   ├── command_inspection.py         # novo
+│   │   ├── execution_approval.py         # novo
+│   │   └── execution_backend.py          # novo
 │   ├── protocols/
-│   │   ├── command_analyzer.py
-│   │   ├── command_policy.py
-│   │   ├── command_runner.py
-│   │   ├── execution_store.py
-│   │   ├── approval_store.py
-│   │   └── execution_artifact_store.py
-│   └── enums.py
+│   │   ├── command_analyzer.py           # novo
+│   │   ├── command_policy.py             # novo
+│   │   ├── command_runner.py             # novo
+│   │   ├── execution_store.py            # novo
+│   │   ├── approval_store.py             # novo
+│   │   └── execution_artifact_store.py   # novo
+│   ├── enums.py                          # *(estender)* StrEnums de execução
+│   └── errors.py                         # *(estender)* classes de erro
 │
 ├── application/
 │   ├── dto/
-│   │   └── execution_requests.py
+│   │   ├── requests.py                   # *(inalterado)*
+│   │   └── execution_requests.py         # novo
 │   └── tools/
-│       ├── inspect_command.py
-│       ├── run_process.py
-│       ├── run_powershell.py
-│       ├── get_execution.py
-│       └── terminate_execution.py
+│       ├── inspect_process.py            # novo
+│       ├── inspect_powershell.py         # novo
+│       ├── run_process.py                # novo
+│       ├── run_powershell.py             # novo
+│       ├── get_execution.py              # novo
+│       └── terminate_execution.py        # novo
 │
 ├── infrastructure/
 │   └── execution/
 │       ├── analysis/
 │       │   ├── process_analyzer.py
 │       │   ├── powershell_ast_analyzer.py
-│       │   ├── powershell_parser.ps1
+│       │   ├── powershell_parser.ps1     # worker constante do harness
 │       │   └── risk_rules.py
 │       ├── policy/
 │       │   ├── deterministic_policy.py
@@ -304,10 +351,10 @@ src/code_harness/
 │       │   ├── process_registry.py
 │       │   └── output_collector.py
 │       ├── windows/
-│       │   ├── job_object.py
+│       │   ├── job_object.py             # preferir ctypes
 │       │   ├── process_factory.py
-│       │   └── acl.py
-│       ├── sandbox/
+│       │   └── acl.py                    # pywin32 opcional
+│       ├── backends/                      # NÃO chamar de sandbox/
 │       │   ├── host_supervised_backend.py
 │       │   └── windows_sandbox_backend.py
 │       ├── persistence/
@@ -321,22 +368,31 @@ src/code_harness/
 │           └── output_redactor.py
 │
 ├── bootstrap/
-│   └── execution.py
+│   ├── container.py                      # *(estender)* campo + wire opcional
+│   ├── settings.py                       # *(estender)* flags/env
+│   └── execution.py                      # novo: ExecutionContainer + build_*
 │
 └── interfaces/
     ├── cli/
-    │   └── execution_commands.py
+    │   ├── main.py                       # *(estender)* add_typer(exec_app)
+    │   └── execution_commands.py         # novo: Typer sub-app "exec"
     ├── mcp/
-    │   └── execution_handlers.py
-    └── python_api/
-        └── harness.py
+    │   ├── handlers.py                   # *(estender)* delegar registro opcional
+    │   ├── execution_handlers.py         # novo: handlers finos
+    │   └── server.py                     # *(estender)* instructions se execução exposta
+    ├── python_api/
+    │   └── harness.py                    # *(estender)* métodos tipados
+    ├── serialization.py                  # *(reusar)*; estender se necessário
+    └── cli/renderers/output.py           # *(estender)* render text de ExecutionResult
 ```
+
+ADR novo: `docs/adr/0005-execution-trust-boundary.md`.
 
 ---
 
 ## 7. Modelos e enums
 
-Adicionar:
+**Estender** `domain/enums.py` (não criar segundo arquivo de enums):
 
 ```python
 class CommandKind(StrEnum):
@@ -360,11 +416,8 @@ class ExecutionState(StrEnum):
     CANCELLED = "cancelled"
     BLOCKED = "blocked"
     SANDBOX_VIOLATION = "sandbox_violation"
-```
 
-Capacidades:
 
-```python
 class ExecutionCapability(StrEnum):
     WORKSPACE_READ = "workspace_read"
     WORKSPACE_WRITE = "workspace_write"
@@ -380,28 +433,22 @@ class ExecutionCapability(StrEnum):
     REGISTRY_WRITE = "registry_write"
     SERVICE_CONTROL = "service_control"
     ADMIN = "admin"
-```
 
-Aprovação:
 
-```python
 class ApprovalState(StrEnum):
     PENDING = "pending"
     APPROVED = "approved"
     DENIED = "denied"
     CONSUMED = "consumed"
     EXPIRED = "expired"
-```
 
-Backends:
 
-```python
 class ExecutionBackendKind(StrEnum):
     HOST_SUPERVISED = "host_supervised"
     WINDOWS_SANDBOX = "windows_sandbox"
 ```
 
-Garantias:
+Modelos em arquivos novos sob `domain/models/` (dataclasses `frozen=True, slots=True`, padrão do projeto):
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -413,11 +460,8 @@ class BackendGuarantees:
     network_isolated: bool
     credentials_isolated: bool
     workspace_write_isolated: bool
-```
 
-Solicitação normalizada:
 
-```python
 @dataclass(frozen=True, slots=True)
 class NormalizedCommand:
     kind: CommandKind
@@ -429,11 +473,8 @@ class NormalizedCommand:
     max_output_bytes: int
     requested_capabilities: tuple[ExecutionCapability, ...]
     reason: str | None
-```
 
-Inspeção:
 
-```python
 @dataclass(frozen=True, slots=True)
 class CommandInspection:
     normalized: NormalizedCommand
@@ -445,11 +486,8 @@ class CommandInspection:
     protected_path_matches: tuple[str, ...]
     backend_requirements: tuple[str, ...]
     approval_digest: str
-```
 
-Resultado:
 
-```python
 @dataclass(frozen=True, slots=True)
 class ExecutionResult:
     execution_id: str
@@ -470,11 +508,13 @@ class ExecutionResult:
     warnings: tuple[str, ...]
 ```
 
+**API surface:** tools e `CodeHarness` retornam `ToolResult[CommandInspection]` / `ToolResult[ExecutionResult]`, alinhado ao restante da API (não retornar o DTO “nu”).
+
 ---
 
 ## 8. Erros tipados
 
-Adicionar em `ErrorCode`:
+Adicionar valores em `ErrorCode` (`domain/enums.py`) e classes espelho em `domain/errors.py`, seguindo o padrão `CodeHarnessError` (code, message, details, recoverable, capability, remediation):
 
 ```text
 execution_disabled
@@ -498,11 +538,15 @@ output_limit_exceeded
 
 Os erros não devem carregar script completo, token ou segredo.
 
+Estender `_exit_code` em `interfaces/cli/main.py` para mapear novos códigos (ex.: `approval_required` → 2; `command_blocked` → 2; `powershell_unavailable` → 4; `execution_timeout` → 6).
+
+Estender `_ERROR_CAPABILITIES` / `_DEFAULT_REMEDIATIONS` / `_RECOVERABLE_CODES` conforme fizer sentido (`powershell_unavailable` recuperável; `command_blocked` não).
+
 ---
 
 ## 9. DTOs
 
-Criar `application/dto/execution_requests.py`.
+Criar `application/dto/execution_requests.py` (não misturar em `requests.py`).
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -550,9 +594,9 @@ class TerminateExecutionRequest:
     reason: str | None = None
 ```
 
-Validar:
+Validar em `__post_init__` com o helper `_require_positive` (mesmo padrão de `requests.py`):
 
-- timeout positivo e abaixo do máximo;
+- timeout positivo e abaixo do máximo (máximo vem das Settings na tool, não hardcode no DTO além de sanity);
 - limite de saída positivo;
 - `cwd` não vazio;
 - script não vazio;
@@ -564,10 +608,12 @@ Validar:
 
 ## 10. Application tools
 
-### `InspectCommandTool`
+Duas tools de inspeção (não um único `InspectCommandTool` ambíguo):
 
-1. normaliza `cwd`;
-2. localiza executável;
+### `InspectProcessTool` / `InspectPowerShellTool`
+
+1. normaliza `cwd` via extensão de `PathGuard` (ver §10.1);
+2. localiza executável / valida `pwsh`;
 3. analisa programa/argumentos ou AST PowerShell;
 4. infere capacidades;
 5. detecta paths protegidos;
@@ -576,14 +622,14 @@ Validar:
 8. calcula digest;
 9. retorna `ToolResult[CommandInspection]`.
 
-Nunca inicia o comando.
+Nunca inicia o comando do usuário.
 
 ### `RunProcessTool`
 
 ```text
 validar request
     ↓
-inspect_command
+inspect_process
     ↓
 deny → CommandBlockedError
     ↓
@@ -602,8 +648,8 @@ concluir auditoria
 
 ### `RunPowerShellTool`
 
-- exige `powershell_enabled`;
-- usa executável resolvido;
+- exige `execution_powershell_enabled`;
+- usa executável resolvido (`execution_powershell_executable`, default `pwsh`);
 - `-NoLogo -NoProfile -NonInteractive`;
 - script temporário controlado;
 - ACL restrita;
@@ -612,13 +658,20 @@ concluir auditoria
 - proíbe `EncodedCommand`;
 - não reutiliza sessão.
 
-### `GetExecutionTool`
+### `GetExecutionTool` / `TerminateExecutionTool`
 
-Retorna estado e saída coletada, sem aceitar caminho arbitrário.
+Como no plano original (estado/saída; encerrar árvore; idempotente).
 
-### `TerminateExecutionTool`
+### 10.1 PathGuard
 
-Encerra a árvore inteira e é idempotente.
+Hoje só existe `resolve_file` (exige arquivo). Para `cwd` e paths de policy, adicionar método mínimo, por exemplo:
+
+```python
+def resolve_within_root(self, path: str, *, must_exist: bool = False) -> tuple[Path, str]:
+    ...
+```
+
+que rejeita escape da raiz (`PathOutsideProjectError`), sem exigir que seja arquivo.
 
 ---
 
@@ -649,40 +702,13 @@ Usar:
 System.Management.Automation.Language.Parser
 ```
 
-O Python chama um script interno constante. O script do usuário entra como dado e vira JSON, sem ser executado.
+O Python chama um script interno constante (`powershell_parser.ps1`) via `pwsh` quando disponível. O script do usuário entra como dado e vira JSON, sem ser executado.
 
-Extrair:
+Em hosts sem `pwsh` (como este clone hoje): inspeção PowerShell falha com `powershell_unavailable` de forma tipada; não cair silenciosamente para Windows PowerShell 5.1 na API de produto. Testes de unidade do parser podem invocar 5.1 só em fixtures marcadas, se necessário, até PS7 ser instalado.
 
-- comandos;
-- pipelines;
-- redirecionamentos;
-- call operator;
-- dot sourcing;
-- invocações dinâmicas;
-- acesso a membros .NET;
-- `Add-Type`;
-- importação de módulos;
-- caminhos literais;
-- cmdlets de rede;
-- registro;
-- serviços;
-- tarefas agendadas;
-- criação de processos;
-- remoção e sobrescrita;
-- encoded commands;
-- comando definido por variável.
+Extrair: comandos, pipelines, redirecionamentos, call operator, dot sourcing, invocações dinâmicas, membros .NET, `Add-Type`, módulos, caminhos literais, rede, registro, serviços, tarefas, processos, remoção/sobrescrita, encoded commands, comando por variável.
 
-Dinâmico:
-
-```powershell
-& $comando
-Invoke-Expression $texto
-. $arquivo
-Import-Module $caminhoDinamico
-Start-Process $programa
-```
-
-Comportamento desconhecido nunca vira `allow`.
+Dinâmico / desconhecido nunca vira `allow`.
 
 ---
 
@@ -698,76 +724,16 @@ Ordem:
 5. hard deny?
 6. path protegido?
 7. capabilities requeridas?
-8. backend suporta as garantias?
+8. backend suporte as garantias?
 9. regra permite autoexecução?
 10. aprovação necessária?
 ```
 
-Decisões:
+Decisões: `ALLOW` | `APPROVAL_REQUIRED` | `DENY`.
 
-```text
-ALLOW
-APPROVAL_REQUIRED
-DENY
-```
+Hard deny / autoallow / paths protegidos: manter lista do plano original (§12 do documento anterior), incluindo `.code-harness/**`, policy, hooks, secrets.
 
-### Hard deny inicial
-
-- elevação administrativa;
-- `RunAs`;
-- desativação de antivírus/firewall;
-- acesso a processos de credenciais;
-- alteração da policy/auditoria;
-- alteração de hooks de segurança;
-- formatação e partições;
-- criação de administrador;
-- leitura de chaves privadas conhecidas;
-- execução fora da raiz;
-- `EncodedCommand`;
-- perfil PowerShell;
-- shell interativo.
-
-### Autoallow inicial
-
-Conjunto pequeno:
-
-```text
-git status
-git diff
-git diff --stat
-git log com limites
-rg
-python --version
-pwsh --version
-mvn --version
-ant -version
-```
-
-Builds e testes executam código do repositório; no host exigem aprovação.
-
-### Paths protegidos
-
-```text
-.git/config
-.git/hooks/**
-.code-harness/**
-.env
-.env.*
-**/*.pem
-**/*.key
-**/*credential*
-**/*secret*
-configuração da policy
-scripts internos do executor
-```
-
-A policy publica:
-
-```text
-policy_name
-policy_version
-ruleset_hash
-```
+A policy publica `policy_name`, `policy_version`, `ruleset_hash`.
 
 ---
 
@@ -798,23 +764,11 @@ policy_version
 ruleset_hash
 ```
 
-Estados:
+Estados: `pending → approved → consumed` (ou `denied` / `expired`).
 
-```text
-pending → approved → consumed
-        ↘ denied
-        ↘ expired
-```
+A aprovação expira, é de uso único, pertence ao projeto e digest, é consumida atomicamente.
 
-A aprovação:
-
-- expira;
-- é de uso único;
-- pertence ao projeto e digest;
-- é consumida atomicamente;
-- registra origem quando possível.
-
-CLI:
+CLI (Typer sub-app `exec`):
 
 ```powershell
 code-harness exec approvals list
@@ -827,19 +781,17 @@ code-harness exec approvals deny <approval-id>
 
 ## 14. Backend `host_supervised`
 
-O nome oficial não será `sandbox`.
+O nome oficial não será `sandbox`. Implementação em `infrastructure/execution/backends/host_supervised_backend.py`.
 
 ### 14.1 Processo suspenso
 
 No Windows:
 
-1. criar processo suspenso;
+1. criar processo suspenso (`CREATE_SUSPENDED`);
 2. atribuir ao Job Object;
 3. retomar thread principal.
 
-Isso evita filhos antes da contenção.
-
-`pywin32` poderá ser usado no extra Windows, após validação de versão.
+Preferência de implementação: **ctypes** contra `kernel32` (já validado neste host). `pywin32` só se necessário para ACL (`win32security`) no extra opcional, com versão pinada.
 
 ### 14.2 Job Object
 
@@ -851,168 +803,61 @@ Isso evita filhos antes da contenção.
 
 ### 14.3 Ambiente por allowlist
 
-Manter apenas o necessário:
+Manter apenas o necessário (`SystemRoot`, `WINDIR`, `TEMP`/`TMP` controlados, `PATH` sanitizado, `PATHEXT`, `HOME`/`USERPROFILE` quando indispensável).
 
-```text
-SystemRoot
-WINDIR
-TEMP/TMP controlados
-PATH sanitizado
-PATHEXT
-HOME/USERPROFILE quando indispensável
-```
-
-Não herdar automaticamente:
-
-```text
-AWS_*
-AZURE_*
-GOOGLE_*
-GITHUB_TOKEN
-GH_TOKEN
-NPM_TOKEN
-DOCKER_*
-KUBECONFIG
-SSH_AUTH_SOCK
-variáveis internas
-```
+Não herdar automaticamente tokens cloud/CI (`AWS_*`, `AZURE_*`, `GITHUB_TOKEN`, `GH_TOKEN`, `NPM_TOKEN`, `DOCKER_*`, `KUBECONFIG`, `SSH_AUTH_SOCK`, variáveis internas do harness).
 
 ### 14.4 Rede e credenciais
 
-O host não garante bloqueio de rede nem isolamento de credenciais. Portanto:
-
-- `network_outbound` nunca é autoaprovada;
-- garantia de rede bloqueada exige backend isolado;
-- resultado declara `network_isolated=false`;
-- `credential_access` é risco elevado.
+O host não garante bloqueio de rede nem isolamento de credenciais. Declarar `network_isolated=false` / `credentials_isolated=false`. Capacidades correspondentes nunca são autoallow no host.
 
 ---
 
 ## 15. PowerShell Runner
 
-Executar:
-
 ```powershell
 pwsh.exe -NoLogo -NoProfile -NonInteractive -File <script-controlado.ps1>
 ```
 
-Requisitos:
+Requisitos: PowerShell 7+; caminho absoluto; UTF-8; sem interpolação em outra linha; ACL; cwd do processo; stdout/stderr separados; timeout; Job Object; cleanup; hash do script; script completo não persistido por padrão; sem stdin interativo na v1.
 
-- PowerShell 7;
-- caminho absoluto resolvido;
-- script UTF-8;
-- nada interpolado em outra linha PowerShell;
-- ACL restrita;
-- `cwd` definido pelo processo;
-- stdout e stderr separados;
-- encoding normalizado;
-- timeout;
-- Job Object;
-- limpeza em `finally`;
-- hash do script;
-- script completo não persistido por padrão;
-- sem stdin interativo na primeira versão.
+Se `pwsh` ausente → `PowerShellUnavailableError`.
 
 ---
 
 ## 16. Saída
 
-Aplicar limites separados para stdout, stderr e combinado.
+Limites separados para stdout, stderr e combinado; leitura concorrente; truncamento marcado; redaction de tokens/headers/URLs/keys; não persistir saída completa por padrão.
 
-- ler ambos continuamente;
-- impedir deadlock;
-- marcar truncamento;
-- registrar bytes;
-- preservar início/final quando configurado;
-- redigir tokens, Authorization headers, URLs com credenciais e private keys;
-- não persistir saída completa por padrão.
+Primeira versão síncrona; fase assíncrona adiciona `wait=false`, `get_execution`, `terminate_execution`.
 
-A primeira versão pode ser síncrona. A fase assíncrona adiciona:
-
-```text
-wait=false
-get_execution
-terminate_execution
-```
+Serialização: reutilizar `interfaces/serialization.to_primitive` / `serialize_tool_result` / `serialize_error`. Estender renderer CLI (`output.py`) para formato texto de inspeção/execução.
 
 ---
 
 ## 17. Persistência e auditoria
 
-Schema próprio:
+Schema próprio em `execution.db`:
 
 ```text
-execution_schema_migrations
+schema_migrations
 executions
 execution_capabilities
 execution_events
 approval_requests
 ```
 
-Campos principais de `executions`:
+Campos principais de `executions` e eventos: manter lista do plano original (ids, digests, policy metadata, backend_guarantees_json, bytes/hashes, error redacted).
 
-```text
-execution_id
-project_id
-command_kind
-command_digest
-command_display_redacted
-script_hash
-cwd
-state
-policy_decision
-policy_name
-policy_version
-ruleset_hash
-backend
-backend_guarantees_json
-requested_capabilities_json
-required_capabilities_json
-approval_id
-started_at
-finished_at
-elapsed_ms
-exit_code
-stdout_bytes
-stderr_bytes
-stdout_hash
-stderr_hash
-stdout_truncated
-stderr_truncated
-error_code
-error_message_redacted
-```
+Não persistir por padrão: script completo, segredos em args, env, stdout/stderr completos, material secreto de aprovação.
 
-Eventos:
-
-```text
-created
-inspection_completed
-approval_requested
-approval_granted
-approval_consumed
-process_starting
-process_started
-output_truncated
-timeout_requested
-termination_requested
-process_finished
-cleanup_finished
-```
-
-Não persistir por padrão:
-
-- script completo;
-- segredos em argumentos;
-- valores do ambiente;
-- stdout/stderr completos;
-- material secreto de aprovação.
+Reusar `connect_database` ou extrair helper compartilhado se necessário (sem acoplar ao `RepositoryStore`).
 
 ---
 
 ## 18. Configuração
 
-Adicionar em `Settings`:
+Estender `Settings` em `bootstrap/settings.py` e `Settings.for_root` (mesmo padrão booleano de `CODE_HARNESS_SEMANTIC` / `CODE_HARNESS_MCP_EXPOSE_INDEX`):
 
 ```python
 execution_enabled: bool = False
@@ -1027,7 +872,7 @@ execution_max_script_chars: int = 100_000
 execution_max_argument_chars: int = 16_384
 execution_max_processes: int = 32
 execution_max_concurrent: int = 1
-execution_store_path: Path
+execution_store_path: Path  # default .code-harness/execution.db sob root
 execution_artifacts_path: Path
 execution_approval_ttl_seconds: int = 600
 execution_keep_artifacts: bool = False
@@ -1035,7 +880,7 @@ mcp_expose_execution: bool = False
 mcp_expose_powershell: bool = False
 ```
 
-Variáveis:
+Variáveis de ambiente (espelhar nomenclatura existente `CODE_HARNESS_*`):
 
 ```text
 CODE_HARNESS_EXECUTION
@@ -1054,49 +899,53 @@ CODE_HARNESS_MCP_EXPOSE_EXECUTION
 CODE_HARNESS_MCP_EXPOSE_POWERSHELL
 ```
 
-Combinações inseguras devem falhar no `__post_init__`.
+Combinações inseguras falham no `__post_init__` (ex.: `mcp_expose_execution` sem `execution_enabled`; `mcp_expose_powershell` sem powershell + execution; backend desconhecido).
 
 ---
 
 ## 19. Empacotamento
 
+Em `pyproject.toml`:
+
 ```toml
 [project.optional-dependencies]
 execution = [
-  # dependências Windows validadas
+  # pin explícito se ACL exigir pywin32; Job Object via ctypes não exige
+  # "pywin32==312; platform_system=='Windows'",
 ]
 execution-sandbox = [
-  # dependências futuras
+  # dependências futuras do Windows Sandbox
 ]
 ```
 
-Não incluir `execution` em `all` até a CI Windows e a revisão de segurança estarem estáveis.
+**Não** incluir `execution` em `all` até CI Windows + revisão de segurança estáveis.
+
+O `pywin32` já presente no `.venv` local **não** conta como dependência do projeto até ser declarado e pinado.
 
 ---
 
 ## 20. API Python
 
+Estender `CodeHarness` (`interfaces/python_api/harness.py`):
+
 ```python
-inspection = harness.inspect_process(
-    executable="git",
-    args=("status", "--short"),
-)
-
-result = harness.run_process(
-    executable="git",
-    args=("status", "--short"),
-)
-
-inspection = harness.inspect_powershell(
-    script="Get-ChildItem -Recurse",
-)
+def inspect_process(...) -> ToolResult[CommandInspection]: ...
+def inspect_powershell(...) -> ToolResult[CommandInspection]: ...
+def run_process(...) -> ToolResult[ExecutionResult]: ...
+def run_powershell(...) -> ToolResult[ExecutionResult]: ...
+def get_execution(...) -> ToolResult[ExecutionResult]: ...
+def terminate_execution(...) -> ToolResult[ExecutionResult]: ...
 ```
 
-A API retorna objetos tipados.
+Se `container.execution is None`, tools levantam `ExecutionDisabledError`.
 
 ---
 
 ## 21. CLI
+
+Novo módulo `interfaces/cli/execution_commands.py` exportando `exec_app = typer.Typer(...)`.
+
+Em `main.py`: `app.add_typer(exec_app, name="exec")` (mesmo padrão das linhas 45–48).
 
 ```powershell
 code-harness exec inspect-process git status --short
@@ -1109,7 +958,7 @@ code-harness exec approvals list
 code-harness exec approvals approve <approval-id>
 ```
 
-Scripts grandes devem vir por arquivo ou stdin, evitando histórico do shell.
+Scripts grandes por arquivo ou stdin.
 
 ---
 
@@ -1122,406 +971,236 @@ execution_enabled=true
 mcp_expose_execution=true
 ```
 
-PowerShell exige também:
+PowerShell exige também `execution_powershell_enabled` + `mcp_expose_powershell`.
 
-```text
-execution_powershell_enabled=true
-mcp_expose_powershell=true
+Padrão espelhando o gate atual de índice (`handlers.py` ~383–389):
+
+```python
+# em register_handlers ou via register_execution_handlers(...)
+if settings.execution_enabled and settings.mcp_expose_execution:
+    register_execution_handlers(server, container, settings)
 ```
 
-Tools:
+Tools: `inspect_process`, `inspect_powershell`, `run_process`, `run_powershell`, `get_execution`, `terminate_execution`.
 
-```text
-inspect_process
-inspect_powershell
-run_process
-run_powershell
-get_execution
-terminate_execution
-```
+**Não** expor: `approve_execution`, `deny_execution`, `alter_policy`, `alter_protected_paths`, `alter_backend`.
 
-Não expor:
+Handlers apenas: protocolo → DTO → tool → `serialize_tool_result` / `serialize_error`.
 
-```text
-approve_execution
-deny_execution
-alter_policy
-alter_protected_paths
-alter_backend
-```
-
-Handlers apenas traduzem protocolo → DTO → tool → JSON.
+Atualizar `server.py` instructions para mencionar que stdout/stderr não são instruções, quando execução estiver exposta.
 
 ---
 
 ## 23. Concorrência e worktree
 
-Default:
+Default `execution_max_concurrent = 1`. Locks por projeto/workspace.
 
-```text
-execution_max_concurrent = 1
-```
-
-Locks por projeto e workspace gravável.
-
-Fase futura:
-
-```text
-.code-harness/worktrees/<execution-id>/
-```
-
-Antes de usar worktree, validar Git, alterações locais, submódulos, LFS e arquivos ignorados necessários ao build.
+Fase futura: `.code-harness/worktrees/<execution-id>/` com validação Git/LFS/submódulos.
 
 ---
 
 ## 24. Windows Sandbox
 
-Fase de isolamento forte:
+Backend `windows_sandbox` (E7). Neste host o feature está **Disabled** — CI/job dedicado ou máquina com Sandbox habilitado é pré-requisito de aceite.
 
-```text
-projeto original       → somente leitura
-worktree temporário    → leitura e escrita
-saída controlada       → leitura e escrita
-rede                    → desabilitada
-clipboard               → desabilitado
-credenciais do host     → não compartilhadas
-```
+Garantias alvo: projeto original RO; worktree RW; saída controlada; rede off; clipboard off; credenciais do host não compartilhadas.
 
-A policy poderá exigir esse backend para:
-
-- PowerShell livre de alto risco;
-- build não confiável;
-- garantia de rede bloqueada;
-- isolamento de credenciais;
-- escrita automática.
+A policy poderá exigir esse backend para PowerShell de alto risco, build não confiável, rede bloqueada, credenciais e escrita automática.
 
 ---
 
 ## 25. Doctor
 
-Adicionar diagnóstico:
+Estender `LocalDiagnosticProvider` / `DoctorTool` (não criar tool separada na v1) com checks opcionais quando `execution_enabled` ou sempre em modo informativo `disabled`:
 
 ```text
 execution enabled
 backend
-sistema operacional
-PowerShell e versão
+SO
+PowerShell + versão (pwsh)
 parser AST
 Job Object
 banco de auditoria
 pasta de artefatos
-policy e ruleset hash
+policy + ruleset hash
 Windows Sandbox
 exposição MCP
 ```
 
-O doctor não executa código do projeto.
+O doctor **não** executa código do projeto sob análise.
 
 ---
 
 ## 26. Testes
 
-### Unitários
+### Unitários / contrato / integração existentes a ampliar
 
-- DTOs;
-- normalização;
-- digest;
-- capabilities;
-- hard deny;
-- autoallow;
-- paths protegidos;
-- policy por backend;
-- approvals;
-- redaction;
-- limite de saída;
-- transições.
+| Área | Arquivos atuais a estender ou espelhar |
+|------|----------------------------------------|
+| Settings/env | `tests/unit/test_settings.py` |
+| DTOs | `tests/unit/test_models_and_requests.py` |
+| PathGuard | `tests/unit/test_path_guard.py` |
+| Serialização | `tests/unit/test_serialization.py` |
+| Renderer CLI | `tests/unit/test_output_renderer.py` |
+| Doctor/capabilities | `tests/unit/test_capability_reporter.py`, diagnostics |
+| Arquitetura | `tests/contract/test_architecture.py` |
+| MCP gate | `tests/contract/test_mcp_adapter.py` |
+| Python API | `tests/integration/test_python_api.py` |
+| CLI | `tests/integration/test_cli.py` |
 
-### AST PowerShell
+Novos: `tests/unit/execution/…`, `tests/integration/execution/…` (markers Windows), fixtures AST PowerShell.
 
-Fixtures:
+### Arquitetura (regras atuais + extensões)
 
-```powershell
-Get-ChildItem
-Get-Content .\arquivo.txt
-Remove-Item -Recurse -Force .\pasta
-Invoke-WebRequest https://example.com
-& $comando
-Invoke-Expression $texto
-Start-Process powershell
-Set-ItemProperty HKLM:\...
-Get-Service
-Stop-Service
-Add-Type -TypeDefinition $codigo
-Import-Module .\modulo.psm1
-```
+Hoje (`tests/contract/test_architecture.py`):
 
-Confirmar que o parser não executa.
+- domain só importa `code_harness.domain` (L29–33);
+- application não importa infrastructure/interfaces/bootstrap (L36–41);
+- SDK `mcp` só em `interfaces/mcp` (L44–50);
+- `tree_sitter` só no worker (L53–59);
+- CLI não importa MCP no nível de módulo (L75–78).
 
-### Runner
+Adicionar:
 
-- stdout/stderr;
-- exit code;
-- timeout;
-- cancelamento;
-- filho e neto;
-- Job Object encerra árvore;
-- saída excessiva;
-- processo que não fecha pipes;
-- Unicode;
-- cleanup;
-- limite de concorrência.
-
-### Segurança
-
-- `cwd` fora da raiz;
-- symlink;
-- executável não permitido;
-- `git reset --hard`;
-- `git clean -fdx`;
-- `git push`;
-- PowerShell dinâmico;
-- `EncodedCommand`;
-- alteração de `.code-harness`;
-- digest diferente;
-- aprovação expirada/reutilizada;
-- MCP tentando aprovar;
-- token no ambiente do pai não chegando ao filho.
-
-### Arquitetura
-
-- MCP somente em `interfaces/mcp`;
-- domain sem infraestrutura;
-- application sem subprocess/pywin32/FastMCP;
-- execução não importada quando desabilitada;
-- `RepositoryStore` sem execução;
-- aprovação ausente das tools MCP.
+- `pywin32` / `win32*` só sob `infrastructure/execution/windows/`;
+- application sem `subprocess` / `ctypes.windll` / `win32*`;
+- `bootstrap/container.py` sem import de módulo de execução no topo (lazy);
+- aprovação ausente das tools MCP registradas;
+- `RepositoryStore` / schema do índice sem tabelas de execução.
 
 ### CI
 
 ```text
 Ubuntu sem execution
 Windows sem execution
-Windows com execution
-Windows AST smoke
+Windows com execution (após pwsh + extra)
+Windows AST smoke (requer pwsh)
 Windows Job Object integration
+Windows Sandbox (job condicional; skip se feature off)
 ```
-
-Windows Sandbox em job separado e condicional.
 
 ---
 
-## 27. Fases
+## 27. Fases e arquivos exatos
 
 ### E0 — Contratos e inspeção sem execução
 
-- ADR;
-- modelos/enums/errors;
-- DTOs;
-- protocolos;
-- analyzer de processo;
-- AST PowerShell;
-- policy;
-- digest;
-- CLI de inspeção;
-- testes.
+**Criar:**
 
-**Aceite:** classifica e gera digest sem executar nada.
+- `docs/adr/0005-execution-trust-boundary.md`
+- `domain/models/command_execution.py`, `command_inspection.py`, `execution_approval.py`, `execution_backend.py`
+- `domain/protocols/command_analyzer.py`, `command_policy.py` (+ stores stubs se necessário só na interface)
+- `application/dto/execution_requests.py`
+- `application/tools/inspect_process.py`, `inspect_powershell.py`
+- `infrastructure/execution/analysis/*`, `policy/*`, `approvals/digest.py`
+- `infrastructure/execution/backends/host_supervised_backend.py` (só `guarantees()`, sem runner)
+- `bootstrap/execution.py` (container mínimo de inspeção)
+- `interfaces/cli/execution_commands.py` (só inspect)
+- testes unitários de policy/AST/digest
+
+**Alterar:**
+
+- `domain/enums.py`, `domain/errors.py`
+- `bootstrap/settings.py`, `bootstrap/container.py`
+- `application/tools/__init__.py`
+- `interfaces/python_api/harness.py`
+- `interfaces/cli/main.py`
+- `interfaces/cli/renderers/output.py`
+- `infrastructure/filesystem/path_guard.py`
+- `tests/contract/test_architecture.py`, `tests/unit/test_settings.py`, …
+
+**Aceite:** classifica e gera digest sem executar comando do usuário. Sem `pwsh`: `inspect_powershell` retorna erro tipado; `inspect_process` de `git` funciona.
 
 ### E1 — `run_process` supervisionado síncrono
 
-- extra execution;
-- backend host;
-- executável seguro;
-- sem shell;
-- Job Object;
-- timeout;
-- stdout/stderr;
-- ambiente;
-- tool/API/CLI.
+**Criar:** `runners/*`, `windows/job_object.py`, `windows/process_factory.py`, `application/tools/run_process.py`, testes de integração Job Object.
 
-**Aceite:** `git status --short` funciona; destrutivo é bloqueado antes do processo.
+**Alterar:** `pyproject.toml` (extra `execution`), `bootstrap/execution.py`, API/CLI, doctor checks.
+
+**Aceite:** `git status --short` sob host_supervised; destrutivo bloqueado antes do processo. Rodar testes em sessão **não** admin.
 
 ### E2 — Aprovação e auditoria
 
-- `execution.db`;
-- stores;
-- digest de uso único;
-- expiração;
-- CLI;
-- eventos;
-- redaction.
+**Criar:** `persistence/*`, `approvals/sqlite_approval_store.py`, redaction, CLI approvals.
+
+**Alterar:** tools de run para consumir aprovação; settings de TTL/path.
 
 **Aceite:** aprovar `mvn test` não autoriza `mvn deploy` nem outro `cwd`.
 
 ### E3 — PowerShell livre
 
-- runner PowerShell;
-- `NoProfile`;
-- script protegido;
-- AST obrigatória;
-- aprovação obrigatória no host;
-- cleanup.
+**Pré-requisito de máquina:** instalar PowerShell 7 (`pwsh` no PATH).
 
-**Aceite:** nenhum PowerShell livre é autoallow no host.
+**Criar:** `powershell_runner.py`, `windows/acl.py`, `run_powershell.py`, testes de segurança PS.
+
+**Aceite:** nenhum PowerShell livre é autoallow no host; sem perfil/EncodedCommand.
 
 ### E4 — Assíncrono e cancelamento
 
-- registry;
-- `wait=false`;
-- get/terminate;
-- logs limitados;
-- recovery;
-- concorrência;
-- shutdown cleanup.
+**Criar/alterar:** `process_registry.py`, `get_execution` / `terminate_execution`, recovery, concorrência.
 
 **Aceite:** cancelamento não deixa filhos.
 
 ### E5 — MCP opcional
 
-- handlers finos;
-- flags;
-- sem aprovação MCP;
-- contratos;
-- instruções de saída não confiável.
+**Criar:** `interfaces/mcp/execution_handlers.py`
+
+**Alterar:** `handlers.py`, `server.py`, `test_mcp_adapter.py`
 
 **Aceite:** cliente MCP não consegue se autoaprovar.
 
 ### E6 — Worktree
 
-- manager;
-- locks;
-- diff;
-- rollback;
-- políticas de gerados.
-
-**Aceite:** execuções graváveis não compartilham checkout.
+Manager, locks, diff, rollback.
 
 ### E7 — Windows Sandbox
 
-- detecção;
-- configuração;
-- mapeamentos;
-- rede;
-- worker;
-- guarantees.
-
-**Aceite:** não lê perfil nem acessa rede quando bloqueados.
+Requer feature habilitado; skip local neste host até lá.
 
 ### E8 — Hardening
 
-- benchmarks;
-- fuzzing;
-- projetos grandes;
-- documentação;
-- threat review;
-- retenção;
-- dependências;
-- release opt-in.
+Benchmarks, fuzzing, docs operacionais, threat review, release opt-in.
 
 ---
 
 ## 28. Sequência de commits
 
-1. `docs: add execution trust-boundary ADR`
-2. `feat: add execution domain models and errors`
-3. `feat: add execution request DTOs`
-4. `feat: add command analyzer protocols`
-5. `feat: add deterministic execution policy`
-6. `feat: add PowerShell AST inspection worker`
-7. `feat: expose command inspection through python api`
-8. `feat: add execution inspection CLI`
-9. `test: add command inspection security cases`
-10. `build: add optional Windows execution extra`
-11. `feat: add Windows Job Object containment`
-12. `feat: add supervised process runner`
-13. `feat: add output limits and environment sanitization`
-14. `feat: add run process application tool`
-15. `test: add supervised runner integration tests`
-16. `feat: add execution database and migrations`
-17. `feat: add digest-bound approval lifecycle`
-18. `feat: add local approval CLI`
-19. `feat: add execution audit events and redaction`
-20. `feat: add supervised PowerShell runner`
-21. `test: add PowerShell execution security scenarios`
-22. `feat: add asynchronous execution registry`
-23. `feat: add execution status and termination tools`
-24. `feat: add optional MCP execution handlers`
-25. `test: add execution API CLI MCP contracts`
-26. `feat: add isolated Git worktree execution`
-27. `feat: add Windows Sandbox backend`
-28. `perf: add command execution benchmarks`
-29. `docs: finalize execution operations and security guide`
+Mantida a sequência original (§28 anterior), com ajustes de mensagem onde couber:
+
+- ADR vira `docs: add execution trust-boundary ADR` → arquivo `0005-…`
+- “sandbox backend” → “Windows Sandbox backend” (nunca renomear host para sandbox)
+- commit de extra Windows: declarar explicitamente se `pywin32` entra ou se fica só ctypes
 
 ---
 
 ## 29. Critérios globais
 
-1. desabilitada por padrão;
-2. instalação básica sem dependências Windows;
-3. inspeção não executa;
-4. `run_process` sem shell;
-5. PowerShell livre exige aprovação no host;
-6. aprovação ligada ao digest;
-7. aprovação expira e é de uso único;
-8. MCP sem tool de aprovação;
-9. `cwd` externo rejeitado;
-10. árvore encerrada no timeout;
-11. saída limitada;
-12. ambiente sem tokens por padrão;
-13. auditoria com redaction;
-14. backend declara guarantees reais;
-15. garantia não suportada falha;
-16. policy determinística/versionada;
-17. bloqueado não inicia processo;
-18. PowerShell sem perfil/interatividade;
-19. cancelamento sem órfãos;
-20. auditoria com hashes/transições;
-21. stores separados;
-22. SDK MCP restrito;
-23. equivalência API/CLI/MCP;
-24. retrieval sem extra;
-25. limitações do host documentadas;
-26. Sandbox exigida para isolamento real;
-27. testes Windows com/sem extra;
-28. core Linux preservado;
-29. policy/auditoria protegidas;
-30. nenhuma falsa alegação de segurança.
+Mantidos os 30 critérios do plano original (desabilitado por padrão; inspeção sem execução; `run_process` sem shell; PowerShell livre com aprovação no host; digest; MCP sem approve; stores separados; sem falsa garantia; etc.), com estes esclarecimentos:
+
+- instalação básica sem depender de `pwsh`/pywin32;
+- API retorna `ToolResult[…]`;
+- pasta de backends ≠ nome “sandbox” para o host;
+- CI Linux permanece verde sem o extra `execution`.
 
 ---
 
 ## 30. Riscos principais
 
-### Processo suspenso e Job Object
+Além dos riscos originais (Job Object race, deadlock de pipes, allowlist, PS dinâmico, credenciais, build=código, auditoria, complexidade):
 
-Atribuir depois de iniciar cria janela de escape. Criar suspenso, atribuir e retomar.
+### Máquina / clone atuais
 
-### Deadlock em pipes
+- **Sem PowerShell 7:** E3 e smoke AST de produto bloqueados até instalar `pwsh`.
+- **Sandbox desabilitado:** E7 não validável aqui.
+- **Sessão Administrador:** testes de execução devem preferir usuário padrão.
+- **pywin32 fantasma no venv:** não documentar como dependência até pin no extra.
+- **Working tree limpa:** plano já commitado; implementação ainda não iniciada — bom baseline.
 
-Coletar stdout/stderr concorrentemente.
+### Integração com código existente
 
-### Allowlist ampla
-
-Regra por executável, subcomando, argumentos e capabilities.
-
-### PowerShell dinâmico
-
-Desconhecido nunca é autoallow.
-
-### Credenciais no host
-
-Ambiente sanitizado não isola Credential Manager ou perfil. Exigir aprovação/sandbox.
-
-### Build executa código
-
-`mvn test`, `pytest`, `npm test` recebem `execute_repository_code`.
-
-### Auditoria como vazamento
-
-Persistir metadados/hashes, aplicar redaction e retenção.
-
-### Complexidade
-
-Começar por E0; não implementar tudo em paralelo.
+- `subprocess` já usado na infra: testes arquiteturais novos não devem quebrar ripgrep/parsers.
+- `ApplicationContainer` cresce: manter campo `execution` opcional no final.
+- Doctor e MCP instructions precisam distinguir retrieval vs execution.
 
 ---
 
@@ -1529,70 +1208,33 @@ Começar por E0; não implementar tudo em paralelo.
 
 Começar por E0 e revisar antes de E1.
 
-Não iniciar `run_process` antes de:
+Não iniciar `run_process` antes de: modelos/erros estáveis; policy com testes negativos; AST validada como análise sem execução do usuário; digest canônico; guarantees modeladas.
 
-- modelos e erros estáveis;
-- policy com testes negativos;
-- AST validada como análise sem execução;
-- digest canônico;
-- guarantees modeladas.
+Não expor MCP antes de: CLI/API estáveis; aprovação local; cancelamento; Job Object validado; erros/redaction testados.
 
-Não expor MCP antes de:
-
-- CLI/API estáveis;
-- aprovação local;
-- cancelamento;
-- Job Object validado;
-- erros/redaction testados.
+Instalar PowerShell 7 neste host antes de E3 (e preferencialmente antes do smoke AST de E0 para `inspect_powershell`).
 
 ---
 
-## 32. Prompt para o Grok 4 no clone local
+## 32. Revisão local (Grok 4) — status
 
-```text
-Revise o arquivo docs/plano-execucao-agente-powershell.md contra o clone local
-atual do repositório code-harness.
+Prompt de revisão executado em 23/07/2026 contra este clone.
 
-Objetivo: validar e corrigir o plano, sem implementar nenhuma alteração.
+Entregáveis da revisão:
 
-Para cada seção técnica relevante:
+- A–E: ver mensagem da sessão / histórico do agente;
+- F: **este documento** (versão revisada).
 
-1. confirme os arquivos, classes, protocolos e convenções atuais afetados;
-2. identifique divergências entre o plano e o código local;
-3. localize alterações não commitadas ou arquivos locais relevantes;
-4. confirme se os caminhos propostos seguem a organização atual;
-5. proponha ajustes mínimos quando houver incompatibilidade;
-6. confirme os testes existentes que devem ser ampliados;
-7. verifique como os testes arquiteturais atuais restringem imports;
-8. verifique a composição atual do ApplicationContainer e CodeHarness;
-9. verifique serializers, renderers e tratamento de erros atuais;
-10. verifique o sistema de migrations SQLite existente;
-11. verifique disponibilidade local de PowerShell 7 e APIs Windows necessárias;
-12. aponte riscos específicos da máquina e do clone;
-13. não execute scripts do repositório para validar segurança;
-14. não implemente código;
-15. não faça commit.
-
-Entregue:
-
-A. resumo executivo;
-B. divergências encontradas, com arquivo e linha;
-C. arquivos exatos a criar e alterar por fase;
-D. ajustes recomendados no plano;
-E. riscos ainda não cobertos;
-F. uma versão revisada completa do plano em Markdown.
-
-Preserve as decisões centrais:
+Decisões centrais **preservadas**:
 
 - execução opcional e desabilitada por padrão;
 - MCP como adaptador fino;
 - aprovação não disponível ao cliente MCP;
 - stores de índice e execução separados;
-- host_supervised não deve ser chamado de sandbox;
-- run_process sem shell;
+- `host_supervised` não deve ser chamado de sandbox;
+- `run_process` sem shell;
 - PowerShell livre exige aprovação no host;
 - nenhuma falsa garantia de filesystem, rede ou credenciais.
-```
 
 ---
 
@@ -1615,4 +1257,4 @@ Regra central:
 
 > Quanto mais expressiva a tool, menos ela pode ser autoaprovada.
 
-O backend inicial será um **executor supervisionado**, não uma sandbox. Isolamento real será capability separada, fornecida por backend específico e reportada explicitamente.
+O backend inicial será um **executor supervisionado** (`host_supervised`), não uma sandbox. Isolamento real será capability separada (`windows_sandbox`), fornecida por backend específico e reportada explicitamente em `BackendGuarantees`.

@@ -1,8 +1,9 @@
+import pytest
+
 from code_harness.application.dto.requests import ListFilesRequest
 from code_harness.application.tools.list_files import ListFilesTool
 from code_harness.domain.errors import CursorStaleError
 from code_harness.domain.models.source_file import SourceFile
-import pytest
 
 
 class FakeCatalog:

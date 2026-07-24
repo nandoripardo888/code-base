@@ -58,10 +58,48 @@ class CapabilityState(StrEnum):
     UNKNOWN = "unknown"
 
 
+class CommandKind(StrEnum):
+    PROCESS = "process"
+    POWERSHELL = "powershell"
+
+
+class PolicyDecision(StrEnum):
+    ALLOW = "allow"
+    DENY = "deny"
+    APPROVAL_REQUIRED = "approval_required"
+    UNSUPPORTED = "unsupported"
+    UNKNOWN_DYNAMIC_BEHAVIOR = "unknown_dynamic_behavior"
+
+
+class ExecutionCapability(StrEnum):
+    WORKSPACE_READ = "workspace_read"
+    WORKSPACE_WRITE = "workspace_write"
+    GIT_READ = "git_read"
+    GIT_WRITE = "git_write"
+    EXECUTE_REPOSITORY_CODE = "execute_repository_code"
+    PROCESS_SPAWN = "process_spawn"
+    NETWORK_OUTBOUND = "network_outbound"
+    CREDENTIAL_ACCESS = "credential_access"
+    HOST_FILESYSTEM_READ = "host_filesystem_read"
+    HOST_FILESYSTEM_WRITE = "host_filesystem_write"
+    REGISTRY_READ = "registry_read"
+    REGISTRY_WRITE = "registry_write"
+    SERVICE_CONTROL = "service_control"
+    ADMIN = "admin"
+
+
+class ExecutionRiskSeverity(StrEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+
 class ErrorCode(StrEnum):
     PROJECT_NOT_FOUND = "project_not_found"
     PATH_OUTSIDE_PROJECT = "path_outside_project"
     FILE_NOT_FOUND = "file_not_found"
+    INVALID_PATH_KIND = "invalid_path_kind"
     BINARY_FILE = "binary_file"
     UNSUPPORTED_ENCODING = "unsupported_encoding"
     RIPGREP_UNAVAILABLE = "ripgrep_unavailable"
@@ -76,3 +114,9 @@ class ErrorCode(StrEnum):
     INVALID_QUERY = "invalid_query"
     RESULT_LIMIT_EXCEEDED = "result_limit_exceeded"
     CURSOR_STALE = "cursor_stale"
+    EXECUTION_DISABLED = "execution_disabled"
+    EXECUTION_NOT_SUPPORTED = "execution_not_supported"
+    EXECUTION_POLICY_DENIED = "execution_policy_denied"
+    EXECUTION_APPROVAL_REQUIRED = "execution_approval_required"
+    EXECUTION_ELEVATED_SESSION = "execution_elevated_session"
+    INVALID_EXECUTION_REQUEST = "invalid_execution_request"

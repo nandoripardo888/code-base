@@ -254,7 +254,8 @@ def _java_parameter_types_from_node(params_node: Any, source: bytes) -> list[str
             ]
             cleaned = _WS.sub(" ", " ".join(pieces)).strip()
             if cleaned:
-                types.append(cleaned.rstrip("...").strip() or cleaned)
+                trimmed = cleaned[:-3] if cleaned.endswith("...") else cleaned
+                types.append(trimmed.strip() or cleaned)
             continue
         type_text = node_text(type_node).strip()
         if child.type == "spread_parameter" and not type_text.endswith("..."):

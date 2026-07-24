@@ -6,7 +6,7 @@ import pytest
 from code_harness import CodeHarness
 from code_harness.application.indexing import IndexCoordinator
 from code_harness.bootstrap.settings import Settings
-from code_harness.domain.enums import DiagnosticStatus, IndexMode, IndexState, MatchType
+from code_harness.domain.enums import DiagnosticStatus, IndexMode, IndexState
 from code_harness.domain.errors import IndexCorruptedError
 from code_harness.domain.models.index_report import IndexedSource
 from code_harness.infrastructure.filesystem import (

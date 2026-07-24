@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from code_harness.domain.models.capability import StrategyOutcome, ToolWarning
@@ -37,7 +38,7 @@ def as_tool_warning(
 
 
 def normalize_warnings(
-    warnings: tuple[str | ToolWarning, ...] | list[str | ToolWarning],
+    warnings: Sequence[str | ToolWarning],
     *,
     code: str = "tool_warning",
     capability: str | None = None,

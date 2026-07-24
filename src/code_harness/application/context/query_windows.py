@@ -31,7 +31,9 @@ class LineWindow:
 
 
 def query_terms(query: str) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(token.casefold() for token in _TOKEN.findall(query) if len(token) >= 3))
+    return tuple(
+        dict.fromkeys(token.casefold() for token in _TOKEN.findall(query) if len(token) >= 3)
+    )
 
 
 def select_query_windows(

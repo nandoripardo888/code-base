@@ -174,9 +174,7 @@ def register_handlers(
         """Read an inclusive line range from a source file."""
 
         def operation() -> ToolResult[Any]:
-            request = ReadRangeRequest(
-                path, start_line, end_line, max_chars, include_line_numbers
-            )
+            request = ReadRangeRequest(path, start_line, end_line, max_chars, include_line_numbers)
             return container.read_range.execute(request)
 
         return _execute(operation)

@@ -100,12 +100,10 @@ def expand_lexical_identifiers(
         add(term.casefold(), 0.35, "token")
 
     limited = generated[:max_expanded_terms]
-    identifiers = tuple(
-        item for item in limited if _looks_like_identifier(item.value)
-    )[:max_identifier_candidates]
-    discarded = max(0, len(generated) - len(limited)) + max(
-        0, len(limited) - len(identifiers)
-    )
+    identifiers = tuple(item for item in limited if _looks_like_identifier(item.value))[
+        :max_identifier_candidates
+    ]
+    discarded = max(0, len(generated) - len(limited)) + max(0, len(limited) - len(identifiers))
     return LexicalExpansion(
         input_terms=tuple(terms),
         generated_identifiers=identifiers,

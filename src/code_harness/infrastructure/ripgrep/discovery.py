@@ -164,9 +164,7 @@ def _read_version(executable: str, *, timeout_seconds: float) -> str | None:
     return line[0] if line else None
 
 
-def _run_minimal_search(
-    executable: str, *, timeout_seconds: float
-) -> tuple[bool, str | None]:
+def _run_minimal_search(executable: str, *, timeout_seconds: float) -> tuple[bool, str | None]:
     with tempfile.TemporaryDirectory(prefix="code-harness-rg-") as directory:
         sample = Path(directory) / "sample.txt"
         sample.write_text("code-harness ripgrep probe\n", encoding="utf-8")

@@ -381,7 +381,11 @@ def register_handlers(
     if settings.mcp_expose_index_commands:
 
         @server.tool()
-        def index_project(mode: str = IndexMode.INCREMENTAL.value) -> dict[str, Any]:
+        def index_project(
+            mode: str = IndexMode.INCREMENTAL.value,
+            include_globs: list[str] | None = None,
+            exclude_globs: list[str] | None = None,
+        ) -> dict[str, Any]:
             """Create or update the local project index."""
 
             def operation() -> ToolResult[Any]:
@@ -392,7 +396,11 @@ def register_handlers(
                         f"Unsupported index mode: {mode}",
                         mode=mode,
                     ) from error
-                request = IndexProjectRequest(index_mode)
+                request = IndexProjectRequest(
+                    index_mode,
+                    include_globs=_as_tuple(include_globs),
+                    exclude_globs=_as_tuple(exclude_globs),
+                )
                 return container.index_project.execute(request)
 
             return _execute(operation)

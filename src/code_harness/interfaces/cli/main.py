@@ -171,9 +171,17 @@ def index_project(
         IndexMode,
         typer.Option("--mode", case_sensitive=False, help="Indexing mode."),
     ] = IndexMode.INCREMENTAL,
+    include: Annotated[
+        list[str] | None,
+        typer.Option("--include", help="Include glob for partial indexing."),
+    ] = None,
+    exclude: Annotated[
+        list[str] | None,
+        typer.Option("--exclude", help="Exclude glob for partial indexing."),
+    ] = None,
 ) -> None:
     state: CliState = ctx.obj
-    request = IndexProjectRequest(mode)
+    request = IndexProjectRequest(mode, tuple(include or ()), tuple(exclude or ()))
     progress = IndexProgressPrinter()
     _execute(
         state,

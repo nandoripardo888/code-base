@@ -92,6 +92,11 @@ class IndexReport:
     embedded_chunks: int = 0
     embedding_failures: int = 0
     timings: IndexTimings | None = None
+    partial: bool = False
+    include_globs: tuple[str, ...] = ()
+    exclude_globs: tuple[str, ...] = ()
+    scoped_discovered_files: int = 0
+    preserved_out_of_scope_files: int = 0
 
 
 @dataclass(frozen=True, slots=True)

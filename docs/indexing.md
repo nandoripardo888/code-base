@@ -18,6 +18,33 @@ unchanged, then uses SHA-256 before reprocessing metadata candidates. `full`
 rehashes every discovered file but only rewrites changed content. `verify`
 reports differences without applying them.
 
+## Partial indexing
+
+`--include` / `--exclude` (and the matching API/MCP `include_globs` /
+`exclude_globs`) limit a single run to a temporary path scope. They are not
+project ignore rules: `.gitignore` and the built-in safety exclusions still
+apply during discovery.
+
+Semantics:
+
+- with no filters, behavior is unchanged: missing files are removed from the
+  index and `.gitignore` changes are reflected globally;
+- discovery lists only files that match the include/exclude filters;
+- removals consider only stored paths that belong to that same scope;
+- paths outside the scope stay untouched, even if they disappeared on disk;
+- an explicitly excluded path is treated as out of scope, so its current index
+  entry is preserved for that run;
+- `verify` with a partial scope still reports differences without writing file
+  updates;
+- the report sets `partial=true` and includes `include_globs`, `exclude_globs`,
+  `scoped_discovered_files`, and `preserved_out_of_scope_files` so a scoped run
+  is not mistaken for a full project validation.
+
+```text
+code-harness index --include src --exclude generated
+code-harness index --mode verify --include "src/**/*.java"
+```
+
 Phase three extends each changed-file update with structural analysis and
 syntax-aware chunking. Java and Python use Tree-sitter when the optional parser
 extra is installed; compatible dedicated extractors remain available in the
@@ -54,6 +81,7 @@ preventing a native worker crash from leaving the project permanently in
 code-harness index --mode incremental
 code-harness index --mode full
 code-harness index --mode verify
+code-harness index --include src --exclude generated
 code-harness status
 code-harness doctor
 code-harness doctor --deep

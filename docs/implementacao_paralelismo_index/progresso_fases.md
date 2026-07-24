@@ -13,7 +13,7 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` concluída
 | 0 | Baseline e instrumentação | [x] |
 | 1 | Protocolo persistente | [x] |
 | 2 | Pool paralelo + coordinator + lifecycle | [x] |
-| 3 | Indexação parcial por path/glob | [ ] |
+| 3 | Indexação parcial por path/glob | [x] |
 
 Hardening final (Etapa 8 do plano): [ ]
 
@@ -207,20 +207,43 @@ Script: benchmark_repository.py index --repeats 5 --discard-first
 
 ## Fase 3 — Indexação parcial por path/glob
 
-Status: [ ]
+Status: [x]
 
-- [ ] `IndexProjectRequest` com `include_globs` / `exclude_globs`
-- [ ] Helper `IndexScope`
-- [ ] Discovery filtrada + remoção só dentro do escopo
-- [ ] Sem filtros = comportamento atual
-- [ ] Relatório com escopo parcial
-- [ ] CLI `--include` / `--exclude`
-- [ ] MCP schema (quando `mcp_expose_index_commands`)
-- [ ] Testes de remoção parcial (cenários 1–7 do plano)
+- [x] `IndexProjectRequest` com `include_globs` / `exclude_globs`
+- [x] Helper `IndexScope`
+- [x] Discovery filtrada + remoção só dentro do escopo
+- [x] Sem filtros = comportamento atual
+- [x] Relatório com escopo parcial
+- [x] CLI `--include` / `--exclude`
+- [x] MCP schema (quando `mcp_expose_index_commands`)
+- [x] Testes de remoção parcial (cenários 1–7 do plano)
 
 Notas:
 
 ```
+Arquivos:
+- application/indexing/index_scope.py (IndexScope)
+- application/dto/requests.py (IndexProjectRequest.partial)
+- application/indexing/index_coordinator.py (discovery + stored filtrados)
+- domain/models/index_report.py (partial, globs, scoped_*, preserved_*)
+- tools/index_project.py, CLI, API Python, MCP handlers
+- tests/unit/test_partial_indexing.py
+- docs/indexing.md (semântica parcial)
+
+Semântica:
+- include/exclude são filtros temporários da execução (não misturar com .gitignore)
+- remoção só para stored paths com scope.matches(path)
+- path excluído explicitamente é fora de escopo → entrada preservada
+- VERIFY parcial não altera a tabela files
+- ANALYSIS_VERSION permanece "4"
+
+Validação:
+- 229 testes passando
+- ruff + mypy limpos
+- workers 1 e 4 no cenário include
+- writes SQLite só na thread do coordenador
+- VERIFY não aplica updates nem removals em commit_files
+- CLI manual: full indexa 4 arquivos; --include src remove só A.java e preserva docs/guide.md ausente
 ```
 
 ---
@@ -256,3 +279,4 @@ Mesmo se 8 vencer no projeto real, manter default=4; 8 fica opt-in via env.
 | 2026-07-24 | 1 | Benchmarks persistent serial 500 (2.97 s, 168 files/s) e 1000 (5.39 s, 186 files/s); read_hash passa a dominar análise em N=1000 |
 | 2026-07-24 | 2 | Pool 1–8 workers, coordinator paralelo, circuit breaker por payload distinto, lifecycle/shutdown |
 | 2026-07-24 | 2 | Série warmup+5 em N=100: mediana favorece workers=1; ADR 0003 atualizado; default 4 mantido para N maior |
+| 2026-07-24 | 3 | IndexScope + include/exclude em request/CLI/API/MCP; remoção só no escopo; relatório parcial; docs/indexing.md |

@@ -14,6 +14,7 @@ from code_harness.application.indexing.chunk_builder import (
     build_chunks,
     textual_fallback,
 )
+from code_harness.application.indexing.index_scope import IndexScope
 from code_harness.application.indexing.progress import (
     IndexProgressCallback,
     IndexProgressEvent,
@@ -249,6 +250,8 @@ class IndexCoordinator:
         self,
         mode: IndexMode,
         *,
+        include_globs: tuple[str, ...] = (),
+        exclude_globs: tuple[str, ...] = (),
         progress: IndexProgressCallback | None = None,
     ) -> IndexReport:
         self._owner_thread_id = get_ident()
@@ -257,6 +260,7 @@ class IndexCoordinator:
         total_started = perf_counter_ns()
         timings = _TimingBucket()
         parser_before = _parser_metrics_snapshot(self._analyzer)
+        scope = IndexScope(include_globs=include_globs, exclude_globs=exclude_globs)
         run_id = self._store.start_run(self._project.project_id, mode, started.isoformat())
         try:
             _emit(
@@ -267,11 +271,20 @@ class IndexCoordinator:
                 ),
             )
             discovery_started = perf_counter_ns()
-            discovered = self._catalog.list_files()
+            discovered = self._catalog.list_files(
+                include_globs=include_globs,
+                exclude_globs=exclude_globs,
+            )
             stored = self._store.list_files(self._project.project_id)
+            if scope.partial:
+                stored_for_plan = tuple(item for item in stored if scope.matches(item.path))
+                preserved_out_of_scope = len(stored) - len(stored_for_plan)
+            else:
+                stored_for_plan = stored
+                preserved_out_of_scope = 0
             plan = detect_changes(
                 discovered,
-                stored,
+                stored_for_plan,
                 mode,
                 parser_version=self._analyzer.version if self._analyzer else None,
                 chunking_version=CHUNKING_VERSION,
@@ -321,6 +334,8 @@ class IndexCoordinator:
             updates.sort(key=lambda item: item.source.path)
             removed_paths = sorted(set(removed_paths))
             warnings = sorted(warnings)
+            commit_updates = () if mode is IndexMode.VERIFY else tuple(updates)
+            commit_removed = () if mode is IndexMode.VERIFY else tuple(removed_paths)
 
             if self._embedding_provider is not None and self._vector_index is not None:
                 _emit(
@@ -332,8 +347,8 @@ class IndexCoordinator:
                 )
             embedding_started = perf_counter_ns()
             embedding_batch, embedding_failures = self._prepare_embeddings(
-                updates,
-                tuple(removed_paths),
+                list(commit_updates),
+                commit_removed,
                 mode,
                 warnings,
             )
@@ -372,6 +387,11 @@ class IndexCoordinator:
                 reused_embeddings=embedding_batch.reused_count,
                 embedded_chunks=len(embedding_batch.links),
                 embedding_failures=embedding_failures,
+                partial=scope.partial,
+                include_globs=include_globs,
+                exclude_globs=exclude_globs,
+                scoped_discovered_files=len(discovered) if scope.partial else 0,
+                preserved_out_of_scope_files=preserved_out_of_scope,
             )
             _emit(
                 progress,
@@ -382,7 +402,7 @@ class IndexCoordinator:
             )
             commit_started = perf_counter_ns()
             self._assert_owner_thread()
-            self._store.commit_files(report, tuple(updates), tuple(removed_paths))
+            self._store.commit_files(report, commit_updates, commit_removed)
             try:
                 self._assert_owner_thread()
                 self._store.commit_embeddings(embedding_batch)

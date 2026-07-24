@@ -190,6 +190,12 @@ class ReadRangeRequest:
 @dataclass(frozen=True, slots=True)
 class IndexProjectRequest:
     mode: IndexMode = IndexMode.INCREMENTAL
+    include_globs: tuple[str, ...] = ()
+    exclude_globs: tuple[str, ...] = ()
+
+    @property
+    def partial(self) -> bool:
+        return bool(self.include_globs or self.exclude_globs)
 
 
 @dataclass(frozen=True, slots=True)

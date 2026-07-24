@@ -124,9 +124,19 @@ class CodeHarness:
         return self._container.initialize_index.execute()
 
     def index_project(
-        self, mode: IndexMode | str = IndexMode.INCREMENTAL
+        self,
+        mode: IndexMode | str = IndexMode.INCREMENTAL,
+        *,
+        include_globs: tuple[str, ...] = (),
+        exclude_globs: tuple[str, ...] = (),
     ) -> ToolResult[IndexReport]:
-        return self._container.index_project.execute(IndexProjectRequest(IndexMode(mode)))
+        return self._container.index_project.execute(
+            IndexProjectRequest(
+                IndexMode(mode),
+                include_globs=include_globs,
+                exclude_globs=exclude_globs,
+            )
+        )
 
     def get_index_status(self) -> ToolResult[IndexStatus]:
         return self._container.get_index_status.execute()

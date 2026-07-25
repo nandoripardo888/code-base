@@ -66,6 +66,18 @@ class CodeHarnessError(Exception):
         )
 
 
+class InternalToolError(CodeHarnessError):
+    def __init__(self, tool: str, error_id: str) -> None:
+        super().__init__(
+            ErrorCode.INTERNAL_ERROR,
+            "An unexpected internal error occurred.",
+            details={"error_id": error_id, "tool": tool},
+            recoverable=False,
+            capability=tool,
+            remediation="Retry the operation and use error_id to locate the server log.",
+        )
+
+
 class ProjectNotFoundError(CodeHarnessError):
     def __init__(self, path: str) -> None:
         super().__init__(
@@ -285,6 +297,40 @@ class InvalidExecutionRequestError(CodeHarnessError):
             message,
             details=details,
             capability="execution",
+        )
+
+
+class PowerShellUnavailableError(CodeHarnessError):
+    def __init__(self, executable: str, *, reason: str | None = None) -> None:
+        details = {"executable": executable}
+        if reason is not None:
+            details["reason"] = reason
+        super().__init__(
+            ErrorCode.POWERSHELL_UNAVAILABLE,
+            "PowerShell 7 or later is unavailable for command inspection.",
+            details=details,
+            capability="execution",
+            remediation="Install PowerShell 7 and configure CODE_HARNESS_POWERSHELL if needed.",
+        )
+
+
+class PowerShellParseError(CodeHarnessError):
+    def __init__(self, diagnostics: tuple[str, ...]) -> None:
+        super().__init__(
+            ErrorCode.POWERSHELL_PARSE_FAILED,
+            "PowerShell script could not be parsed.",
+            details={"diagnostics": list(diagnostics)},
+            capability="execution",
+        )
+
+
+class PowerShellAnalysisError(CodeHarnessError):
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            ErrorCode.POWERSHELL_ANALYSIS_FAILED,
+            message,
+            capability="execution",
+            remediation="Retry inspection after verifying the local PowerShell installation.",
         )
 
 

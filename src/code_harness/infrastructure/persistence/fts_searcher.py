@@ -3,6 +3,11 @@ from code_harness.domain.errors import CodeHarnessError, RipgrepUnavailableError
 from code_harness.domain.models.code_chunk import CodeSnippet
 from code_harness.domain.models.code_location import CodeLocation
 from code_harness.domain.models.project import Project
+from code_harness.domain.models.result_truncation import (
+    TruncationReason,
+    merge_truncations,
+    truncation,
+)
 from code_harness.domain.models.search_hit import SearchHit, SearchOutcome
 from code_harness.domain.protocols.index_source_reader import IndexSourceReader
 from code_harness.domain.protocols.repository_store import RepositoryStore
@@ -55,6 +60,7 @@ class IndexedTextSearcher:
             return SearchOutcome(
                 fallback.hits,
                 truncated=fallback.truncated,
+                truncation=fallback.truncation,
                 warnings=fallback.warnings,
                 index_state=index_state,
             )
@@ -71,7 +77,7 @@ class IndexedTextSearcher:
                     include_globs=include_globs,
                     exclude_globs=exclude_globs,
                     case_sensitive=case_sensitive,
-                    max_results=max_results,
+                    max_results=max_results + 1,
                     context_lines=context_lines,
                 )
         except CodeHarnessError as error:
@@ -87,7 +93,7 @@ class IndexedTextSearcher:
                 include_globs=include_globs,
                 exclude_globs=exclude_globs,
                 case_sensitive=case_sensitive,
-                max_results=max_results,
+                max_results=max_results + 1,
                 context_lines=context_lines,
                 timeout_seconds=timeout_seconds,
             )
@@ -95,13 +101,28 @@ class IndexedTextSearcher:
             if not indexed_hits:
                 raise
             warnings.append("Ripgrep is unavailable; returned validated indexed results only.")
-            return SearchOutcome(indexed_hits, warnings=tuple(warnings), index_state=index_state)
+            has_extra = len(indexed_hits) > max_results
+            return SearchOutcome(
+                indexed_hits[:max_results],
+                truncated=has_extra,
+                truncation=(
+                    truncation(TruncationReason.RESULT_LIMIT, results=True) if has_extra else None
+                ),
+                warnings=tuple(warnings),
+                index_state=index_state,
+            )
 
-        combined = _merge_hits(indexed_hits, fallback.hits, max_results)
+        combined = _merge_hits(indexed_hits, fallback.hits, max_results + 1)
+        has_extra = len(combined) > max_results
+        result_truncation = merge_truncations(
+            fallback.truncation,
+            (truncation(TruncationReason.RESULT_LIMIT, results=True) if has_extra else None),
+        )
         warnings.extend(fallback.warnings)
         return SearchOutcome(
-            combined,
-            truncated=fallback.truncated or len(indexed_hits) + len(fallback.hits) > len(combined),
+            combined[:max_results],
+            truncated=result_truncation is not None,
+            truncation=result_truncation,
             warnings=tuple(dict.fromkeys(warnings)),
             index_state=index_state,
         )

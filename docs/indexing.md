@@ -92,7 +92,35 @@ FTS results are candidates only. Every returned hit is validated against the
 current file. Direct Ripgrep search and source reading remain available when the
 index is absent or unhealthy.
 
+Schema version 6 binds each FTS5 document `rowid` to the corresponding
+`files.file_id`. Existing indexes are migrated transactionally without requiring
+a source reindex. This keeps content replacement and removal proportional to the
+number of changed files instead of scanning all FTS documents for every update.
+
+Index reports expose `initialize_ms`, aggregate `commit_ms`, and commit subphases
+for metadata, FTS, structure, embeddings, and finalization. `finished_at` is
+captured after payload persistence, so persisted run duration includes the work
+reported as "writing index to disk".
+
+For a persistence-heavy benchmark, generate files close to the size and
+reference density of a large repository:
+
+```text
+python scripts/build_java_benchmark_repo.py <dest> --count 10000 --target-bytes 20000 --calls-per-file 170
+python scripts/benchmark_repository.py index <dest> --wipe-index --repeats 3 --max-commit-ms 120000
+```
+
+The Windows SSD reference run with four parser workers recorded 16.43 seconds
+of commit time at 5,000 files and a 40.03-second commit p95 at 10,000 files.
+The 10k/5k ratio was 2.44, below the 2.7 scaling guard. JSON baselines are kept
+under `docs/implementacao_paralelismo_index/baselines/`.
+
 Structural results follow the same rule: the current file is re-read and its
 SHA-256 hash must match the indexed record. Stale results are skipped with a
 warning. Parser failures store safe textual chunks, keep FTS current, and finish
 the run as `ready_with_warnings`.
+
+Parser analysis version 5 records Java `import`, `type_use`, `instantiation`,
+and `call` references. Because the analysis version is stored per file, the
+first incremental index after upgrading reprocesses supported structural files;
+no database schema migration is required for this semantic change.

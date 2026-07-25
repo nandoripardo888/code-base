@@ -1,7 +1,9 @@
 import os
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from uuid import uuid4
 
 from code_harness.domain.errors import ProjectNotFoundError
 from code_harness.domain.models.project import Project
@@ -36,6 +38,19 @@ def _env_flag(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).casefold() in {"1", "true", "on", "yes"}
 
 
+def _service_started_at() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _service_instance_id() -> str:
+    return uuid4().hex
+
+
+def _build_commit() -> str | None:
+    value = os.environ.get("CODE_HARNESS_BUILD_COMMIT", "").strip()
+    return value or None
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     root: Path
@@ -63,7 +78,8 @@ class Settings:
     ca_bundle_path: Path | None = None
     mcp_expose_index_commands: bool = False
     execution_enabled: bool = False
-    execution_backend: str = "host"
+    execution_backend: str = "host_supervised"
+    execution_powershell_executable: str = "pwsh"
     execution_require_approval: bool = True
     execution_default_timeout_seconds: float = 60.0
     execution_max_timeout_seconds: float = 1_800.0
@@ -71,6 +87,9 @@ class Settings:
     execution_allow_elevated: bool = False
     execution_home: Path = field(default_factory=_default_execution_home)
     mcp_expose_execution: bool = False
+    build_commit: str | None = field(default_factory=_build_commit)
+    service_started_at: str = field(default_factory=_service_started_at)
+    service_instance_id: str = field(default_factory=_service_instance_id)
 
     def __post_init__(self) -> None:
         if not 1 <= self.parser_workers <= 8:
@@ -93,10 +112,8 @@ class Settings:
             )
         if self.embedding_timeout_seconds <= 0:
             raise ValueError("embedding_timeout_seconds must be greater than zero")
-        if self.execution_backend not in {"host", "host_supervised", "windows_sandbox"}:
-            raise ValueError(
-                "execution_backend must be one of: host, host_supervised, windows_sandbox"
-            )
+        if self.execution_backend not in {"host_supervised", "windows_sandbox"}:
+            raise ValueError("execution_backend must be one of: host_supervised, windows_sandbox")
         if self.execution_default_timeout_seconds <= 0:
             raise ValueError("execution_default_timeout_seconds must be greater than zero")
         if self.execution_max_timeout_seconds <= 0:
@@ -181,7 +198,8 @@ class Settings:
             ),
             mcp_expose_index_commands=_env_flag("CODE_HARNESS_MCP_EXPOSE_INDEX"),
             execution_enabled=_env_flag("CODE_HARNESS_EXECUTION"),
-            execution_backend=os.environ.get("CODE_HARNESS_EXECUTION_BACKEND", "host"),
+            execution_backend=os.environ.get("CODE_HARNESS_EXECUTION_BACKEND", "host_supervised"),
+            execution_powershell_executable=os.environ.get("CODE_HARNESS_POWERSHELL", "pwsh"),
             execution_require_approval=os.environ.get(
                 "CODE_HARNESS_EXECUTION_REQUIRE_APPROVAL", "1"
             ).casefold()

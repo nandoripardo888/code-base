@@ -71,7 +71,7 @@ def test_cli_version() -> None:
     result = runner.invoke(app, ["--version"])
 
     assert result.exit_code == 0
-    assert result.stdout.strip() == "0.1.0"
+    assert result.stdout.strip() == "0.2.0"
 
 
 def test_cli_indexes_reports_status_and_runs_doctor(

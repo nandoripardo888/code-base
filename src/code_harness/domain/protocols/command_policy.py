@@ -4,13 +4,20 @@ from code_harness.domain.models.execution import (
     CommandInspection,
     NormalizedPowerShellCommand,
     NormalizedProcessCommand,
+    PowerShellAstAnalysis,
 )
 
 
 class CommandPolicy(Protocol):
     def inspect_process(self, command: NormalizedProcessCommand) -> CommandInspection: ...
 
-    def inspect_powershell(self, command: NormalizedPowerShellCommand) -> CommandInspection: ...
+    def inspect_powershell(
+        self, command: NormalizedPowerShellCommand, analysis: PowerShellAstAnalysis
+    ) -> CommandInspection: ...
+
+
+class PowerShellAnalyzer(Protocol):
+    def analyze(self, script: str, *, timeout_seconds: float) -> PowerShellAstAnalysis: ...
 
 
 class WorkspacePathResolver(Protocol):

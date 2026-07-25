@@ -51,10 +51,14 @@ mcp:
   expose_execution: false
   # Machine output: CODE_HARNESS_RESPONSE_DETAIL=compact (default).
   # Normal projections cap serialized data at 30000 characters.
+  # Truncated responses report structured result/snippet/budget reason codes.
+  # Optional deployment identity: CODE_HARNESS_BUILD_COMMIT=<git commit>.
 
 execution:
   enabled: false
-  backend: host
+  backend: host_supervised
+  # AST inspection executable: CODE_HARNESS_POWERSHELL=pwsh
+  powershell_executable: pwsh
   require_approval: true
   default_timeout_seconds: 60
   max_timeout_seconds: 1800

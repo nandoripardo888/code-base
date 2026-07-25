@@ -7,7 +7,11 @@ from code_harness.domain.models.execution import (
     NormalizedPowerShellCommand,
 )
 from code_harness.domain.models.tool_result import ToolResult, normalize_warnings
-from code_harness.domain.protocols.command_policy import CommandPolicy, WorkspacePathResolver
+from code_harness.domain.protocols.command_policy import (
+    CommandPolicy,
+    PowerShellAnalyzer,
+    WorkspacePathResolver,
+)
 
 
 class InspectPowerShellTool:
@@ -16,10 +20,12 @@ class InspectPowerShellTool:
         *,
         paths: WorkspacePathResolver,
         policy: CommandPolicy,
+        analyzer: PowerShellAnalyzer,
         config: ExecutionRuntimeConfig,
     ) -> None:
         self._paths = paths
         self._policy = policy
+        self._analyzer = analyzer
         self._config = config
 
     def execute(self, request: InspectPowerShellRequest) -> ToolResult[CommandInspection]:
@@ -55,7 +61,8 @@ class InspectPowerShellTool:
                 requested_capabilities=request.requested_capabilities,
                 reason=request.reason,
             )
-            return self._policy.inspect_powershell(command)
+            analysis = self._analyzer.analyze(request.script, timeout_seconds=timeout)
+            return self._policy.inspect_powershell(command, analysis)
 
         inspection, elapsed_ms = timed(inspect)
         return ToolResult(

@@ -41,15 +41,37 @@ class FileIndexUpdate:
 
 
 @dataclass(frozen=True, slots=True)
+class CommitFilesMetrics:
+    metadata_ms: int = 0
+    fts_ms: int = 0
+    structure_ms: int = 0
+    finalize_ms: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class PersistenceProgress:
+    stage: str
+    current: int
+    total: int
+    path: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class IndexTimings:
     """Structural phase timings collected during one indexing run."""
 
+    initialize_ms: int = 0
     discovery_ms: int = 0
     read_hash_ms: int = 0
     worker_init_ms: int = 0
     analysis_ms: int = 0
     chunk_build_ms: int = 0
     commit_ms: int = 0
+    commit_metadata_ms: int = 0
+    commit_fts_ms: int = 0
+    commit_structure_ms: int = 0
+    commit_embeddings_ms: int = 0
+    commit_finalize_ms: int = 0
     embedding_ms: int = 0
     total_ms: int = 0
     analyzed_files: int = 0
@@ -135,6 +157,10 @@ class IndexStatus:
     warnings: tuple[str, ...] = ()
     service_state: str | None = None
     capabilities: tuple[CapabilityStatus, ...] = ()
+    service_version: str | None = None
+    build_commit: str | None = None
+    service_started_at: str | None = None
+    service_instance_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

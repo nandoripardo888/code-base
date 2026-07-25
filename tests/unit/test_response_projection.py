@@ -2,11 +2,14 @@ import json
 
 import pytest
 
-from code_harness.domain.enums import CapabilityState, MatchType
+from code_harness.domain.enums import CapabilityState, IndexState, MatchType
 from code_harness.domain.models.capability import StrategyOutcome, ToolWarning
 from code_harness.domain.models.code_chunk import CodeSnippet, SourceRead, TruncationInfo
 from code_harness.domain.models.code_location import CodeLocation
-from code_harness.domain.models.hybrid import HybridSearchHit, SearchEvidence
+from code_harness.domain.models.context import ContextBundle, ContextSnippet
+from code_harness.domain.models.hybrid import HybridSearchHit, SearchEvidence, SearchScore
+from code_harness.domain.models.index_report import IndexStatus
+from code_harness.domain.models.result_truncation import TruncationReason, truncation
 from code_harness.domain.models.tool_result import ToolResult
 from code_harness.interfaces.response_projection import (
     ResponseDetail,
@@ -40,6 +43,9 @@ def _hybrid_hit(*, content: str = "def work():\n    return 1\n") -> HybridSearch
         "Matching symbol definition.",
         snippet_truncated=True,
         source_location=CodeLocation("src/work.py", 1, 500),
+        scope="anchor",
+        query_coverage=1.0,
+        score_components=SearchScore(0.9, 1.0, 1.0, 0.01),
     )
 
 
@@ -62,6 +68,8 @@ def test_compact_projection_omits_internal_hybrid_metadata() -> None:
 
     assert payload["data"][0]["path"] == "src/work.py"
     assert payload["data"][0]["snippet_truncated"] is True
+    assert payload["data"][0]["matched_terms"] == ["work"]
+    assert payload["data"][0]["scope"] == "anchor"
     serialized = json.dumps(payload)
     assert "file_hash" not in serialized
     assert "symbol-id" not in serialized
@@ -85,6 +93,8 @@ def test_detailed_debug_and_full_profiles_keep_distinct_contracts() -> None:
     full = serialize_projected_result(result, "full")
 
     assert detailed["data"][0]["source_location"]["end_line"] == 500
+    assert detailed["data"][0]["query_coverage"] == 1.0
+    assert detailed["data"][0]["score_components"]["evidence"] == 0.9
     assert detailed["warnings"][0]["message"] == "Fallback used."
     assert debug["diagnostics"]["elapsed_ms"] == 12
     assert debug["diagnostics"]["strategies"][0]["strategy"] == "fts"
@@ -142,4 +152,87 @@ def test_full_profile_bypasses_aggregate_budget() -> None:
 
     assert compact["truncated"] is True
     assert compact["omitted_results"] == 1
+    assert compact["truncation"]["reasons"] == ["response_budget"]
     assert full["data"][0]["content"] == "x" * 31_000
+
+
+def test_compact_projection_explains_known_truncation() -> None:
+    result = ToolResult(
+        ("first", "second"),
+        elapsed_ms=1,
+        truncation=truncation(
+            TruncationReason.RESULT_LIMIT,
+            results=True,
+            omitted_results=3,
+        ),
+    )
+
+    compact = serialize_projected_result(result, "compact")
+
+    assert compact["truncated"] is True
+    assert compact["truncation"] == {
+        "results": True,
+        "reasons": ["result_limit"],
+        "omitted_results": 3,
+    }
+    assert compact["omitted_results"] == 3
+
+
+def test_status_projection_exposes_runtime_identity_without_internal_index_ids() -> None:
+    status = IndexStatus(
+        "project-id",
+        IndexState.READY,
+        4,
+        10,
+        10,
+        0,
+        service_version="0.2.0",
+        build_commit="abc123",
+        service_started_at="2026-07-24T12:00:00+00:00",
+        service_instance_id="instance-1",
+    )
+
+    compact = serialize_projected_result(ToolResult(status, 1), "compact")
+
+    assert compact["data"]["service_version"] == "0.2.0"
+    assert compact["data"]["build_commit"] == "abc123"
+    assert compact["data"]["service_instance_id"] == "instance-1"
+    assert "project_id" not in compact["data"]
+
+
+def test_compact_context_budget_keeps_count_invariant() -> None:
+    snippets = tuple(
+        ContextSnippet(
+            CodeSnippet(
+                CodeLocation(f"src/{index}.py", 1, 1),
+                "x" * 5_000,
+                "python",
+                f"hash-{index}",
+            ),
+            0.9,
+            "primary",
+            None,
+            0,
+            1_700,
+            "test",
+        )
+        for index in range(10)
+    )
+    bundle = ContextBundle(
+        "query",
+        snippets,
+        0,
+        17_000,
+        20_000,
+        considered_results=10,
+        selected_results=10,
+    )
+
+    compact = serialize_projected_result(ToolResult(bundle, 1), "compact")
+    data = compact["data"]
+
+    assert compact["truncated"] is True
+    assert data["considered_results"] == (
+        data["selected_results"] + data["omitted_results"]
+    )
+    assert data["omitted"]["response_budget"] == data["omitted_results"]

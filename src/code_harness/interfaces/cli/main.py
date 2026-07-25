@@ -1,7 +1,9 @@
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any
+from uuid import uuid4
 
 import typer
 
@@ -27,7 +29,7 @@ from code_harness.bootstrap.project_registry import register_active_project, res
 from code_harness.bootstrap.settings import Settings
 from code_harness.bootstrap.tls import configure_application_tls
 from code_harness.domain.enums import ErrorCode, IndexMode
-from code_harness.domain.errors import CodeHarnessError, InvalidQueryError
+from code_harness.domain.errors import CodeHarnessError, InternalToolError, InvalidQueryError
 from code_harness.interfaces.cli.execution_commands import execution_app
 from code_harness.interfaces.cli.renderers import OutputFormat, render_error, render_value
 from code_harness.interfaces.cli.renderers.progress import IndexProgressPrinter
@@ -50,6 +52,7 @@ app.add_typer(search_app, name="search")
 app.add_typer(models_app, name="models")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(execution_app, name="execution")
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -110,6 +113,13 @@ def _execute(state: CliState, operation: Any) -> None:
     except CodeHarnessError as error:
         render_error(error, state.output)
         raise typer.Exit(_exit_code(error)) from error
+    except Exception as error:
+        error_id = uuid4().hex
+        tool = getattr(operation, "__qualname__", "unknown").split(".")[-1]
+        _LOGGER.exception("Unexpected CLI failure (error_id=%s).", error_id)
+        internal_error = InternalToolError(tool, error_id)
+        render_error(internal_error, state.output)
+        raise typer.Exit(1) from error
     render_value(result, state.output, state.response_detail)
 
 
@@ -463,9 +473,13 @@ def find_references(
     ctx: typer.Context,
     query: Annotated[str, typer.Argument(help="Referenced symbol name.")],
     max_results: Annotated[int, typer.Option("--max-results", min=1)] = 100,
+    include_comments: Annotated[
+        bool,
+        typer.Option("--include-comments/--exclude-comments"),
+    ] = True,
 ) -> None:
     state: CliState = ctx.obj
-    request = FindReferencesRequest(query, max_results)
+    request = FindReferencesRequest(query, max_results, include_comments=include_comments)
     _execute(state, lambda: state.container().find_references.execute(request))
 
 

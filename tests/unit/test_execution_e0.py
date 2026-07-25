@@ -23,11 +23,14 @@ from code_harness.domain.errors import (
     ExecutionDisabledError,
     ExecutionElevatedSessionError,
     InvalidExecutionRequestError,
+    PowerShellParseError,
+    PowerShellUnavailableError,
 )
 from code_harness.domain.models.execution import (
     ExecutionRuntimeConfig,
     NormalizedPowerShellCommand,
     NormalizedProcessCommand,
+    PowerShellAstAnalysis,
 )
 from code_harness.domain.models.tool_result import ToolResult
 from code_harness.interfaces.python_api import CodeHarness
@@ -36,7 +39,7 @@ from code_harness.interfaces.serialization import serialize_tool_result
 
 def _config(tmp_path: Path, **overrides: object) -> ExecutionRuntimeConfig:
     payload = {
-        "backend": "host",
+        "backend": "host_supervised",
         "require_approval": True,
         "default_timeout_seconds": 60.0,
         "max_timeout_seconds": 1800.0,
@@ -50,11 +53,27 @@ def _config(tmp_path: Path, **overrides: object) -> ExecutionRuntimeConfig:
     return ExecutionRuntimeConfig(**payload)  # type: ignore[arg-type]
 
 
+def _analysis(script: str) -> PowerShellAstAnalysis:
+    lowered = script.casefold()
+    features = []
+    for needle, feature in (
+        ("invoke-expression", "invoke_expression"),
+        ("-encodedcommand", "encoded_command"),
+        ("invoke-webrequest", "download_cradle"),
+        ("hklm:", "registry"),
+        ("start-service", "service_control"),
+        ("remove-item", "remove_item"),
+    ):
+        if needle in lowered:
+            features.append(feature)
+    return PowerShellAstAnalysis((), (script,), tuple(features))
+
+
 def test_execution_disabled_by_default(tmp_path: Path) -> None:
     settings = Settings.for_root(tmp_path)
     assert settings.execution_enabled is False
     assert settings.mcp_expose_execution is False
-    assert settings.execution_backend == "host"
+    assert settings.execution_backend == "host_supervised"
     assert settings.execution_require_approval is True
     assert settings.execution_allow_elevated is False
     assert (
@@ -70,7 +89,7 @@ def test_settings_reads_execution_environment(
 ) -> None:
     home = tmp_path / "state" / "executions"
     monkeypatch.setenv("CODE_HARNESS_EXECUTION", "1")
-    monkeypatch.setenv("CODE_HARNESS_EXECUTION_BACKEND", "host")
+    monkeypatch.setenv("CODE_HARNESS_EXECUTION_BACKEND", "host_supervised")
     monkeypatch.setenv("CODE_HARNESS_EXECUTION_REQUIRE_APPROVAL", "0")
     monkeypatch.setenv("CODE_HARNESS_EXECUTION_DEFAULT_TIMEOUT_SECONDS", "30")
     monkeypatch.setenv("CODE_HARNESS_EXECUTION_MAX_TIMEOUT_SECONDS", "90")
@@ -187,7 +206,8 @@ def test_policy_powershell_surface(tmp_path: Path) -> None:
             200_000,
             (),
             None,
-        )
+        ),
+        _analysis("Get-ChildItem"),
     )
     dynamic = engine.inspect_powershell(
         NormalizedPowerShellCommand(
@@ -197,7 +217,8 @@ def test_policy_powershell_surface(tmp_path: Path) -> None:
             200_000,
             (),
             None,
-        )
+        ),
+        _analysis("Invoke-Expression $cmd"),
     )
     assert simple.decision is PolicyDecision.APPROVAL_REQUIRED
     assert simple.approval_required is True
@@ -216,7 +237,7 @@ def test_approval_digest_is_stable(tmp_path: Path) -> None:
         timeout_seconds=60.0,
         max_output_bytes=200_000,
         capabilities=(ExecutionCapability.GIT_READ,),
-        backend="host",
+        backend="host_supervised",
         policy_version="1",
         policy_name="deterministic_v1",
     )
@@ -230,7 +251,7 @@ def test_approval_digest_is_stable(tmp_path: Path) -> None:
         timeout_seconds=60.0,
         max_output_bytes=200_000,
         capabilities=(ExecutionCapability.GIT_READ,),
-        backend="host",
+        backend="host_supervised",
         policy_version="1",
         policy_name="deterministic_v1",
     )
@@ -319,7 +340,8 @@ def test_policy_powershell_network_and_registry(tmp_path: Path) -> None:
             200_000,
             (),
             None,
-        )
+        ),
+        _analysis("Invoke-WebRequest https://example.com"),
     )
     registry = engine.inspect_powershell(
         NormalizedPowerShellCommand(
@@ -329,7 +351,8 @@ def test_policy_powershell_network_and_registry(tmp_path: Path) -> None:
             200_000,
             (),
             None,
-        )
+        ),
+        _analysis("Set-ItemProperty HKLM:\\Software\\X -Name Y -Value 1"),
     )
     assert web.decision is PolicyDecision.UNKNOWN_DYNAMIC_BEHAVIOR
     assert ExecutionCapability.NETWORK_OUTBOUND in web.required_capabilities
@@ -428,7 +451,8 @@ def test_policy_elevated_and_protected_paths(tmp_path: Path) -> None:
             200_000,
             (),
             None,
-        )
+        ),
+        _analysis("Get-ChildItem"),
     )
     assert process.decision is PolicyDecision.DENY
     assert powershell.decision is PolicyDecision.DENY
@@ -456,7 +480,8 @@ def test_policy_elevated_and_protected_paths(tmp_path: Path) -> None:
             200_000,
             (),
             None,
-        )
+        ),
+        _analysis("Get-Content .env"),
     )
     assert ps_protected.decision is PolicyDecision.DENY
 
@@ -491,7 +516,8 @@ def test_policy_process_and_powershell_branches(tmp_path: Path) -> None:
             200_000,
             (),
             None,
-        )
+        ),
+        _analysis("Start-Service Spooler"),
     )
     remove = engine.inspect_powershell(
         NormalizedPowerShellCommand(
@@ -501,7 +527,8 @@ def test_policy_process_and_powershell_branches(tmp_path: Path) -> None:
             200_000,
             (),
             None,
-        )
+        ),
+        _analysis("Remove-Item foo.txt"),
     )
     encoded = engine.inspect_powershell(
         NormalizedPowerShellCommand(
@@ -511,7 +538,8 @@ def test_policy_process_and_powershell_branches(tmp_path: Path) -> None:
             200_000,
             (),
             None,
-        )
+        ),
+        _analysis("powershell -EncodedCommand AAA="),
     )
     assert service.decision is PolicyDecision.UNKNOWN_DYNAMIC_BEHAVIOR
     assert ExecutionCapability.SERVICE_CONTROL in service.required_capabilities
@@ -521,15 +549,20 @@ def test_policy_process_and_powershell_branches(tmp_path: Path) -> None:
 
 def test_inspect_powershell_tool_timeout_and_elevated(tmp_path: Path) -> None:
     from code_harness.application.execution import InspectPowerShellTool
+    from code_harness.infrastructure.execution.analysis import PowerShellAstAnalyzer
     from code_harness.infrastructure.filesystem import PathGuard
 
     config = _config(tmp_path, default_timeout_seconds=5.0, max_timeout_seconds=10.0)
     tool = InspectPowerShellTool(
         paths=PathGuard(tmp_path),
         policy=DeterministicPolicyEngine(config),
+        analyzer=PowerShellAstAnalyzer(),
         config=config,
     )
-    ok = tool.execute(InspectPowerShellRequest("Get-ChildItem"))
+    try:
+        ok = tool.execute(InspectPowerShellRequest("Get-ChildItem"))
+    except PowerShellUnavailableError:
+        pytest.skip("pwsh is not installed on this host")
     assert isinstance(ok, ToolResult)
     assert ok.data.kind is CommandKind.POWERSHELL
     with pytest.raises(InvalidExecutionRequestError):
@@ -540,6 +573,7 @@ def test_inspect_powershell_tool_timeout_and_elevated(tmp_path: Path) -> None:
         policy=DeterministicPolicyEngine(
             _config(tmp_path, elevated_session=True, allow_elevated=False)
         ),
+        analyzer=PowerShellAstAnalyzer(),
         config=_config(tmp_path, elevated_session=True, allow_elevated=False),
     )
     with pytest.raises(ExecutionElevatedSessionError):
@@ -558,10 +592,15 @@ def test_python_api_inspect_powershell_and_errors(
 
     monkeypatch.setenv("CODE_HARNESS_EXECUTION", "1")
     harness = CodeHarness.open(tmp_path)
-    result = harness.inspect_powershell(
-        "Get-ChildItem",
-        requested_capabilities=("process_spawn",),
-    )
+    try:
+        result = harness.inspect_powershell(
+            "Get-ChildItem",
+            requested_capabilities=("process_spawn",),
+        )
+    except PowerShellUnavailableError:
+        result = None
+    if result is None:
+        return
     assert isinstance(result, ToolResult)
     assert result.data.decision is PolicyDecision.APPROVAL_REQUIRED
 
@@ -577,10 +616,63 @@ def test_python_api_inspect_powershell_and_errors(
         assert payload["error"]["code"]
 
 
+def test_powershell_ast_analysis_detects_dynamic_features_without_execution(
+    tmp_path: Path,
+) -> None:
+    from code_harness.infrastructure.execution.analysis import PowerShellAstAnalyzer
+
+    marker = tmp_path / "must-not-exist.txt"
+    script = f"New-Item -ItemType File -Path '{marker}'; IEX $command"
+    try:
+        analysis = PowerShellAstAnalyzer().analyze(script, timeout_seconds=5)
+    except PowerShellUnavailableError:
+        pytest.skip("pwsh is not installed on this host")
+
+    assert "invoke_expression" in analysis.dynamic_features
+    assert not marker.exists()
+
+
+def test_powershell_ast_analysis_reports_unavailable() -> None:
+    from code_harness.infrastructure.execution.analysis import PowerShellAstAnalyzer
+
+    with pytest.raises(PowerShellUnavailableError):
+        PowerShellAstAnalyzer("missing-pwsh-for-code-harness").analyze(
+            "Get-ChildItem", timeout_seconds=5
+        )
+
+
+def test_powershell_ast_analysis_reports_parse_errors() -> None:
+    from code_harness.infrastructure.execution.analysis import PowerShellAstAnalyzer
+
+    try:
+        with pytest.raises(PowerShellParseError):
+            PowerShellAstAnalyzer().analyze("if (", timeout_seconds=5)
+    except PowerShellUnavailableError:
+        pytest.skip("pwsh is not installed on this host")
+
+
+def test_inspection_reports_e0_backend_guarantees(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CODE_HARNESS_EXECUTION", "1")
+    container = build_container(Settings.for_root(tmp_path))
+    assert container.execution is not None
+
+    result = container.execution.inspect_process.execute(InspectProcessRequest("git", ("status",)))
+
+    guarantees = result.data.backend_guarantees
+    assert guarantees.backend == "host_supervised"
+    assert guarantees.execution_available is False
+    assert guarantees.process_tree_containment is False
+    assert guarantees.filesystem_isolated is False
+
+
 def test_settings_execution_validation(tmp_path: Path) -> None:
     index = tmp_path / "index.db"
     with pytest.raises(ValueError, match="execution_backend"):
         Settings(root=tmp_path, index_path=index, execution_backend="cloud")
+    with pytest.raises(ValueError, match="execution_backend"):
+        Settings(root=tmp_path, index_path=index, execution_backend="host")
     with pytest.raises(ValueError, match="execution_default_timeout_seconds"):
         Settings(root=tmp_path, index_path=index, execution_default_timeout_seconds=0)
     with pytest.raises(ValueError, match="execution_max_timeout_seconds"):

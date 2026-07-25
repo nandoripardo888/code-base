@@ -10,6 +10,7 @@ from code_harness.infrastructure.persistence.schema import (
     MIGRATION_3,
     MIGRATION_4,
     MIGRATION_5,
+    MIGRATION_6,
 )
 
 MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
@@ -18,6 +19,7 @@ MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (3, "phase_four_semantic_schema", MIGRATION_3),
     (4, "phase_four_interrupted_run_recovery", MIGRATION_4),
     (5, "canonical_symbol_signatures", MIGRATION_5),
+    (6, "fts_rowid_matches_file_id", MIGRATION_6),
 )
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 

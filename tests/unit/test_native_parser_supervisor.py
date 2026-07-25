@@ -141,7 +141,7 @@ def test_supervisor_extracts_python_structure_in_child_process() -> None:
     assert {item.target_name for item in result.references} == {"world"}
     assert result.chunks
     assert supervisor.health_check()
-    assert supervisor.version == ANALYSIS_VERSION == "4"
+    assert supervisor.version == ANALYSIS_VERSION == "5"
     assert supervisor.protocol_version == PROTOCOL_VERSION
     assert supervisor.worker_implementation_version == WORKER_IMPLEMENTATION_VERSION
     supervisor.shutdown()
@@ -278,7 +278,7 @@ def test_timeout_restarts_worker_with_new_pid() -> None:
         "    if op=='analyze':\n"
         "        time.sleep(5)\n"
         "    print(json.dumps({'protocol_version':1,'request_id':rid,'ok':True,"
-        "'result':{'status':'ok','parser_name':'x','parser_version':'4','state':'ready',"
+        "'result':{'status':'ok','parser_name':'x','parser_version':'5','state':'ready',"
         "'symbols':[],'references':[],'chunks':[],'warnings':[]}}), flush=True)\n"
     )
     supervisor = NativeParserSupervisor(
@@ -308,7 +308,7 @@ def test_timeout_restarts_worker_with_new_pid() -> None:
         "        print(json.dumps({'protocol_version':1,'request_id':rid,'ok':True,"
         "'result':{'status':'ok'}}), flush=True); continue\n"
         "    print(json.dumps({'protocol_version':1,'request_id':rid,'ok':True,"
-        "'result':{'parser_name':'x','parser_version':'4','state':'ready',"
+        "'result':{'parser_name':'x','parser_version':'5','state':'ready',"
         "'symbols':[],'references':[],'chunks':[],'warnings':[]}}), flush=True)\n"
     )
     supervisor = NativeParserSupervisor(
@@ -378,7 +378,7 @@ def test_stderr_flood_does_not_block_worker() -> None:
         "        print(json.dumps({'protocol_version':1,'request_id':rid,'ok':True,"
         "'result':{'status':'ok'}}), flush=True); continue\n"
         "    print(json.dumps({'protocol_version':1,'request_id':rid,'ok':True,"
-        "'result':{'parser_name':'flood','parser_version':'4','state':'ready',"
+        "'result':{'parser_name':'flood','parser_version':'5','state':'ready',"
         "'symbols':[],'references':[],'chunks':[],'warnings':[]}}), flush=True)\n"
     )
     supervisor = NativeParserSupervisor(
@@ -404,7 +404,7 @@ def test_invalid_request_id_causes_restart() -> None:
         "        print(json.dumps({'protocol_version':1,'request_id':rid,'ok':True,"
         "'result':{'status':'shutdown'}}), flush=True); break\n"
         "    print(json.dumps({'protocol_version':1,'request_id':'other-id','ok':True,"
-        "'result':{'parser_name':'x','parser_version':'4','state':'ready',"
+        "'result':{'parser_name':'x','parser_version':'5','state':'ready',"
         "'symbols':[],'references':[],'chunks':[],'warnings':[]}}), flush=True)\n"
     )
     supervisor = NativeParserSupervisor(
@@ -444,12 +444,12 @@ def test_java_parser_cache_created_once_per_process() -> None:
 
 
 def test_transport_change_does_not_bump_analysis_version() -> None:
-    assert ANALYSIS_VERSION == "4"
+    assert ANALYSIS_VERSION == "5"
     supervisor = NativeParserSupervisor(timeout_seconds=5)
     try:
         result = supervisor.analyze(_request())
-        assert result.parser_version == "4"
-        assert supervisor.version == "4"
+        assert result.parser_version == "5"
+        assert supervisor.version == "5"
     finally:
         supervisor.shutdown()
 
@@ -521,7 +521,7 @@ def test_pool_crash_isolates_to_one_slot() -> None:
         "        seen=True\n"
         "        raise SystemExit(1)\n"
         "    print(json.dumps({'protocol_version':1,'request_id':rid,'ok':True,"
-        "'result':{'parser_name':'pool','parser_version':'4','state':'ready',"
+        "'result':{'parser_name':'pool','parser_version':'5','state':'ready',"
         "'symbols':[],'references':[],'chunks':[],'warnings':[]}}), flush=True)\n"
     )
     supervisor = NativeParserSupervisor(

@@ -30,6 +30,7 @@ class ContextBundle:
     selected_results: int = 0
     omitted: dict[str, int] = field(default_factory=dict)
     results_truncated: bool = False
+    candidates_truncated: bool = False
     snippet_truncated: bool = False
     budget_exhausted: bool = False
     expansion_limited: bool = False

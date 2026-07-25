@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Annotated, Any
+from uuid import uuid4
 
 from mcp.server.fastmcp import FastMCP
+from pydantic.json_schema import WithJsonSchema
 
 from code_harness.application.dto.requests import (
     BuildContextRequest,
@@ -26,17 +29,77 @@ from code_harness.application.dto.requests import (
 from code_harness.bootstrap.container import ApplicationContainer
 from code_harness.bootstrap.settings import Settings
 from code_harness.domain.enums import IndexMode
-from code_harness.domain.errors import CodeHarnessError, InvalidQueryError
+from code_harness.domain.errors import CodeHarnessError, InternalToolError, InvalidQueryError
 from code_harness.domain.models.tool_result import ToolResult
 from code_harness.interfaces.mcp.serializers import (
+    ResponseDetail,
     resolve_response_detail,
     serialize_error,
     serialize_projected_result,
 )
 
+_RESPONSE_DETAIL_VALUES = [item.value for item in ResponseDetail]
+_LOGGER = logging.getLogger(__name__)
+ResponseDetailParameter = Annotated[
+    str | None,
+    WithJsonSchema(
+        {
+            "anyOf": [
+                {"type": "string", "enum": _RESPONSE_DETAIL_VALUES},
+                {"type": "null"},
+            ],
+            "description": (
+                "Response projection. Precedence: explicit argument, "
+                "CODE_HARNESS_RESPONSE_DETAIL, compact."
+            ),
+        }
+    ),
+]
+
 
 def _as_tuple(values: Sequence[str] | None) -> tuple[str, ...]:
     return tuple(values or ())
+
+
+def _operation_name(operation: Callable[[], ToolResult[Any]]) -> str:
+    parts = [
+        part
+        for part in operation.__qualname__.split(".")
+        if part not in {"<locals>", "operation", "execute"}
+    ]
+    if not parts:
+        return "unknown"
+    name = parts[-1]
+    if name.endswith("Tool"):
+        name = name[:-4]
+    result: list[str] = []
+    for index, character in enumerate(name):
+        if index and character.isupper() and not name[index - 1].isupper():
+            result.append("_")
+        result.append(character.casefold())
+    return "".join(result)
+
+
+def _execute_operation(
+    container: ApplicationContainer,
+    operation: Callable[[], ToolResult[Any]],
+    response_detail: ResponseDetail | str | None = None,
+) -> dict[str, Any]:
+    try:
+        detail = resolve_response_detail(response_detail)
+        return serialize_projected_result(
+            container.with_index_state(operation()),
+            detail,
+        )
+    except ValueError as error:
+        return serialize_error(InvalidQueryError(str(error)))
+    except CodeHarnessError as error:
+        return serialize_error(error)
+    except Exception:
+        tool = _operation_name(operation)
+        error_id = uuid4().hex
+        _LOGGER.exception("Unexpected %s failure (error_id=%s).", tool, error_id)
+        return serialize_error(InternalToolError(tool, error_id))
 
 
 def register_handlers(
@@ -46,18 +109,9 @@ def register_handlers(
 ) -> None:
     def _execute(
         operation: Callable[[], ToolResult[Any]],
-        response_detail: str | None = None,
+        response_detail: ResponseDetail | str | None = None,
     ) -> dict[str, Any]:
-        try:
-            detail = resolve_response_detail(response_detail)
-            return serialize_projected_result(
-                container.with_index_state(operation()),
-                detail,
-            )
-        except ValueError as error:
-            return serialize_error(InvalidQueryError(str(error)))
-        except CodeHarnessError as error:
-            return serialize_error(error)
+        return _execute_operation(container, operation, response_detail)
 
     @server.tool()
     def list_files(
@@ -68,7 +122,7 @@ def register_handlers(
         sort: str = "path",
         sort_direction: str = "asc",
         include_total_count: bool = True,
-        response_detail: str | None = None,
+        response_detail: ResponseDetailParameter = None,
     ) -> dict[str, Any]:
         """List source files in the active project."""
 
@@ -93,7 +147,7 @@ def register_handlers(
         exclude_globs: list[str] | None = None,
         max_results: int = 50,
         case_sensitive: bool = False,
-        response_detail: str | None = None,
+        response_detail: ResponseDetailParameter = None,
     ) -> dict[str, Any]:
         """Search files by name or path fragment."""
 
@@ -118,7 +172,7 @@ def register_handlers(
         context_lines: int = 0,
         case_sensitive: bool = False,
         timeout_seconds: float = 10.0,
-        response_detail: str | None = None,
+        response_detail: ResponseDetailParameter = None,
     ) -> dict[str, Any]:
         """Search source content for a literal string."""
 
@@ -145,7 +199,7 @@ def register_handlers(
         context_lines: int = 0,
         case_sensitive: bool = False,
         timeout_seconds: float = 10.0,
-        response_detail: str | None = None,
+        response_detail: ResponseDetailParameter = None,
     ) -> dict[str, Any]:
         """Search source content with a regular expression."""
 
@@ -169,7 +223,7 @@ def register_handlers(
         max_chars: int = 200_000,
         max_lines: int = 5_000,
         include_line_numbers: bool = False,
-        response_detail: str | None = None,
+        response_detail: ResponseDetailParameter = None,
     ) -> dict[str, Any]:
         """Read a source file from the active project."""
 
@@ -186,7 +240,7 @@ def register_handlers(
         end_line: int,
         max_chars: int = 200_000,
         include_line_numbers: bool = False,
-        response_detail: str | None = None,
+        response_detail: ResponseDetailParameter = None,
     ) -> dict[str, Any]:
         """Read an inclusive line range from a source file."""
 
@@ -206,7 +260,7 @@ def register_handlers(
         max_depth: int | None = None,
         symbol_kinds: list[str] | None = None,
         max_content_chars_per_symbol: int | None = None,
-        response_detail: str | None = None,
+        response_detail: ResponseDetailParameter = None,
     ) -> dict[str, Any]:
         """Return structural outline symbols for a file."""
 
@@ -237,7 +291,7 @@ def register_handlers(
         path: str | None = None,
         language: str | None = None,
         parameter_count: int | None = None,
-        response_detail: str | None = None,
+        response_detail: ResponseDetailParameter = None,
     ) -> dict[str, Any]:
         """Find symbols by name or qualified name."""
 
@@ -265,7 +319,8 @@ def register_handlers(
         include_globs: list[str] | None = None,
         exclude_globs: list[str] | None = None,
         timeout_seconds: float = 10.0,
-        response_detail: str | None = None,
+        include_comments: bool = True,
+        response_detail: ResponseDetailParameter = None,
     ) -> dict[str, Any]:
         """Find structural and textual references to a symbol."""
 
@@ -276,6 +331,7 @@ def register_handlers(
                 _as_tuple(include_globs),
                 _as_tuple(exclude_globs),
                 timeout_seconds,
+                include_comments,
             )
             return container.find_references.execute(request)
 
@@ -288,7 +344,7 @@ def register_handlers(
         exclude_globs: list[str] | None = None,
         languages: list[str] | None = None,
         max_results: int = 50,
-        response_detail: str | None = None,
+        response_detail: ResponseDetailParameter = None,
     ) -> dict[str, Any]:
         """Search chunks by meaning when semantic indexing is available."""
 
@@ -316,7 +372,7 @@ def register_handlers(
         snippet_mode: str = "match_window",
         max_snippet_lines: int = 40,
         max_snippet_chars: int = 6_000,
-        response_detail: str | None = None,
+        response_detail: ResponseDetailParameter = None,
     ) -> dict[str, Any]:
         """Hybrid search across lexical, structural, and optional semantic strategies."""
 
@@ -348,7 +404,7 @@ def register_handlers(
         max_files: int = 12,
         max_snippets: int = 20,
         max_expansion_depth: int = 2,
-        response_detail: str | None = None,
+        response_detail: ResponseDetailParameter = None,
     ) -> dict[str, Any]:
         """Build a budgeted context bundle for a query."""
 
@@ -381,7 +437,7 @@ def register_handlers(
         cursor: str | None = None,
         include_files: bool = True,
         include_symbols: bool | None = None,
-        response_detail: str | None = None,
+        response_detail: ResponseDetailParameter = None,
     ) -> dict[str, Any]:
         """Return a hierarchical repository map with validated symbols."""
 
@@ -404,7 +460,7 @@ def register_handlers(
         return _execute(operation, response_detail)
 
     @server.tool()
-    def get_index_status(response_detail: str | None = None) -> dict[str, Any]:
+    def get_index_status(response_detail: ResponseDetailParameter = None) -> dict[str, Any]:
         """Return index state and statistics for the active project."""
         return _execute(container.get_index_status.execute, response_detail)
 
@@ -415,7 +471,7 @@ def register_handlers(
             mode: str = IndexMode.INCREMENTAL.value,
             include_globs: list[str] | None = None,
             exclude_globs: list[str] | None = None,
-            response_detail: str | None = None,
+            response_detail: ResponseDetailParameter = None,
         ) -> dict[str, Any]:
             """Create or update the local project index."""
 

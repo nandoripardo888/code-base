@@ -5,6 +5,7 @@ from code_harness.domain.errors import CodeHarnessError, EmbeddingUnavailableErr
 from code_harness.domain.models.code_chunk import CodeSnippet
 from code_harness.domain.models.index_report import IndexedSource
 from code_harness.domain.models.project import Project
+from code_harness.domain.models.result_truncation import TruncationReason, truncation
 from code_harness.domain.models.search_hit import SearchHit
 from code_harness.domain.models.tool_result import ToolResult, normalize_warnings
 from code_harness.domain.protocols.embedding_provider import EmbeddingProvider
@@ -109,6 +110,9 @@ class SemanticSearchTool:
             hits,
             elapsed_ms,
             truncated=truncated,
+            truncation=(
+                truncation(TruncationReason.RESULT_LIMIT, results=True) if truncated else None
+            ),
             warnings=normalize_warnings(
                 warnings, code="embedding_unavailable", capability="semantic"
             ),

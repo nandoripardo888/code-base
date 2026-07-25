@@ -62,6 +62,7 @@ class QueryClassifier:
 
         raw_tokens = _TOKEN.findall(stripped)
         identifiers = [value for value in raw_tokens if _is_strong_identifier(value)]
+        original_identifiers = _unique(identifiers)
         path_terms = [
             value
             for value in (*raw_tokens, *_EXTENSION.findall(stripped))
@@ -110,4 +111,5 @@ class QueryClassifier:
             identifiers=_unique(identifiers)[:8],
             lexical_terms=_unique(lexical_terms)[:8],
             path_terms=_unique(path_terms)[:3],
+            original_identifiers=original_identifiers[:8],
         )

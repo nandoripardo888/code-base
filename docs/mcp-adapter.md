@@ -71,7 +71,11 @@ An explicit value overrides `CODE_HARNESS_RESPONSE_DETAIL`; the fallback is
 
 The four normal profiles limit the serialized `data` section to 30,000
 characters. If the adapter removes tail items or clips a single read, it adds
-`truncated: true` and `omitted_results`. `full` bypasses this aggregate budget.
+`truncated: true` and a structured `truncation` object. Its `reasons` may contain
+`result_limit`, `snippet_line_limit`, `snippet_char_limit`, `token_budget`,
+`candidate_limit`, `file_limit`, `expansion_limit`, or `response_budget`.
+`omitted_results` is included only when its value is known. Deduplication alone
+does not mark a response as truncated. `full` bypasses the aggregate budget.
 Warnings may be structured objects with `code`, `message`, `recoverable`,
 `capability`, and `remediation`; non-empty warnings are always preserved.
 
@@ -90,6 +94,9 @@ Typed failures return:
 
 Recoverable capability errors such as `ripgrep_unavailable` and
 `embedding_unavailable` also include `capability` and `remediation`.
+Unexpected failures use `code=internal_error` with a correlation `error_id` and
+tool name. The client never receives the original exception or traceback; the
+server log retains both under that ID.
 
 ## Degradation notes
 
@@ -97,6 +104,8 @@ Recoverable capability errors such as `ripgrep_unavailable` and
   There is no Python regex fallback.
 - `find_references` prefers the structural index and degrades to Ripgrep when
   available; without Ripgrep it still returns validated structural references.
+  Confirmed lexical comments are ranked last as `comment_textual` and can be
+  removed with `include_comments=false`.
 - `get_file_outline` / `find_symbol` default to compact responses without symbol
   bodies (`include_content=false`, `response_format=compact`).
 - `list_files` returns a paginated page (`items`, `next_cursor`, …).
@@ -106,9 +115,15 @@ Recoverable capability errors such as `ripgrep_unavailable` and
 - `search_code` defaults to query-focused snippets of at most 40 lines and
   6,000 characters. These limits apply in every response profile, including
   `full`, and can be increased explicitly with the search parameters.
+- Hybrid compact results include actual `matched_terms` and
+  `scope=anchor|fallback`. Scores are absolute rather than normalized to the
+  best result.
 - `get_repository_map` defaults to `mode=summary` (no symbols); use `detailed`
-  for symbol enrichment.
-- `get_index_status` exposes `capabilities`, `index_state`, and `service_state`.
+  for symbol enrichment. Directory filters normalize `/`, `\`, `./`, repeated
+  separators, and trailing separators.
+- `get_index_status` exposes `capabilities`, `index_state`, `service_state`,
+  `service_version`, optional `build_commit`, `service_started_at`, and
+  `service_instance_id`.
   Index readiness and embedding/service health are reported separately.
 - Semantic failures are cached in-process until configuration changes or
   `doctor --deep` invalidates them.

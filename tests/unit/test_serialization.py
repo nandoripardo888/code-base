@@ -1,5 +1,5 @@
 from code_harness.domain.enums import ErrorCode
-from code_harness.domain.errors import PathOutsideProjectError
+from code_harness.domain.errors import InternalToolError, PathOutsideProjectError
 from code_harness.domain.models.tool_result import ToolResult
 from code_harness.interfaces.serialization import (
     serialize_error,
@@ -31,6 +31,17 @@ def test_serialize_error_matches_cli_envelope() -> None:
             "recoverable": False,
         }
     }
+
+
+def test_internal_error_is_correlated_without_leaking_exception_details() -> None:
+    payload = serialize_error(InternalToolError("build_context", "error-123"))
+
+    assert payload["error"]["code"] == "internal_error"
+    assert payload["error"]["details"] == {
+        "error_id": "error-123",
+        "tool": "build_context",
+    }
+    assert "list index" not in str(payload)
 
 
 def test_serialize_tool_result_omits_empty_strategies() -> None:

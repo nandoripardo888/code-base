@@ -2,7 +2,11 @@ from collections import Counter
 from dataclasses import dataclass, replace
 
 from code_harness.application.context import estimate_tokens
-from code_harness.application.context.query_windows import render_windows, select_query_windows
+from code_harness.application.context.query_windows import (
+    LineWindow,
+    render_windows,
+    select_query_windows,
+)
 from code_harness.application.dto.requests import BuildContextRequest, SearchCodeRequest
 from code_harness.application.tools._timing import timed
 from code_harness.application.tools.search_code import SearchCodeTool
@@ -15,20 +19,45 @@ from code_harness.domain.models.context import ContextBundle, ContextSnippet
 from code_harness.domain.models.hybrid import HybridSearchHit
 from code_harness.domain.models.index_report import IndexedSource
 from code_harness.domain.models.project import Project
+from code_harness.domain.models.result_truncation import (
+    TruncationReason,
+    merge_truncations,
+    truncation,
+)
 from code_harness.domain.models.structural import StructuralSearchResult
 from code_harness.domain.models.tool_result import ToolResult, normalize_warnings
 from code_harness.domain.protocols.index_source_reader import IndexSourceReader
 from code_harness.domain.protocols.repository_store import RepositoryStore
 
-_ROLE_PRIORITY = {"definition": 0, "primary": 1, "parent": 2, "reference": 3}
+_ROLE_PRIORITY = {
+    "definition": 0,
+    "continuation": 1,
+    "primary": 2,
+    "parent": 3,
+    "reference": 4,
+}
 _OMISSION_REASONS = (
-    "duplicate",
     "file_limit",
     "low_score",
     "token_budget",
     "stale_result",
     "invalid_range",
     "expansion_limit",
+)
+_ENUMERATION_TERMS = frozenset(
+    {
+        "campos",
+        "fields",
+        "listar",
+        "liste",
+        "list",
+        "members",
+        "membros",
+        "methods",
+        "métodos",
+        "quais",
+        "which",
+    }
 )
 
 
@@ -42,6 +71,13 @@ class _PendingSnippet:
     reason: str
     source_match_types: tuple[MatchType, ...]
     snippet_truncated: bool = False
+    source_location: CodeLocation | None = None
+    scope: str = "fallback"
+
+
+def _is_enumeration_query(query: str) -> bool:
+    terms = {term.casefold().strip("?!.,:;") for term in query.split()}
+    return bool(terms & _ENUMERATION_TERMS)
 
 
 def _header(item: _PendingSnippet) -> str:
@@ -95,8 +131,14 @@ class BuildContextTool:
             )
             pending.extend(expansions)
             warnings.extend(normalize_warnings(expansion_warnings))
-            considered = len(pending)
             pending, duplicate_count = self._deduplicate(pending)
+            pending, preparation_warnings = self._prepare_enumeration_candidates(
+                request,
+                pending,
+            )
+            warnings.extend(normalize_warnings(preparation_warnings))
+            pending, _ = self._deduplicate(pending)
+            considered = len(pending)
             available = request.max_tokens - request.reserved_tokens
             metadata_tokens = estimate_tokens(
                 f"estimated_tokens={available}/{available}; omitted_results={considered}"
@@ -107,12 +149,21 @@ class BuildContextTool:
                 metadata_tokens,
             )
             warnings.extend(normalize_warnings(selection_warnings))
-            omitted["duplicate"] = omitted.get("duplicate", 0) + duplicate_count
+            if duplicate_count:
+                warnings.extend(
+                    normalize_warnings(
+                        (
+                            f"Removed {duplicate_count} overlapping context candidates "
+                            "before budgeting.",
+                        )
+                    )
+                )
             if search.truncated:
-                omitted["expansion_limit"] = omitted.get("expansion_limit", 0) + 1
-                flags["results_truncated"] = True
+                if search.truncation is not None and search.truncation.candidates:
+                    flags["candidates_truncated"] = True
+                if search.truncation is None or search.truncation.results:
+                    flags["results_truncated"] = True
             if expansion_limited:
-                omitted["expansion_limit"] = omitted.get("expansion_limit", 0) + 1
                 flags["expansion_limited"] = True
             selected = len(snippets)
             omitted_total = max(0, considered - selected)
@@ -135,6 +186,7 @@ class BuildContextTool:
                     selected_results=selected,
                     omitted={key: omitted[key] for key in _OMISSION_REASONS if omitted.get(key)},
                     results_truncated=flags["results_truncated"],
+                    candidates_truncated=flags["candidates_truncated"],
                     snippet_truncated=flags["snippet_truncated"],
                     budget_exhausted=flags["budget_exhausted"],
                     expansion_limited=flags["expansion_limited"],
@@ -144,15 +196,36 @@ class BuildContextTool:
             )
 
         (bundle, warnings, index_state), elapsed_ms = timed(build)
+        reasons: list[TruncationReason] = []
+        if bundle.results_truncated or bundle.omitted.get("low_score"):
+            reasons.append(TruncationReason.RESULT_LIMIT)
+        if bundle.candidates_truncated:
+            reasons.append(TruncationReason.CANDIDATE_LIMIT)
+        if bundle.snippet_truncated:
+            reasons.append(TruncationReason.SNIPPET_LINE_LIMIT)
+        if bundle.omitted.get("file_limit"):
+            reasons.append(TruncationReason.FILE_LIMIT)
+        if bundle.omitted.get("expansion_limit") or bundle.expansion_limited:
+            reasons.append(TruncationReason.EXPANSION_LIMIT)
+        if bundle.omitted.get("token_budget") or bundle.budget_exhausted:
+            reasons.append(TruncationReason.TOKEN_BUDGET)
+        result_truncation = merge_truncations(
+            truncation(
+                *reasons,
+                results=bundle.results_truncated,
+                snippets=bundle.snippet_truncated,
+                candidates=bundle.candidates_truncated,
+                budget_exhausted=bundle.budget_exhausted,
+                    omitted_results=bundle.omitted_results or None,
+            )
+            if reasons
+            else None
+        )
         return ToolResult(
             bundle,
             elapsed_ms,
-            truncated=(
-                bundle.omitted_results > 0
-                or bundle.results_truncated
-                or bundle.snippet_truncated
-                or bundle.budget_exhausted
-            ),
+            truncated=result_truncation is not None,
+            truncation=result_truncation,
             warnings=warnings,
             index_state=index_state,
         )
@@ -170,6 +243,8 @@ class BuildContextTool:
             hit.reason,
             match_types,
             hit.snippet_truncated,
+            hit.source_location,
+            hit.scope,
         )
 
     def _expand(
@@ -302,6 +377,9 @@ class BuildContextTool:
                 depth,
                 f"Controlled {role} expansion from the structural index.",
                 (match_type,),
+                False,
+                location,
+                "fallback",
             ),
             None,
         )
@@ -311,6 +389,7 @@ class BuildContextTool:
         ordered = sorted(
             values,
             key=lambda item: (
+                item.scope != "anchor",
                 _ROLE_PRIORITY.get(item.role, 9),
                 -item.score,
                 item.depth,
@@ -327,6 +406,115 @@ class BuildContextTool:
             selected.append(value)
         return selected, duplicates
 
+    def _prepare_enumeration_candidates(
+        self,
+        request: BuildContextRequest,
+        pending: list[_PendingSnippet],
+    ) -> tuple[list[_PendingSnippet], list[str]]:
+        if not _is_enumeration_query(request.query):
+            return pending, []
+        anchors = [item for item in pending if item.scope == "anchor"]
+        if not anchors:
+            structural = [
+                item
+                for item in pending
+                if MatchType.SYMBOL in item.source_match_types
+            ]
+            if structural:
+                inferred = max(
+                    structural,
+                    key=lambda item: (
+                        (item.source_location or item.snippet.location).end_line
+                        - (item.source_location or item.snippet.location).start_line,
+                        item.score,
+                    ),
+                )
+                pending = [
+                    replace(item, scope="anchor") if item is inferred else item
+                    for item in pending
+                ]
+                anchors = [replace(inferred, scope="anchor")]
+            else:
+                return [item for item in pending if item.score >= 0.65], []
+
+        def span(item: _PendingSnippet) -> int:
+            location = item.source_location or item.snippet.location
+            return location.end_line - location.start_line + 1
+
+        primary = max(
+            anchors,
+            key=lambda item: (
+                span(item),
+                item.score,
+                -item.snippet.location.start_line,
+            ),
+        )
+        location = primary.source_location or primary.snippet.location
+        try:
+            source = self._reader.load(location.path)
+        except CodeHarnessError as error:
+            return pending, [
+                f"Could not expand anchor {location.path} ({error.code.value}); "
+                "using the bounded search snippets."
+            ]
+        if source.content_hash != primary.snippet.file_hash:
+            return pending, [
+                f"Could not expand stale anchor {location.path}; reindex it."
+            ]
+
+        lines = source.content.splitlines(keepends=True)
+        if not lines:
+            return pending, []
+        start = max(1, min(location.start_line, len(lines)))
+        end = max(start, min(location.end_line, len(lines)))
+        blocks: list[_PendingSnippet] = []
+        cursor = start
+        while cursor <= end:
+            chosen: list[str] = []
+            size = 0
+            block_end = cursor - 1
+            while block_end < end and len(chosen) < 40:
+                line = lines[block_end]
+                if not chosen and len(line) > 6_000:
+                    chosen.append(line[:6_000])
+                    block_end += 1
+                    break
+                if size + len(line) > 6_000:
+                    break
+                chosen.append(line)
+                size += len(line)
+                block_end += 1
+            if not chosen:
+                break
+            block_location = CodeLocation(location.path, cursor, block_end)
+            blocks.append(
+                replace(
+                    primary,
+                    snippet=CodeSnippet(
+                        block_location,
+                        "".join(chosen),
+                        source.language,
+                        source.content_hash,
+                    ),
+                    role="definition" if not blocks else "continuation",
+                    reason=(
+                        "Anchor declaration block."
+                        if not blocks
+                        else "Contiguous continuation of the resolved anchor."
+                    ),
+                    snippet_truncated=block_end < end,
+                    source_location=block_location,
+                )
+            )
+            cursor = block_end + 1
+
+        fallback = [
+            item
+            for item in pending
+            if item.scope != "anchor" and item.score >= 0.65
+        ]
+        return [*blocks, *fallback], []
+
     def _apply_budget(
         self,
         request: BuildContextRequest,
@@ -341,6 +529,7 @@ class BuildContextTool:
         omitted: Counter[str] = Counter()
         flags = {
             "results_truncated": False,
+            "candidates_truncated": False,
             "snippet_truncated": False,
             "budget_exhausted": False,
             "expansion_limited": False,
@@ -373,15 +562,31 @@ class BuildContextTool:
                 warnings.append(f"Skipped stale context snippet for {path}; reindex it.")
                 continue
             location = item.snippet.location
+            source_location = item.source_location or location
             lines = source.content.splitlines(keepends=True)
-            end_line = min(location.end_line, max(1, len(lines)))
-            windows = select_query_windows(
-                content=source.content,
-                start_line=location.start_line,
-                end_line=end_line,
-                query=request.query,
+            start_line = max(1, min(source_location.start_line, max(1, len(lines))))
+            end_line = min(source_location.end_line, max(1, len(lines)))
+            enumeration_block = (
+                _is_enumeration_query(request.query)
+                and item.scope == "anchor"
+                and item.role in {"definition", "continuation"}
             )
-            rendered, window_start, window_end = render_windows(source.content, windows)
+            windows: tuple[LineWindow, ...]
+            if enumeration_block:
+                rendered = "".join(lines[start_line - 1 : end_line])
+                window_start = start_line
+                window_end = end_line
+                windows = (
+                    LineWindow(start_line, end_line, "anchor_continuation", 1.0),
+                )
+            else:
+                windows = select_query_windows(
+                    content=source.content,
+                    start_line=start_line,
+                    end_line=end_line,
+                    query=request.query,
+                )
+                rendered, window_start, window_end = render_windows(source.content, windows)
             if not rendered:
                 omitted["invalid_range"] += 1
                 continue
@@ -430,7 +635,6 @@ class BuildContextTool:
             files.add(path)
             if remaining <= 0:
                 flags["budget_exhausted"] = True
-                break
         return tuple(selected), warnings, dict(omitted), flags
 
     @staticmethod

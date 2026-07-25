@@ -14,6 +14,7 @@ from code_harness.domain.models.repository_map import (
     RepositoryMap,
     RepositorySymbol,
 )
+from code_harness.domain.models.result_truncation import TruncationReason, truncation
 from code_harness.domain.models.source_file import SourceFile
 from code_harness.domain.models.structural import StructuralSearchResult
 from code_harness.domain.models.tool_result import ToolResult
@@ -53,7 +54,7 @@ def _freeze(directory: _MutableDirectory) -> RepositoryDirectory:
 
 
 def _normalize_path(path: str) -> str:
-    return path.replace("\\", "/").removeprefix("./")
+    return "/".join(part for part in path.replace("\\", "/").split("/") if part not in {"", "."})
 
 
 class GetRepositoryMapTool:
@@ -76,15 +77,16 @@ class GetRepositoryMapTool:
                 exclude_globs=request.exclude_globs,
             )
             languages = {language.casefold() for language in request.languages}
+            requested_path = _normalize_path(request.path or "")
             filtered = tuple(
                 source
                 for source in discovered
                 if (
                     (not languages or (source.language or "").casefold() in languages)
                     and (
-                        not request.path
-                        or source.path == request.path
-                        or source.path.startswith(f"{request.path.rstrip('/')}/")
+                        not requested_path
+                        or _normalize_path(source.path) == requested_path
+                        or _normalize_path(source.path).startswith(f"{requested_path}/")
                     )
                 )
             )
@@ -178,6 +180,15 @@ class GetRepositoryMapTool:
             repository_map,
             elapsed_ms,
             truncated=repository_map.omitted_files > 0,
+            truncation=(
+                truncation(
+                    TruncationReason.FILE_LIMIT,
+                    results=True,
+                    omitted_results=repository_map.omitted_files,
+                )
+                if repository_map.omitted_files > 0
+                else None
+            ),
             warnings=warnings,
             index_state=repository_map.index_state,
         )

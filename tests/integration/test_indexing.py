@@ -22,6 +22,99 @@ from code_harness.infrastructure.persistence import (
 from code_harness.infrastructure.persistence import migrations as migrations_module
 
 
+def _create_version_five_index(
+    database: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    include_orphan_file: bool = False,
+) -> tuple[tuple[int, str, tuple[str, ...]], ...]:
+    current_migrations = migrations_module.MIGRATIONS
+    monkeypatch.setattr(migrations_module, "MIGRATIONS", current_migrations[:5])
+    monkeypatch.setattr(migrations_module, "SCHEMA_VERSION", 5)
+    apply_migrations(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            INSERT INTO projects(project_id, root, state, created_at, updated_at)
+            VALUES ('project', 'C:/repository', 'ready', '2026-01-01', '2026-01-01')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO projects(project_id, root, state, created_at, updated_at)
+            VALUES ('other', 'C:/other', 'ready', '2026-01-01', '2026-01-01')
+            """
+        )
+        files = [
+            (
+                "project",
+                "src/a.py",
+                10,
+                1,
+                "python",
+                "utf-8",
+                "a" * 64,
+                "2026-01-01",
+            ),
+            (
+                "project",
+                "src/b.py",
+                10,
+                2,
+                "python",
+                "utf-8",
+                "b" * 64,
+                "2026-01-01",
+            ),
+            (
+                "other",
+                "src/c.py",
+                10,
+                3,
+                "python",
+                "utf-8",
+                "c" * 64,
+                "2026-01-01",
+            ),
+        ]
+        if include_orphan_file:
+            files.append(
+                (
+                    "project",
+                    "src/orphan.py",
+                    10,
+                    4,
+                    "python",
+                    "utf-8",
+                    "d" * 64,
+                    "2026-01-01",
+                )
+            )
+        connection.executemany(
+            """
+            INSERT INTO files(
+                project_id, path, size_bytes, modified_at_ns, language,
+                encoding, content_hash, indexed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            files,
+        )
+        connection.executemany(
+            """
+            INSERT INTO file_fts(rowid, project_id, path, content)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                (101, "project", "src/a.py", "alpha shared"),
+                (202, "project", "src/b.py", "beta shared"),
+                (303, "other", "src/c.py", "gamma shared"),
+            ),
+        )
+    monkeypatch.setattr(migrations_module, "MIGRATIONS", current_migrations)
+    monkeypatch.setattr(migrations_module, "SCHEMA_VERSION", current_migrations[-1][0])
+    return current_migrations
+
+
 class CountingReader:
     def __init__(self, delegate: LocalIndexSourceReader) -> None:
         self.delegate = delegate
@@ -87,6 +180,27 @@ def test_index_tracks_changed_removed_and_verify_differences(copied_repository: 
     assert changed.removed_files == 1
     assert changed.indexed_files == 1
     assert harness.get_index_status().data.file_count == first.discovered_files - 1
+    settings = Settings.for_root(copied_repository)
+    with sqlite3.connect(settings.index_path) as connection:
+        mismatched_fts_rows = int(
+            connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM file_fts AS ft
+                LEFT JOIN files AS f ON f.file_id = ft.rowid
+                WHERE f.file_id IS NULL
+                   OR f.project_id != ft.project_id
+                   OR f.path != ft.path
+                """
+            ).fetchone()[0]
+        )
+        removed_fts_rows = int(
+            connection.execute(
+                "SELECT COUNT(*) FROM file_fts WHERE path = 'README.md'"
+            ).fetchone()[0]
+        )
+    assert mismatched_fts_rows == 0
+    assert removed_fts_rows == 0
 
     (copied_repository / "new.py").write_text("new_value = 1\n", encoding="utf-8")
     verified = harness.index_project(IndexMode.VERIFY).data
@@ -150,6 +264,67 @@ def test_failed_migration_rolls_back(tmp_path: Path, monkeypatch: pytest.MonkeyP
         ).fetchone()
     assert version == 0
     assert table is None
+
+
+def test_fts_migration_preserves_content_and_rekeys_rowids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "migration-v6.db"
+    _create_version_five_index(database, monkeypatch)
+
+    apply_migrations(database)
+    apply_migrations(database)
+
+    with sqlite3.connect(database) as connection:
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        rows = connection.execute(
+            """
+            SELECT f.file_id, f.path, ft.rowid, ft.content
+            FROM files AS f JOIN file_fts AS ft ON ft.rowid = f.file_id
+            ORDER BY f.path
+            """
+        ).fetchall()
+        matches = connection.execute(
+            "SELECT path FROM file_fts WHERE file_fts MATCH 'shared' ORDER BY path"
+        ).fetchall()
+        plan = connection.execute(
+            "EXPLAIN QUERY PLAN DELETE FROM file_fts WHERE rowid = ?",
+            (rows[0][0],),
+        ).fetchall()
+
+    assert version == migrations_module.SCHEMA_VERSION == 6
+    assert rows == [
+        (1, "src/a.py", 1, "alpha shared"),
+        (2, "src/b.py", 2, "beta shared"),
+        (3, "src/c.py", 3, "gamma shared"),
+    ]
+    assert matches == [("src/a.py",), ("src/b.py",), ("src/c.py",)]
+    assert any("INDEX 0:=" in str(item[3]) for item in plan)
+
+
+def test_fts_migration_rolls_back_when_documents_do_not_match_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = tmp_path / "migration-v6-mismatch.db"
+    _create_version_five_index(database, monkeypatch, include_orphan_file=True)
+
+    with pytest.raises(IndexCorruptedError):
+        apply_migrations(database)
+
+    with sqlite3.connect(database) as connection:
+        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        old_rows = connection.execute(
+            "SELECT rowid, path FROM file_fts ORDER BY rowid"
+        ).fetchall()
+        replacement = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'file_fts_v6'"
+        ).fetchone()
+
+    assert version == 5
+    assert old_rows == [(101, "src/a.py"), (202, "src/b.py"), (303, "src/c.py")]
+    assert replacement is None
 
 
 def test_status_recovers_an_index_run_owned_by_a_dead_process(

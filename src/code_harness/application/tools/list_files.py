@@ -10,6 +10,7 @@ from code_harness.application.tools._timing import timed
 from code_harness.application.tools.index_state import resolve_index_state
 from code_harness.domain.models.file_listing import FileListingPage
 from code_harness.domain.models.project import Project
+from code_harness.domain.models.result_truncation import TruncationReason, truncation
 from code_harness.domain.models.source_file import SourceFile
 from code_harness.domain.models.tool_result import ToolResult
 from code_harness.domain.protocols.file_catalog import FileCatalog
@@ -109,5 +110,13 @@ class ListFilesTool:
             page,
             elapsed_ms,
             truncated=page.next_cursor is not None,
+            truncation=(
+                truncation(
+                    TruncationReason.RESULT_LIMIT,
+                    results=True,
+                )
+                if page.next_cursor is not None
+                else None
+            ),
             index_state=resolve_index_state(self._store, self._project),
         )

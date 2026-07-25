@@ -290,6 +290,7 @@ def _tree_sitter_analysis(
     root = parser.parse(source).root_node
     symbols: list[_Symbol] = []
     references: list[_Reference] = []
+    seen_references: set[tuple[str, str, int, int]] = set()
     symbol_types = {
         "java": {
             "class_declaration": "class",
@@ -314,6 +315,50 @@ def _tree_sitter_analysis(
             return int(point[index])
         except TypeError:
             return int(point.row if index == 0 else point.column)
+
+    def append_reference(
+        *,
+        node: Any,
+        name: str,
+        kind: str,
+        parent: _Symbol | None,
+    ) -> None:
+        simple_name = name.rstrip(";").split(".")[-1]
+        simple_name = re.sub(r"<.*$", "", simple_name).strip()
+        if not simple_name:
+            return
+        line = point_value(node.start_point, 0) + 1
+        column = point_value(node.start_point, 1) + 1
+        key = (kind, simple_name, node.start_byte, node.end_byte)
+        if key in seen_references:
+            return
+        seen_references.add(key)
+        references.append(
+            _Reference(
+                _identifier(
+                    path,
+                    kind,
+                    simple_name,
+                    line,
+                    column,
+                    node.start_byte,
+                    node.end_byte,
+                ),
+                simple_name,
+                kind,
+                line,
+                column,
+                parent.symbol_id if parent else None,
+            )
+        )
+
+    def has_ancestor(node: Any, *types: str) -> bool:
+        current = getattr(node, "parent", None)
+        while current is not None:
+            if current.type in types:
+                return True
+            current = getattr(current, "parent", None)
+        return False
 
     def visit(node: Any, parent: _Symbol | None = None) -> None:
         active_parent = parent
@@ -363,6 +408,16 @@ def _tree_sitter_analysis(
         if language == "java" and node.type == "method_invocation":
             reference_kind = "call"
             reference_node = node.child_by_field_name("name")
+        elif language == "java" and node.type == "object_creation_expression":
+            reference_kind = "instantiation"
+            reference_node = node.child_by_field_name("type")
+        elif (
+            language == "java"
+            and node.type == "type_identifier"
+            and not has_ancestor(node, "import_declaration", "object_creation_expression")
+        ):
+            reference_kind = "type_use"
+            reference_node = node
         elif language == "python" and node.type == "call":
             reference_kind = "call"
             reference_node = node.child_by_field_name("function")
@@ -371,28 +426,12 @@ def _tree_sitter_analysis(
             reference_node = node
         if reference_kind and reference_node is not None:
             raw_name = node_text(reference_node).strip().removeprefix("import ")
-            name = raw_name.rstrip(";").split(".")[-1]
-            if name:
-                line = point_value(reference_node.start_point, 0) + 1
-                column = point_value(reference_node.start_point, 1) + 1
-                references.append(
-                    _Reference(
-                        _identifier(
-                            path,
-                            reference_kind,
-                            name,
-                            line,
-                            column,
-                            reference_node.start_byte,
-                            reference_node.end_byte,
-                        ),
-                        name,
-                        reference_kind,
-                        line,
-                        column,
-                        parent.symbol_id if parent else None,
-                    )
-                )
+            append_reference(
+                node=reference_node,
+                name=raw_name,
+                kind=reference_kind,
+                parent=parent,
+            )
         for child in node.children:
             visit(child, active_parent)
 
@@ -408,6 +447,11 @@ _JAVA_METHOD = re.compile(
     r"([A-Za-z_$][\w$]*)\s*\([^;{}]*?\)\s*(?:throws\s+[^\{]+)?\{"
 )
 _JAVA_IMPORT = re.compile(r"(?m)^\s*import\s+(?:static\s+)?([\w.*]+)\s*;")
+_JAVA_NEW = re.compile(r"\bnew\s+([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*(?:<[^;{}()]*>)?\s*\(")
+_JAVA_TYPE_USE = re.compile(
+    r"\b([A-Z_$][\w$]*(?:\.[A-Z_$][\w$]*)*)(?:\s*<[^;={}()]*>)?(?:\s*\[\s*\])?"
+    r"\s+([A-Za-z_$][\w$]*)\b"
+)
 _CALL = re.compile(r"\b([A-Za-z_$][\w$]*)\s*\(")
 
 
@@ -492,20 +536,65 @@ def _analyze_java(path: str, content: str) -> tuple[list[_Symbol], list[_Referen
         )
         declaration_offsets.add(match.start(1))
     for match in _JAVA_IMPORT.finditer(content):
-        name = match.group(1)
+        name = match.group(1).split(".")[-1]
         line = _line_number(content, match.start())
         references.append(
             _Reference(_identifier(path, "import", name, line), name, "import", line, 1)
         )
+    instantiation_offsets: set[int] = set()
+    for match in _JAVA_NEW.finditer(content):
+        name = match.group(1).split(".")[-1]
+        line = _line_number(content, match.start(1))
+        parent = next(
+            (item for item in reversed(symbols) if item.start_line <= line <= item.end_line),
+            None,
+        )
+        instantiation_offsets.add(match.start(1))
+        references.append(
+            _Reference(
+                _identifier(path, "instantiation", name, line, match.start(1)),
+                name,
+                "instantiation",
+                line,
+                1,
+                parent.symbol_id if parent else None,
+            )
+        )
+    for match in _JAVA_TYPE_USE.finditer(content):
+        if any(start <= match.start(1) <= start + 4 for start in declaration_offsets):
+            continue
+        name = match.group(1).split(".")[-1]
+        if name in {"String", "Object"}:
+            continue
+        line = _line_number(content, match.start(1))
+        parent = next(
+            (item for item in reversed(symbols) if item.start_line <= line <= item.end_line),
+            None,
+        )
+        references.append(
+            _Reference(
+                _identifier(path, "type_use", name, line, match.start(1)),
+                name,
+                "type_use",
+                line,
+                1,
+                parent.symbol_id if parent else None,
+            )
+        )
     for match in _CALL.finditer(content):
         name = match.group(1)
-        if match.start() in declaration_offsets or name in {
-            "if",
-            "for",
-            "while",
-            "switch",
-            "catch",
-        }:
+        if (
+            match.start() in declaration_offsets
+            or match.start(1) in instantiation_offsets
+            or name
+            in {
+                "if",
+                "for",
+                "while",
+                "switch",
+                "catch",
+            }
+        ):
             continue
         line = _line_number(content, match.start())
         parent = next(

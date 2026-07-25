@@ -115,6 +115,13 @@ JSON and JSONL use compact projections by default. Select
 or set `CODE_HARNESS_RESPONSE_DETAIL`. MCP tools expose the same
 `response_detail` override. The four normal profiles limit projected `data` to
 30,000 serialized characters; `full` preserves the rich legacy envelope.
+When data is omitted, machine responses keep the compatible `truncated` flag
+and add a `truncation` object that distinguishes result, snippet, candidate,
+token, file, expansion, and response-budget limits. Deduplicated results do not
+count as truncation.
+Hybrid compact results expose the terms actually present in each snippet and
+whether they belong to the resolved anchor or global fallback. Scores are
+absolute across calls; the first result is not forced to `1.0`.
 Use `python -m code_harness` interchangeably with `code-harness`.
 
 Semantic search is disabled by default. Enable it before indexing:
@@ -132,6 +139,13 @@ reading, while isolated parser/embedding workers use an encoding-neutral JSON
 protocol that is safe with legacy Windows console code pages. Optional parser
 or embedding failures are recorded as warnings without discarding the lexical
 index.
+
+Parser analysis version 5 adds Java imports, type uses, and instantiations as
+structural references. Run an incremental index after upgrading; the parser
+version change reprocesses supported structural files. Restart or reinstall the
+MCP adapter as needed and confirm the new `service_instance_id` from
+`get_index_status`. Deployments may set `CODE_HARNESS_BUILD_COMMIT` so the
+tested commit appears in status.
 
 The default model is
 `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`. Configure it

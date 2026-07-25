@@ -122,6 +122,37 @@ def test_index_persists_structure_and_exposes_python_api(copied_repository: Path
     assert "validarAgenda()" in references.data[0].content
 
 
+def test_java_index_records_import_type_and_instantiation_references(
+    copied_repository: Path,
+) -> None:
+    model = copied_repository / "src" / "WorkOrderCursor.java"
+    model.write_text(
+        "package sample;\npublic class WorkOrderCursor {}\n",
+        encoding="utf-8",
+    )
+    usage = copied_repository / "src" / "CursorUsage.java"
+    usage.write_text(
+        "package sample.use;\n"
+        "import sample.WorkOrderCursor;\n"
+        "public class CursorUsage {\n"
+        "  private WorkOrderCursor cursor;\n"
+        "  void open() { WorkOrderCursor local = new WorkOrderCursor(); }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    harness = CodeHarness.open(copied_repository)
+    harness.index_project()
+
+    references = harness.find_references("WorkOrderCursor", max_results=20)
+    structural_kinds = {
+        item.reference.kind
+        for item in references.data
+        if item.reference is not None and item.reference.source == "structural"
+    }
+
+    assert structural_kinds >= {"import", "type_use", "instantiation"}
+
+
 def test_structural_results_are_skipped_after_file_changes(copied_repository: Path) -> None:
     harness = CodeHarness.open(copied_repository)
     harness.index_project()

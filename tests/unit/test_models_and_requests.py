@@ -61,3 +61,22 @@ def test_code_location_and_tool_result_are_immutable() -> None:
 def test_requests_reject_invalid_limits(factory: object) -> None:
     with pytest.raises(ValueError):
         factory()  # type: ignore[operator]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/main/java/cursor",
+        "src/main/java/cursor/",
+        "./src/main/java/cursor",
+        r"src\main\java\cursor",
+        "src//main/java//cursor",
+    ],
+)
+def test_repository_map_request_normalizes_equivalent_paths(path: str) -> None:
+    assert GetRepositoryMapRequest(path=path).path == "src/main/java/cursor"
+
+
+def test_repository_map_request_rejects_parent_segments() -> None:
+    with pytest.raises(ValueError, match="parent-directory"):
+        GetRepositoryMapRequest(path="../outside")

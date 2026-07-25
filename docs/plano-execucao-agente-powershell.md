@@ -2,7 +2,7 @@
 
 ## 0. Controle do documento
 
-Última atualização: **23 de julho de 2026** (revisão local Grok 4 contra o clone).
+Última atualização: **25 de julho de 2026** (E0 concluída localmente).
 
 Clone validado: repositório Git `code-base` (`origin`: `nandoripardo888/code-base`), pacote Python `code-harness` em `src/code_harness/`, branch `main` em `2434c8e`, working tree limpa.
 
@@ -67,7 +67,7 @@ Validados em 23/07/2026 neste host:
 | Item | Estado local | Impacto no plano |
 |------|--------------|------------------|
 | Python 3.12 + venv | OK (3.12.5) | — |
-| PowerShell 7 (`pwsh`) | **Ausente** (só Windows PowerShell 5.1) | Bloqueia E3 e parte de E0 (runner/`pwsh --version`); AST de inspeção pode usar o Parser do 5.1 só para smoke, mas o produto exige `pwsh` |
+| PowerShell 7 (`pwsh`) | OK (7.6.4) | Disponível para a inspeção AST de E0 e necessário para E3 |
 | `System.Management.Automation.Language.Parser` | Disponível via Windows PowerShell 5.1 | Útil para fixtures de AST; não substitui requisito de PS7 na execução |
 | APIs Job Object (`CreateJobObjectW`, `AssignProcessToJobObject`, `CreateProcessW`, `ResumeThread`, …) | Disponíveis via `ctypes` | E1 viável sem pywin32 obrigatório |
 | `pywin32` (312) | Presente no `.venv`, **não** declarado em `pyproject.toml` | Tratar como opcional no extra `execution`; preferir `ctypes` para Job Object |
@@ -191,6 +191,9 @@ host_supervised
 ├── rede: não isolada
 └── credenciais: apenas mitigação parcial
 ```
+
+Em E0 o backend apenas declara guarantees e `execution_available=false`: nenhuma
+das guarantees de execução acima é alegada antes de E1 introduzir o runner.
 
 Se uma solicitação exigir isolamento não suportado, deverá falhar com erro tipado (`backend_capability_unavailable`).
 
@@ -1085,6 +1088,11 @@ Windows Sandbox (job condicional; skip se feature off)
 
 ### E0 — Contratos e inspeção sem execução
 
+**Estado: concluída localmente em 25/07/2026.** A implementação preserva os
+módulos existentes em `application/execution` e `domain/models/execution.py`;
+o analisador AST e a declaração do backend vivem em
+`infrastructure/execution/`. A API e a CLI permanecem somente de inspeção.
+
 **Criar:**
 
 - `docs/adr/0005-execution-trust-boundary.md`
@@ -1190,11 +1198,13 @@ Além dos riscos originais (Job Object race, deadlock de pipes, allowlist, PS di
 
 ### Máquina / clone atuais
 
-- **Sem PowerShell 7:** E3 e smoke AST de produto bloqueados até instalar `pwsh`.
+- **PowerShell 7 instalado:** `pwsh` 7.6.4 validado para o smoke AST de E0; E3
+  continua bloqueada até existir runner supervisionado.
 - **Sandbox desabilitado:** E7 não validável aqui.
 - **Sessão Administrador:** testes de execução devem preferir usuário padrão.
 - **pywin32 fantasma no venv:** não documentar como dependência até pin no extra.
-- **Working tree limpa:** plano já commitado; implementação ainda não iniciada — bom baseline.
+- **Working tree com alterações paralelas:** validar e formatar somente os
+  arquivos tocados por E0, sem reformatar trabalho alheio.
 
 ### Integração com código existente
 

@@ -85,6 +85,7 @@ def _print_index_summary(payload: dict[str, Any]) -> None:
     )
     print(
         "timings_ms "
+        f"initialize={timings.get('initialize_ms')} "
         f"discovery={timings.get('discovery_ms')} "
         f"read_hash={timings.get('read_hash_ms')} "
         f"worker_init={timings.get('worker_init_ms')} "
@@ -92,6 +93,11 @@ def _print_index_summary(payload: dict[str, Any]) -> None:
         f"chunks={timings.get('chunk_build_ms')} "
         f"embeddings={timings.get('embedding_ms')} "
         f"commit={timings.get('commit_ms')} "
+        f"commit_metadata={timings.get('commit_metadata_ms')} "
+        f"commit_fts={timings.get('commit_fts_ms')} "
+        f"commit_structure={timings.get('commit_structure_ms')} "
+        f"commit_embeddings={timings.get('commit_embeddings_ms')} "
+        f"commit_finalize={timings.get('commit_finalize_ms')} "
         f"total={timings.get('total_ms')}"
     )
     print(
@@ -127,10 +133,9 @@ def _percentile(sorted_values: list[float], percentile: float) -> float:
 def _summarize_metric(values: list[float]) -> dict[str, float]:
     ordered = sorted(values)
     mid = len(ordered) // 2
-    if len(ordered) % 2:
-        median = ordered[mid]
-    else:
-        median = (ordered[mid - 1] + ordered[mid]) / 2.0
+    median = (
+        ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2.0
+    )
     return {
         "min": round(ordered[0], 3),
         "median": round(median, 3),
@@ -196,6 +201,10 @@ def _run_index(arguments: Namespace) -> dict[str, Any]:
         for item in measured
     ]
     wall_ms_values = [float(item["wall_ms"]) for item in measured]
+    commit_ms_values = [
+        float((item["report"].get("timings") or {}).get("commit_ms") or 0.0)
+        for item in measured
+    ]
     files_per_second = [
         float((item["report"].get("timings") or {}).get("files_per_second") or 0.0)
         for item in measured
@@ -225,6 +234,7 @@ def _run_index(arguments: Namespace) -> dict[str, Any]:
         "aggregate": {
             "total_ms": _summarize_metric(total_ms_values),
             "wall_ms": _summarize_metric(wall_ms_values),
+            "commit_ms": _summarize_metric(commit_ms_values),
             "files_per_second": _summarize_metric(files_per_second),
             "processes_created": {
                 "min": min(processes) if processes else 0,
@@ -248,6 +258,12 @@ def _run_index(arguments: Namespace) -> dict[str, Any]:
         f"min={agg['min']} median={agg['median']} max={agg['max']} p95={agg['p95']} "
         f"n={int(agg['n'])}"
     )
+    commit_agg = summary["aggregate"]["commit_ms"]
+    print(
+        "aggregate_commit_ms "
+        f"min={commit_agg['min']} median={commit_agg['median']} "
+        f"max={commit_agg['max']} p95={commit_agg['p95']} n={int(commit_agg['n'])}"
+    )
 
     if arguments.output is not None:
         arguments.output.parent.mkdir(parents=True, exist_ok=True)
@@ -257,6 +273,14 @@ def _run_index(arguments: Namespace) -> dict[str, Any]:
             encoding="utf-8",
         )
         print(f"wrote {arguments.output}")
+    if (
+        arguments.max_commit_ms is not None
+        and float(commit_agg["p95"]) > arguments.max_commit_ms
+    ):
+        raise SystemExit(
+            f"commit p95 {commit_agg['p95']} ms exceeds "
+            f"{arguments.max_commit_ms} ms"
+        )
     return summary if total_runs > 1 else measured[0]
 
 
@@ -327,6 +351,11 @@ def main() -> None:
         "--output",
         type=Path,
         help="Optional JSON path for the recorded baseline.",
+    )
+    index.add_argument(
+        "--max-commit-ms",
+        type=float,
+        help="Fail when measured commit p95 exceeds this threshold.",
     )
     index.set_defaults(func=_run_index)
 

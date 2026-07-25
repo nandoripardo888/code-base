@@ -8,8 +8,15 @@ from code_harness.domain.models.code_location import CodeLocation
 from code_harness.domain.models.context import ContextBundle, ContextSnippet
 from code_harness.domain.models.file_listing import FileListingPage
 from code_harness.domain.models.file_match import FileMatch, FileMatchEvidence
-from code_harness.domain.models.hybrid import HybridSearchHit, QueryClassification, SearchEvidence
+from code_harness.domain.models.hybrid import (
+    HybridSearchHit,
+    QueryClassification,
+    QueryPlan,
+    SearchEvidence,
+    SearchScore,
+)
 from code_harness.domain.models.index_report import (
+    CommitFilesMetrics,
     DiagnosticCheck,
     DoctorReport,
     FileIndexUpdate,
@@ -19,6 +26,7 @@ from code_harness.domain.models.index_report import (
     IndexRunSummary,
     IndexStatus,
     IndexTimings,
+    PersistenceProgress,
     StoredFile,
 )
 from code_harness.domain.models.project import Project
@@ -27,6 +35,10 @@ from code_harness.domain.models.repository_map import (
     RepositoryFile,
     RepositoryMap,
     RepositorySymbol,
+)
+from code_harness.domain.models.result_truncation import (
+    ResultTruncation,
+    TruncationReason,
 )
 from code_harness.domain.models.search_hit import SearchHit, SearchOutcome
 from code_harness.domain.models.semantic import (
@@ -59,6 +71,7 @@ __all__ = [
     "CodeReference",
     "CodeSnippet",
     "CodeSymbol",
+    "CommitFilesMetrics",
     "ContextBundle",
     "ContextSnippet",
     "DiagnosticCheck",
@@ -78,15 +91,19 @@ __all__ = [
     "IndexStatus",
     "IndexTimings",
     "IndexedSource",
+    "PersistenceProgress",
     "Project",
     "QueryClassification",
+    "QueryPlan",
     "RepositoryDirectory",
     "RepositoryFile",
     "RepositoryMap",
     "RepositorySymbol",
+    "ResultTruncation",
     "SearchEvidence",
     "SearchHit",
     "SearchOutcome",
+    "SearchScore",
     "SourceFile",
     "SourceRead",
     "StoredFile",
@@ -95,6 +112,7 @@ __all__ = [
     "ToolResult",
     "ToolWarning",
     "TruncationInfo",
+    "TruncationReason",
     "Vector",
     "VectorSearchHit",
 ]

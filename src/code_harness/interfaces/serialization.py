@@ -24,6 +24,8 @@ def to_primitive(value: Any) -> Any:
             payload.pop("content", None)
         if isinstance(value, ToolResult) and not payload.get("strategies"):
             payload.pop("strategies", None)
+        if isinstance(value, ToolResult) and payload.get("truncation") is None:
+            payload.pop("truncation", None)
         return payload
     if isinstance(value, StrEnum):
         return value.value

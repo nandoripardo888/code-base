@@ -4,6 +4,7 @@ from code_harness.application.ranking import HybridCandidate, HybridRanker, Quer
 from code_harness.domain.enums import MatchType, QueryKind
 from code_harness.domain.models.code_chunk import CodeSnippet
 from code_harness.domain.models.code_location import CodeLocation
+from code_harness.domain.models.hybrid import QueryPlan
 
 
 def _candidate(
@@ -74,7 +75,9 @@ def test_hybrid_ranker_prioritizes_and_merges_exact_symbol_evidence() -> None:
         MatchType.EXACT,
         MatchType.SYMBOL,
     }
-    assert result[0].score == 1.0
+    assert 0.0 < result[0].score < 1.0
+    assert result[0].score_components is not None
+    assert result[0].score_components.evidence == 0.995
 
 
 def test_hybrid_ranker_applies_per_file_diversity_deterministically() -> None:
@@ -102,3 +105,122 @@ def test_token_estimate_and_context_request_are_conservative() -> None:
     request = BuildContextRequest("agenda", max_tokens=100, reserved_tokens=20)
 
     assert request.max_tokens - request.reserved_tokens == 80
+
+
+def test_hybrid_ranker_favors_specific_term_over_broad_parent_symbol() -> None:
+    query = "OS_AGENDA_TMP COD_TECNICO"
+    classification = QueryClassifier().classify(query)
+    broad = HybridCandidate(
+        CodeSnippet(
+            CodeLocation("src/OS_AGENDA_TMP.java", 1, 40),
+            "private OS_AGENDA_TMP() {}\n",
+            "java",
+            "hash",
+        ),
+        MatchType.SYMBOL,
+        1.0,
+        ("OS_AGENDA_TMP",),
+        "class symbol",
+        "class",
+        "OS_AGENDA_TMP",
+        snippet_truncated=True,
+        source_location=CodeLocation("src/OS_AGENDA_TMP.java", 1, 1200),
+    )
+    specific = HybridCandidate(
+        CodeSnippet(
+            CodeLocation("src/OS_AGENDA_TMP.java", 346, 352),
+            "public Value getCOD_TECNICO() { return item1; }\n",
+            "java",
+            "hash",
+        ),
+        MatchType.SYMBOL,
+        0.85,
+        ("COD_TECNICO",),
+        "specific symbol",
+        "getter",
+        "getCOD_TECNICO",
+    )
+
+    ranked = HybridRanker().rank(query, classification, (broad, specific), max_results=2)
+
+    assert ranked[0].snippet.location.start_line == 346
+
+
+def test_path_only_result_never_receives_maximum_score() -> None:
+    query = "AgendaService"
+    classification = QueryClassifier().classify(query)
+    ranked = HybridRanker().rank(
+        query,
+        classification,
+        (_candidate("src/AgendaService.java", 1, MatchType.PATH, 1.0),),
+        max_results=1,
+    )
+
+    assert ranked[0].score == 0.45
+
+
+def test_absolute_score_prioritizes_anchor_target_coverage_and_caps_comments() -> None:
+    query = "WORK_ORDER_CURSOR TECHNICIAN_CODE"
+    classification = QueryClassifier().classify(query)
+    plan = QueryPlan(
+        query_terms=("WORK_ORDER_CURSOR", "TECHNICIAN_CODE"),
+        target_terms=("TECHNICIAN_CODE",),
+        anchor_name="WORK_ORDER_CURSOR",
+        anchor_path="src/WORK_ORDER_CURSOR.java",
+    )
+    constructor = HybridCandidate(
+        CodeSnippet(
+            CodeLocation("src/WORK_ORDER_CURSOR.java", 10, 10),
+            "private WORK_ORDER_CURSOR() {}\n",
+            "java",
+            "hash",
+        ),
+        MatchType.SYMBOL,
+        1.0,
+        ("WORK_ORDER_CURSOR",),
+        "constructor",
+        scope="anchor",
+        symbol_kind="constructor",
+    )
+    target = HybridCandidate(
+        CodeSnippet(
+            CodeLocation("src/WORK_ORDER_CURSOR.java", 80, 80),
+            "void setFilterTECHNICIAN_CODE(Object value) {}\n",
+            "java",
+            "hash",
+        ),
+        MatchType.SYMBOL,
+        0.9,
+        ("TECHNICIAN_CODE",),
+        "target member",
+        scope="anchor",
+        symbol_kind="method",
+    )
+    comment = HybridCandidate(
+        CodeSnippet(
+            CodeLocation("src/WORK_ORDER_CURSORRow.java", 5, 5),
+            "/** WORK_ORDER_CURSOR TECHNICIAN_CODE */\n",
+            "java",
+            "hash",
+        ),
+        MatchType.REFERENCE,
+        1.0,
+        ("WORK_ORDER_CURSOR", "TECHNICIAN_CODE"),
+        "comment",
+        comment_only=True,
+        reference_kind="comment_textual",
+    )
+
+    ranked = HybridRanker().rank(
+        query,
+        classification,
+        (constructor, comment, target),
+        max_results=3,
+        plan=plan,
+    )
+
+    assert ranked[0].snippet.location.start_line == 80
+    assert ranked[0].matched_terms == ("TECHNICIAN_CODE",)
+    assert ranked[-1].comment_only is True
+    assert ranked[-1].score <= 0.35
+    assert all(hit.score < 1.0 for hit in ranked)

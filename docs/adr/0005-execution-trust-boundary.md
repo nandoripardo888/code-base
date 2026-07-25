@@ -11,13 +11,15 @@ approved commands may run on the host, while retrieval remains unchanged.
 ## Decision
 
 - Execution is optional and disabled by default (`execution_enabled=false`).
-- E0 delivers contracts, deterministic policy, and inspection only. No process
-  is started; no PowerShell AST host APIs are invoked; no runners exist.
+- E0 delivers contracts, deterministic policy, and inspection only. No user
+  process is started. PowerShell inspection invokes only the harness-owned AST
+  parser with `pwsh -NoProfile -NonInteractive`; user scripts are input data,
+  never loaded or executed. No runners exist.
 - Composition uses `ExecutionContainer | None` on `ApplicationContainer`, built
   lazily from `bootstrap/execution.py` only when enabled.
-- Future host execution will live under `infrastructure/execution/backends/`
-  (for example `host_supervised`). That backend is not a sandbox and must not
-  be named or marketed as one.
+- `host_supervised` declares its current guarantees in every inspection. In
+  E0 it applies no execution guarantees because no runner exists; it is not a
+  sandbox and must not be named or marketed as one.
 - Approval state and future audit storage belong under
   `<CODE_HARNESS_HOME>/executions/<project_id>/`, never under
   `<project>/.code-harness/`.

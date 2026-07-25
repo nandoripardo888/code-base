@@ -156,6 +156,83 @@ def test_hybrid_search_bounds_large_structural_symbols(copied_repository: Path) 
     assert truncated.source_location.end_line >= 1_200
 
 
+def test_anchor_ranking_and_context_enumeration_stay_in_resolved_container(
+    copied_repository: Path,
+) -> None:
+    source = copied_repository / "src" / "WORK_ORDER_CURSOR.java"
+    lines = ["public class WORK_ORDER_CURSOR {\n"]
+    for number in range(1, 31):
+        lines.append(f"  Object item{number};\n")
+        lines.append(f'  void configure{number}() {{ setName("FIELD_{number}"); }}\n')
+        lines.extend(f"  // filler {number}-{index}\n" for index in range(12))
+    lines.append(
+        "  public void setFilterTECHNICIAN_CODE(Object value) { "
+        'setName("TECHNICIAN_CODE"); }\n'
+    )
+    lines.extend(f"  int tail{index};\n" for index in range(800))
+    lines.append("}\n")
+    source.write_text("".join(lines), encoding="utf-8")
+    (copied_repository / "src" / "WORK_ORDER_CURSORRowType.java").write_text(
+        "/** WORK_ORDER_CURSOR TECHNICIAN_CODE DOCUMENTATION_ONLY_TOKEN. */\n"
+        "public class WORK_ORDER_CURSORRowType {}\n",
+        encoding="utf-8",
+    )
+    (copied_repository / "src" / "GenericFields.java").write_text(
+        "public class GenericFields {\n"
+        "  void getTECHNICIAN_CODE() {}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    harness = CodeHarness.open(copied_repository)
+    harness.index_project()
+
+    search = harness.search_code(
+        "WORK_ORDER_CURSOR TECHNICIAN_CODE",
+        max_results=50,
+    )
+    comment_search = harness.search_code("DOCUMENTATION_ONLY_TOKEN")
+    small = harness.build_context(
+        "Quais campos o cursor WORK_ORDER_CURSOR possui?",
+        max_tokens=1_800,
+        max_expansion_depth=0,
+    )
+    large = harness.build_context(
+        "Quais campos o cursor WORK_ORDER_CURSOR possui?",
+        max_tokens=6_000,
+        max_expansion_depth=0,
+    )
+
+    assert search.data[0].snippet.location.path == "src/WORK_ORDER_CURSOR.java"
+    assert "TECHNICIAN_CODE" in search.data[0].snippet.content
+    assert search.data[0].score < 1.0
+    assert comment_search.data
+    assert comment_search.data[0].comment_only is True
+    assert comment_search.data[0].score <= 0.35
+    assert small.data.snippets
+    assert large.data.snippets
+    assert all(
+        item.snippet.location.path == "src/WORK_ORDER_CURSOR.java"
+        for item in small.data.snippets
+    )
+    assert all(
+        item.snippet.location.path == "src/WORK_ORDER_CURSOR.java"
+        for item in large.data.snippets
+    )
+    small_fields = sum(
+        item.snippet.content.count("FIELD_") for item in small.data.snippets
+    )
+    large_fields = sum(
+        item.snippet.content.count("FIELD_") for item in large.data.snippets
+    )
+    assert large_fields > small_fields
+    assert small.data.considered_results == (
+        small.data.selected_results + small.data.omitted_results
+    )
+    assert large.data.considered_results == (
+        large.data.selected_results + large.data.omitted_results
+    )
+
+
 def test_cli_exposes_hybrid_context_and_map(copied_repository: Path) -> None:
     runner = CliRunner()
     project = str(copied_repository)

@@ -32,6 +32,8 @@ def test_command_builder_uses_argument_list_and_fixed_strings() -> None:
     assert "--case-sensitive" in command
     assert "*.java" in command
     assert "!generated/**" in command
+    max_count = command.index("--max-count")
+    assert command[max_count + 1] == "8"
     assert command[-3:] == ["--", "--dangerous value", "."]
 
 

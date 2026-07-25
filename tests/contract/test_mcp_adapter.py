@@ -15,6 +15,7 @@ from code_harness.application.dto.requests import (
 )
 from code_harness.bootstrap.container import build_container
 from code_harness.bootstrap.settings import Settings
+from code_harness.interfaces.mcp.handlers import _execute_operation
 from code_harness.interfaces.mcp.server import create_server
 from code_harness.interfaces.serialization import to_primitive
 
@@ -162,12 +163,53 @@ def test_mcp_handlers_map_typed_errors(fixture_repository: Path) -> None:
     assert "data" not in payload
 
 
+def test_mcp_unexpected_errors_are_correlated_without_traceback() -> None:
+    class FakeContainer:
+        def with_index_state(self, result: object) -> object:
+            return result
+
+    class BuildContextTool:
+        def execute(self) -> object:
+            raise IndexError("list index out of range")
+
+    payload = _execute_operation(  # type: ignore[arg-type]
+        FakeContainer(),
+        BuildContextTool().execute,  # type: ignore[arg-type]
+        "compact",
+    )
+
+    assert payload["error"]["code"] == "internal_error"
+    assert payload["error"]["details"]["tool"] == "build_context"
+    assert payload["error"]["details"]["error_id"]
+    assert "list index" not in str(payload)
+
+
+def test_mcp_status_exposes_runtime_identity(fixture_repository: Path) -> None:
+    server = create_server(fixture_repository)
+
+    payload = _payload(asyncio.run(server.call_tool("get_index_status", {})))
+
+    assert payload["data"]["service_version"] == "0.2.0"
+    assert payload["data"]["service_started_at"]
+    assert payload["data"]["service_instance_id"]
+
+
 def test_mcp_handlers_map_invalid_query_errors(fixture_repository: Path) -> None:
     server = create_server(fixture_repository)
 
     payload = _payload(asyncio.run(server.call_tool("search_files", {"query": "   "})))
 
     assert payload["error"]["code"] == "invalid_query"
+
+    invalid_detail = _payload(
+        asyncio.run(
+            server.call_tool(
+                "search_files",
+                {"query": "agenda", "response_detail": "verbose"},
+            )
+        )
+    )
+    assert invalid_detail["error"]["code"] == "invalid_query"
 
 
 def test_mcp_server_exposes_implemented_tool_parameters(fixture_repository: Path) -> None:
@@ -176,6 +218,15 @@ def test_mcp_server_exposes_implemented_tool_parameters(fixture_repository: Path
 
     for tool_name in EXPECTED_TOOLS:
         assert "response_detail" in tools[tool_name].inputSchema.get("properties", {})
+        detail_schema = tools[tool_name].inputSchema["properties"]["response_detail"]
+        assert detail_schema["anyOf"][0]["enum"] == [
+            "minimal",
+            "compact",
+            "detailed",
+            "debug",
+            "full",
+        ]
+        assert "CODE_HARNESS_RESPONSE_DETAIL" in detail_schema["description"]
 
     list_props = set(tools["list_files"].inputSchema.get("properties", {}))
     assert {"cursor", "sort", "sort_direction", "include_total_count"} <= list_props
@@ -189,6 +240,9 @@ def test_mcp_server_exposes_implemented_tool_parameters(fixture_repository: Path
         "include_files",
         "include_symbols",
     } <= map_props
+
+    reference_props = set(tools["find_references"].inputSchema.get("properties", {}))
+    assert "include_comments" in reference_props
 
     outline_props = set(tools["get_file_outline"].inputSchema.get("properties", {}))
     assert {

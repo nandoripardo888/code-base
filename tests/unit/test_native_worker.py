@@ -33,9 +33,11 @@ def test_python_extractor_reports_invalid_syntax() -> None:
 def test_java_extractor_recognizes_types_methods_imports_and_calls() -> None:
     content = """import java.util.List;
 public class Service {
+    private Worker worker;
     public Service() { initialize(); }
-    public void execute() { helper(); }
+    public void execute() { Worker local = new Worker(); helper(); }
 }
+class Worker {}
 interface Contract {}
 enum State { READY }
 record Item(String name) {}
@@ -52,7 +54,14 @@ record Item(String name) {}
         "constructor",
         "method",
     }
-    assert {item.target_name for item in references} >= {"java.util.List", "initialize", "helper"}
+    assert {item.target_name for item in references} >= {
+        "List",
+        "Worker",
+        "initialize",
+        "helper",
+    }
+    worker_kinds = {item.kind for item in references if item.target_name == "Worker"}
+    assert worker_kinds >= {"type_use", "instantiation"}
 
 
 def test_java_extractor_degrades_when_no_declarations_exist() -> None:

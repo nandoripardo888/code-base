@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from code_harness.domain.enums import (
     CommandKind,
@@ -35,6 +35,29 @@ class ApprovalDigest:
 
 
 @dataclass(frozen=True, slots=True)
+class BackendGuarantees:
+    """Security guarantees that the selected backend actively applies."""
+
+    backend: str
+    execution_available: bool
+    process_tree_containment: bool
+    timeout_enforced: bool
+    output_limit_enforced: bool
+    filesystem_isolated: bool
+    network_isolated: bool
+    credentials_isolated: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PowerShellAstAnalysis:
+    """Non-executing facts extracted from a PowerShell AST."""
+
+    commands: tuple[str, ...]
+    text_fragments: tuple[str, ...]
+    dynamic_features: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionRuntimeConfig:
     """Inspection-time configuration derived from Settings (no bootstrap import)."""
 
@@ -46,6 +69,19 @@ class ExecutionRuntimeConfig:
     allow_elevated: bool
     execution_home: str
     project_id: str
+    backend_guarantees: BackendGuarantees = field(
+        default_factory=lambda: BackendGuarantees(
+            backend="host_supervised",
+            execution_available=False,
+            process_tree_containment=False,
+            timeout_enforced=False,
+            output_limit_enforced=False,
+            filesystem_isolated=False,
+            network_isolated=False,
+            credentials_isolated=False,
+        )
+    )
+    powershell_executable: str = "pwsh"
     policy_name: str = "deterministic_v1"
     policy_version: str = "1"
     elevated_session: bool = False
@@ -86,12 +122,24 @@ class CommandInspection:
     cwd: str
     timeout_seconds: float
     max_output_bytes: int
+    backend_guarantees: BackendGuarantees = field(
+        default_factory=lambda: BackendGuarantees(
+            backend="host_supervised",
+            execution_available=False,
+            process_tree_containment=False,
+            timeout_enforced=False,
+            output_limit_enforced=False,
+            filesystem_isolated=False,
+            network_isolated=False,
+            credentials_isolated=False,
+        )
+    )
     executable: str | None = None
     args: tuple[str, ...] = ()
     script_hash: str | None = None
     dynamic_features: tuple[str, ...] = ()
     protected_path_matches: tuple[str, ...] = ()
-    backend: str = "host"
+    backend: str = "host_supervised"
     policy_name: str = "deterministic_v1"
     policy_version: str = "1"
     warnings: tuple[str, ...] = ()

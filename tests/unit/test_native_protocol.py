@@ -11,7 +11,7 @@ from code_harness.infrastructure.parsers.native_protocol import (
 
 
 def test_version_axes_are_separated() -> None:
-    assert ANALYSIS_VERSION == "4"
+    assert ANALYSIS_VERSION == "5"
     assert PROTOCOL_VERSION == 1
     assert WORKER_IMPLEMENTATION_VERSION == "2"
     assert ANALYSIS_VERSION != WORKER_IMPLEMENTATION_VERSION

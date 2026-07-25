@@ -176,3 +176,37 @@ MIGRATION_5 = (
     "ALTER TABLE files ADD COLUMN signature_extractor_version TEXT",
     "UPDATE symbols SET canonical_signature = NULL WHERE canonical_signature IS NULL",
 )
+
+MIGRATION_6 = (
+    """
+    CREATE VIRTUAL TABLE file_fts_v6 USING fts5(
+        project_id UNINDEXED,
+        path UNINDEXED,
+        content,
+        tokenize = 'unicode61'
+    )
+    """,
+    """
+    INSERT INTO file_fts_v6(rowid, project_id, path, content)
+    SELECT f.file_id, old.project_id, old.path, old.content
+    FROM file_fts AS old
+    JOIN files AS f
+      ON f.project_id = old.project_id AND f.path = old.path
+    """,
+    """
+    CREATE TABLE migration_v6_fts_guard (
+        valid INTEGER NOT NULL CHECK(valid = 1)
+    )
+    """,
+    """
+    INSERT INTO migration_v6_fts_guard(valid)
+    SELECT CASE
+        WHEN (SELECT COUNT(*) FROM file_fts) = (SELECT COUNT(*) FROM file_fts_v6)
+         AND (SELECT COUNT(*) FROM files) = (SELECT COUNT(*) FROM file_fts_v6)
+        THEN 1 ELSE 0
+    END
+    """,
+    "DROP TABLE migration_v6_fts_guard",
+    "DROP TABLE file_fts",
+    "ALTER TABLE file_fts_v6 RENAME TO file_fts",
+)

@@ -26,7 +26,7 @@ class RipgrepCommandBuilder:
             "--max-filesize",
             str(self._max_file_size_bytes),
             "--max-count",
-            str(max_results),
+            str(max_results + 1),
             "--case-sensitive" if case_sensitive else "--ignore-case",
         ]
         if not regex:

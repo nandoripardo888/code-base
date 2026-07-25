@@ -3,20 +3,23 @@ import math
 import os
 import sqlite3
 import struct
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
+from time import perf_counter_ns
 
 from code_harness.domain.enums import IndexMode, IndexState, ParseState
 from code_harness.domain.errors import IndexCorruptedError
 from code_harness.domain.models.code_location import CodeLocation
 from code_harness.domain.models.index_report import (
+    CommitFilesMetrics,
     FileIndexUpdate,
     FtsCandidate,
     IndexedSource,
     IndexReport,
     IndexRunSummary,
     IndexStatus,
+    PersistenceProgress,
     StoredFile,
 )
 from code_harness.domain.models.project import Project
@@ -115,25 +118,132 @@ class SQLiteRepositoryStore:
 
     def commit_files(
         self,
-        report: IndexReport,
+        project_id: str,
+        indexed_at: str,
         updates: tuple[FileIndexUpdate, ...],
         removed_paths: tuple[str, ...],
-    ) -> None:
+        *,
+        progress: Callable[[PersistenceProgress], None] | None = None,
+    ) -> CommitFilesMetrics:
+        store_started = perf_counter_ns()
+        metadata_ms = 0.0
+        fts_ms = 0.0
+        structure_ms = 0.0
         try:
             with connect_database(self.path) as connection:
+                existing_file_count = int(
+                    connection.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+                )
+                if existing_file_count == 0 and len(updates) >= 1_000:
+                    # A cold bulk load has no readers that need a prior database snapshot.
+                    # DELETE journaling writes each database page directly and avoids a
+                    # very large WAL checkpoint after millions of structural inserts.
+                    try:
+                        connection.execute("PRAGMA journal_mode = DELETE")
+                    except sqlite3.OperationalError as error:
+                        if "locked" not in str(error).casefold():
+                            raise
+                metadata_started = perf_counter_ns()
+                removed_file_ids: list[tuple[int, str]] = []
+                metadata_total = len(removed_paths) + len(updates)
+                metadata_current = 0
                 for path in removed_paths:
-                    connection.execute(
-                        "DELETE FROM file_fts WHERE project_id = ? AND path = ?",
-                        (report.project_id, path),
-                    )
+                    row = connection.execute(
+                        "SELECT file_id FROM files WHERE project_id = ? AND path = ?",
+                        (project_id, path),
+                    ).fetchone()
+                    if row is not None:
+                        removed_file_ids.append((int(row["file_id"]), path))
                     connection.execute(
                         "DELETE FROM files WHERE project_id = ? AND path = ?",
-                        (report.project_id, path),
+                        (project_id, path),
                     )
+                    metadata_current += 1
+                    _emit_persistence_progress(
+                        progress,
+                        "metadata",
+                        metadata_current,
+                        metadata_total,
+                        path,
+                    )
+                prepared_updates: list[tuple[FileIndexUpdate, int]] = []
                 for update in updates:
-                    self._apply_update(connection, report, update)
+                    file_id = self._upsert_file(
+                        connection,
+                        project_id,
+                        indexed_at,
+                        update.source,
+                    )
+                    prepared_updates.append((update, file_id))
+                    metadata_current += 1
+                    _emit_persistence_progress(
+                        progress,
+                        "metadata",
+                        metadata_current,
+                        metadata_total,
+                        update.source.path,
+                    )
+                metadata_ms += _perf_ms(metadata_started)
+
+                content_updates = [
+                    (update, file_id)
+                    for update, file_id in prepared_updates
+                    if update.update_content
+                ]
+                fts_total = len(removed_file_ids) + len(content_updates)
+                fts_current = 0
+                fts_started = perf_counter_ns()
+                for file_id, path in removed_file_ids:
+                    connection.execute("DELETE FROM file_fts WHERE rowid = ?", (file_id,))
+                    fts_current += 1
+                    _emit_persistence_progress(
+                        progress,
+                        "fts",
+                        fts_current,
+                        fts_total,
+                        path,
+                    )
+                for update, file_id in content_updates:
+                    self._replace_fts(connection, project_id, file_id, update.source)
+                    fts_current += 1
+                    _emit_persistence_progress(
+                        progress,
+                        "fts",
+                        fts_current,
+                        fts_total,
+                        update.source.path,
+                    )
+                fts_ms += _perf_ms(fts_started)
+
+                structure_started = perf_counter_ns()
+                structure_total = len(content_updates)
+                for current, (update, file_id) in enumerate(content_updates, start=1):
+                    self._replace_structure(
+                        connection,
+                        project_id,
+                        file_id,
+                        update.source,
+                        update,
+                        indexed_at,
+                    )
+                    _emit_persistence_progress(
+                        progress,
+                        "structure",
+                        current,
+                        structure_total,
+                        update.source.path,
+                    )
+                structure_ms += _perf_ms(structure_started)
         except sqlite3.DatabaseError as error:
             raise self._corrupted(f"Could not persist indexed files: {error}") from error
+        total_ms = _perf_ms(store_started)
+        finalize_ms = max(0.0, total_ms - metadata_ms - fts_ms - structure_ms)
+        return CommitFilesMetrics(
+            metadata_ms=round(metadata_ms),
+            fts_ms=round(fts_ms),
+            structure_ms=round(structure_ms),
+            finalize_ms=round(finalize_ms),
+        )
 
     def commit_embeddings(self, embeddings: EmbeddingBatch) -> None:
         if embeddings.identity is None:
@@ -239,13 +349,13 @@ class SQLiteRepositoryStore:
                 (link.chunk_id, row["embedding_id"]),
             )
 
-    def _apply_update(
+    def _upsert_file(
         self,
         connection: sqlite3.Connection,
-        report: IndexReport,
-        update: FileIndexUpdate,
-    ) -> None:
-        source = update.source
+        project_id: str,
+        indexed_at: str,
+        source: IndexedSource,
+    ) -> int:
         connection.execute(
             """
             INSERT INTO files(
@@ -261,40 +371,39 @@ class SQLiteRepositoryStore:
                 indexed_at = excluded.indexed_at
             """,
             (
-                report.project_id,
+                project_id,
                 source.path,
                 source.size_bytes,
                 source.modified_at_ns,
                 source.language,
                 source.encoding,
                 source.content_hash,
-                report.finished_at,
+                indexed_at,
             ),
         )
         file_row = connection.execute(
             "SELECT file_id FROM files WHERE project_id = ? AND path = ?",
-            (report.project_id, source.path),
+            (project_id, source.path),
         ).fetchone()
         if file_row is None:
             raise self._corrupted("Could not resolve the indexed file identifier.")
-        file_id = int(file_row["file_id"])
-        if update.update_content:
-            connection.execute(
-                "DELETE FROM file_fts WHERE project_id = ? AND path = ?",
-                (report.project_id, source.path),
-            )
-            connection.execute(
-                "INSERT INTO file_fts(project_id, path, content) VALUES (?, ?, ?)",
-                (report.project_id, source.path, source.content),
-            )
-            self._replace_structure(
-                connection,
-                report.project_id,
-                file_id,
-                source,
-                update,
-                report.finished_at,
-            )
+        return int(file_row["file_id"])
+
+    @staticmethod
+    def _replace_fts(
+        connection: sqlite3.Connection,
+        project_id: str,
+        file_id: int,
+        source: IndexedSource,
+    ) -> None:
+        connection.execute("DELETE FROM file_fts WHERE rowid = ?", (file_id,))
+        connection.execute(
+            """
+            INSERT INTO file_fts(rowid, project_id, path, content)
+            VALUES (?, ?, ?, ?)
+            """,
+            (file_id, project_id, source.path, source.content),
+        )
 
     def _replace_structure(
         self,
@@ -341,16 +450,15 @@ class SQLiteRepositoryStore:
                 file_id,
             ),
         )
-        for symbol in analysis.symbols:
-            location = symbol.location
-            connection.execute(
-                """
-                INSERT INTO symbols(
-                    symbol_id, file_id, project_id, name, qualified_name, kind,
-                    start_line, end_line, start_column, end_column, signature,
-                    parent_symbol_id, canonical_signature
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+        connection.executemany(
+            """
+            INSERT INTO symbols(
+                symbol_id, file_id, project_id, name, qualified_name, kind,
+                start_line, end_line, start_column, end_column, signature,
+                parent_symbol_id, canonical_signature
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
                 (
                     symbol.symbol_id,
                     file_id,
@@ -358,45 +466,48 @@ class SQLiteRepositoryStore:
                     symbol.name,
                     symbol.qualified_name,
                     symbol.kind,
-                    location.start_line,
-                    location.end_line,
-                    location.start_column,
-                    location.end_column,
+                    symbol.location.start_line,
+                    symbol.location.end_line,
+                    symbol.location.start_column,
+                    symbol.location.end_column,
                     symbol.signature,
                     symbol.parent_symbol_id,
                     symbol.canonical_signature,
-                ),
-            )
-        for reference in analysis.references:
-            location = reference.location
-            connection.execute(
-                """
-                INSERT INTO code_references(
-                    reference_id, file_id, project_id, target_name, kind,
-                    start_line, end_line, start_column, end_column, source_symbol_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+                )
+                for symbol in analysis.symbols
+            ),
+        )
+        connection.executemany(
+            """
+            INSERT INTO code_references(
+                reference_id, file_id, project_id, target_name, kind,
+                start_line, end_line, start_column, end_column, source_symbol_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
                 (
                     reference.reference_id,
                     file_id,
                     project_id,
                     reference.target_name,
                     reference.kind,
-                    location.start_line,
-                    location.end_line,
-                    location.start_column,
-                    location.end_column,
+                    reference.location.start_line,
+                    reference.location.end_line,
+                    reference.location.start_column,
+                    reference.location.end_column,
                     reference.source_symbol_id,
-                ),
-            )
-        for chunk in analysis.chunks:
-            connection.execute(
-                """
-                INSERT INTO chunks(
-                    chunk_id, file_id, project_id, start_line, end_line, content,
-                    content_hash, kind, symbol_id, parent_chunk_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
+                )
+                for reference in analysis.references
+            ),
+        )
+        connection.executemany(
+            """
+            INSERT INTO chunks(
+                chunk_id, file_id, project_id, start_line, end_line, content,
+                content_hash, kind, symbol_id, parent_chunk_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
                 (
                     chunk.chunk_id,
                     file_id,
@@ -408,8 +519,10 @@ class SQLiteRepositoryStore:
                     chunk.kind,
                     chunk.symbol_id,
                     chunk.parent_chunk_id,
-                ),
-            )
+                )
+                for chunk in analysis.chunks
+            ),
+        )
         if analysis.state is ParseState.FAILED:
             error = parse_error or "Structural parser failed."
             connection.execute(
@@ -903,6 +1016,21 @@ def _duration_ms(started_at: str, finished_at: str) -> int:
     started = datetime.fromisoformat(started_at)
     finished = datetime.fromisoformat(finished_at)
     return max(0, round((finished - started).total_seconds() * 1000))
+
+
+def _perf_ms(started_ns: int) -> float:
+    return max(0.0, (perf_counter_ns() - started_ns) / 1_000_000.0)
+
+
+def _emit_persistence_progress(
+    progress: Callable[[PersistenceProgress], None] | None,
+    stage: str,
+    current: int,
+    total: int,
+    path: str | None,
+) -> None:
+    if progress is not None:
+        progress(PersistenceProgress(stage, current, total, path))
 
 
 def _run_summary(row: sqlite3.Row) -> IndexRunSummary:

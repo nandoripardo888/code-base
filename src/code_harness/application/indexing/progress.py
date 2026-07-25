@@ -4,6 +4,7 @@ from enum import StrEnum
 
 
 class IndexProgressPhase(StrEnum):
+    INITIALIZING = "initializing"
     DISCOVERING = "discovering"
     ANALYZING = "analyzing"
     EMBEDDING = "embedding"

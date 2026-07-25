@@ -26,6 +26,7 @@ class SearchRegexTool:
             outcome.hits,
             elapsed_ms,
             truncated=outcome.truncated,
+            truncation=outcome.truncation,
             warnings=normalize_warnings(outcome.warnings, capability="ripgrep"),
             index_state=outcome.index_state,
         )

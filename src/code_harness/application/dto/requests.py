@@ -8,6 +8,17 @@ def _require_positive(name: str, value: int | float) -> None:
         raise ValueError(f"{name} must be greater than zero")
 
 
+def _normalize_repository_path(path: str) -> str:
+    parts: list[str] = []
+    for part in path.replace("\\", "/").split("/"):
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            raise ValueError("path must not contain parent-directory segments")
+        parts.append(part)
+    return "/".join(parts)
+
+
 @dataclass(frozen=True, slots=True)
 class ListFilesRequest:
     include_globs: tuple[str, ...] = ()
@@ -155,6 +166,8 @@ class GetRepositoryMapRequest:
             raise ValueError("mode must be one of: summary, files, detailed")
         if self.max_depth is not None:
             _require_positive("max_depth", self.max_depth)
+        if self.path is not None:
+            object.__setattr__(self, "path", _normalize_repository_path(self.path))
 
     @property
     def effective_include_symbols(self) -> bool:
@@ -284,6 +297,7 @@ class FindReferencesRequest:
     include_globs: tuple[str, ...] = ()
     exclude_globs: tuple[str, ...] = ()
     timeout_seconds: float = 10.0
+    include_comments: bool = True
 
     def __post_init__(self) -> None:
         if not self.query.strip():

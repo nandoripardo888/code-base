@@ -75,12 +75,21 @@ strategies, and ranking evidence under diagnostics. `full` returns the rich
 legacy structure without the aggregate response budget. Typed errors and
 non-empty warnings are never hidden.
 
+Machine envelopes retain `truncated` for compatibility and add `truncation`
+when the cause is known. The structured block separates result, snippet,
+candidate, token, file, expansion, and response-budget limits. Duplicates
+removed while merging FTS, Ripgrep, or structural results are not truncation.
+
 ### References and regex
 
 `find_references` is structural-first. Ripgrep complements when available; if
 Ripgrep is missing or times out, validated structural references are still
-returned with structured warnings. Textual hits may be marked
-`unknown_textual` until validated against the current file.
+returned with structured warnings. Lexical hits are conservatively classified
+as `import`, `instantiation`, `type_use`, `call`, `configuration_textual`,
+`unknown_textual`, or `comment_textual` using the current full source file.
+Code references sort before configuration, and confirmed comments sort last.
+Comments may be excluded with `include_comments=false` (CLI:
+`--exclude-comments`); the search expands its candidate limit to backfill code.
 
 `search_regex` requires Ripgrep. There is no Python regex fallback. Configure
 `CODE_HARNESS_RG` or ensure `rg` is on `PATH`. Doctor reports discovery details.
@@ -103,7 +112,11 @@ Structural tools return `StructuralSearchResult` objects containing the symbol
 or reference, optional current source content, and current hash. Semantic
 results reuse `SearchHit` with `match_type=semantic` and a raw cosine score.
 Hybrid results use `HybridSearchHit` with per-strategy `SearchEvidence`; scores
-are fused deterministically and results are diversified by file and directory.
+are absolute combinations of evidence strength, query coverage, and resolved
+anchor scope. They are not normalized against the best result. Exact container
+symbols or file stems establish an anchor; target-bearing anchor results come
+first, followed by relevant global fallback. Diversity applies only to fallback
+results. Comments and path-only matches have explicit confidence caps.
 
 `search_code` may expand camelCase / snake_case terms for conceptual and mixed
 queries. Expansion is lexical only (no translation). Match evidence includes
@@ -120,10 +133,15 @@ token count is a conservative local estimate (`ceil(UTF-8 bytes / 3)`), not a
 model-specific tokenizer result. Omission reasons are typed and mutually
 exclusive (`results_truncated`, `snippet_truncated`, `budget_exhausted`,
 `expansion_limited`). Query-oriented windows prefer ranges that contain the
-query terms.
+query terms. Enumeration-style questions consume non-overlapping anchor blocks
+of at most 40 lines and 6,000 characters before any relevant global fallback.
+When compact context is truncated it exposes `considered_results`,
+`selected_results`, and `omitted_results`, preserving their arithmetic invariant.
 
 `get_repository_map` still returns the current file tree when the structural
 index is unavailable, with a warning and no symbol enrichment.
+Its path filter treats forward/backward slashes, `./`, repeated separators, and
+trailing separators equivalently.
 
 Use `doctor(deep=True)` in Python or `doctor --deep` in the CLI for actual model
 loading and inference. Use `prepare_semantic_model()` or `models prepare` before

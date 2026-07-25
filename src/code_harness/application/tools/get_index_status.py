@@ -8,6 +8,7 @@ from code_harness.domain.models.project import Project
 from code_harness.domain.models.tool_result import ToolResult, normalize_warnings
 from code_harness.domain.protocols.capability_reporter import CapabilityReporter
 from code_harness.domain.protocols.repository_store import RepositoryStore
+from code_harness.version import __version__
 
 
 class GetIndexStatusTool:
@@ -17,11 +18,20 @@ class GetIndexStatusTool:
         store: RepositoryStore,
         semantic_model_id: str | None = None,
         capability_reporter: CapabilityReporter | None = None,
+        *,
+        service_version: str = __version__,
+        build_commit: str | None = None,
+        service_started_at: str | None = None,
+        service_instance_id: str | None = None,
     ) -> None:
         self._project = project
         self._store = store
         self._semantic_model_id = semantic_model_id
         self._capability_reporter = capability_reporter
+        self._service_version = service_version
+        self._build_commit = build_commit
+        self._service_started_at = service_started_at
+        self._service_instance_id = service_instance_id
 
     def execute(self) -> ToolResult[IndexStatus]:
         status, elapsed_ms = timed(lambda: self._store.get_status(self._project))
@@ -36,6 +46,10 @@ class GetIndexStatusTool:
             semantic_model_id=self._semantic_model_id,
             capabilities=capabilities,
             service_state=service_state,
+            service_version=self._service_version,
+            build_commit=self._build_commit,
+            service_started_at=self._service_started_at,
+            service_instance_id=self._service_instance_id,
         )
         return ToolResult(
             status,

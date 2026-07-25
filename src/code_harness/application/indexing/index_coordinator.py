@@ -28,6 +28,7 @@ from code_harness.domain.models.index_report import (
     IndexedSource,
     IndexReport,
     IndexTimings,
+    PersistenceProgress,
     StoredFile,
 )
 from code_harness.domain.models.project import Project
@@ -78,11 +79,17 @@ def _percentile(sorted_values: list[float], percentile: float) -> float:
 
 @dataclass(slots=True)
 class _TimingBucket:
+    initialize_ms: float = 0.0
     discovery_ms: float = 0.0
     read_hash_ms: float = 0.0
     analysis_ms: float = 0.0
     chunk_build_ms: float = 0.0
     commit_ms: float = 0.0
+    commit_metadata_ms: float = 0.0
+    commit_fts_ms: float = 0.0
+    commit_structure_ms: float = 0.0
+    commit_embeddings_ms: float = 0.0
+    commit_finalize_ms: float = 0.0
     embedding_ms: float = 0.0
     file_bytes_total: int = 0
     files_read: int = 0
@@ -190,12 +197,18 @@ def _build_timings(
     # do not double-count one-shot worker startup.
     analysis_ms = max(0, round(bucket.analysis_ms) - parser_delta.spawn_ms)
     return IndexTimings(
+        initialize_ms=round(bucket.initialize_ms),
         discovery_ms=round(bucket.discovery_ms),
         read_hash_ms=round(bucket.read_hash_ms),
         worker_init_ms=parser_delta.spawn_ms,
         analysis_ms=analysis_ms,
         chunk_build_ms=round(bucket.chunk_build_ms),
         commit_ms=round(bucket.commit_ms),
+        commit_metadata_ms=round(bucket.commit_metadata_ms),
+        commit_fts_ms=round(bucket.commit_fts_ms),
+        commit_structure_ms=round(bucket.commit_structure_ms),
+        commit_embeddings_ms=round(bucket.commit_embeddings_ms),
+        commit_finalize_ms=round(bucket.commit_finalize_ms),
         embedding_ms=round(bucket.embedding_ms),
         total_ms=total_ms,
         analyzed_files=analyzed,
@@ -255,10 +268,19 @@ class IndexCoordinator:
         progress: IndexProgressCallback | None = None,
     ) -> IndexReport:
         self._owner_thread_id = get_ident()
-        self._store.initialize(self._project)
         started = self._clock()
         total_started = perf_counter_ns()
         timings = _TimingBucket()
+        _emit(
+            progress,
+            IndexProgressEvent(
+                IndexProgressPhase.INITIALIZING,
+                message="Preparing index database",
+            ),
+        )
+        initialize_started = perf_counter_ns()
+        self._store.initialize(self._project)
+        timings.initialize_ms = _elapsed_ms_precise(initialize_started)
         parser_before = _parser_metrics_snapshot(self._analyzer)
         scope = IndexScope(include_globs=include_globs, exclude_globs=exclude_globs)
         run_id = self._store.start_run(self._project.project_id, mode, started.isoformat())
@@ -354,6 +376,73 @@ class IndexCoordinator:
             )
             timings.embedding_ms = _elapsed_ms_precise(embedding_started)
             warnings = sorted(warnings)
+            _emit(
+                progress,
+                IndexProgressEvent(
+                    IndexProgressPhase.COMMITTING,
+                    message="Writing index to disk",
+                ),
+            )
+            commit_started = perf_counter_ns()
+            self._assert_owner_thread()
+
+            stage_messages = {
+                "metadata": "Writing file metadata",
+                "fts": "Writing full-text index",
+                "structure": "Writing structural index",
+            }
+
+            def on_persistence(event: PersistenceProgress) -> None:
+                self._assert_owner_thread()
+                _emit(
+                    progress,
+                    IndexProgressEvent(
+                        IndexProgressPhase.COMMITTING,
+                        current=event.current,
+                        total=event.total,
+                        path=event.path,
+                        message=stage_messages.get(event.stage, "Writing index to disk"),
+                    ),
+                )
+
+            indexed_at = self._clock().isoformat()
+            commit_result = self._store.commit_files(
+                self._project.project_id,
+                indexed_at,
+                commit_updates,
+                commit_removed,
+                progress=on_persistence,
+            )
+            timings.commit_metadata_ms = commit_result.metadata_ms
+            timings.commit_fts_ms = commit_result.fts_ms
+            timings.commit_structure_ms = commit_result.structure_ms
+            timings.commit_finalize_ms = commit_result.finalize_ms
+
+            generated_embeddings = embedding_batch.generated_count
+            reused_embeddings = embedding_batch.reused_count
+            embedded_chunks = len(embedding_batch.links)
+            persistence_failures = embedding_failures
+            embedding_commit_started = perf_counter_ns()
+            try:
+                self._assert_owner_thread()
+                _emit(
+                    progress,
+                    IndexProgressEvent(
+                        IndexProgressPhase.COMMITTING,
+                        message="Writing semantic embeddings",
+                    ),
+                )
+                self._store.commit_embeddings(embedding_batch)
+            except Exception as error:
+                code = error.code.value if isinstance(error, CodeHarnessError) else "storage_error"
+                semantic_warning = f"Semantic persistence unavailable ({code}): {error}"
+                warnings = sorted((*warnings, semantic_warning))
+                generated_embeddings = 0
+                reused_embeddings = 0
+                embedded_chunks = 0
+                persistence_failures += 1
+            timings.commit_embeddings_ms = _elapsed_ms_precise(embedding_commit_started)
+
             finished = self._clock()
             state = IndexState.READY_WITH_WARNINGS if warnings else IndexState.READY
             report = IndexReport(
@@ -383,44 +472,27 @@ class IndexCoordinator:
                     item.analysis is not None and item.analysis.state.value == "failed"
                     for item in updates
                 ),
-                generated_embeddings=embedding_batch.generated_count,
-                reused_embeddings=embedding_batch.reused_count,
-                embedded_chunks=len(embedding_batch.links),
-                embedding_failures=embedding_failures,
+                generated_embeddings=generated_embeddings,
+                reused_embeddings=reused_embeddings,
+                embedded_chunks=embedded_chunks,
+                embedding_failures=persistence_failures,
                 partial=scope.partial,
                 include_globs=include_globs,
                 exclude_globs=exclude_globs,
                 scoped_discovered_files=len(discovered) if scope.partial else 0,
                 preserved_out_of_scope_files=preserved_out_of_scope,
             )
+            self._assert_owner_thread()
             _emit(
                 progress,
                 IndexProgressEvent(
                     IndexProgressPhase.COMMITTING,
-                    message="Writing index to disk",
+                    message="Finalizing index",
                 ),
             )
-            commit_started = perf_counter_ns()
-            self._assert_owner_thread()
-            self._store.commit_files(report, commit_updates, commit_removed)
-            try:
-                self._assert_owner_thread()
-                self._store.commit_embeddings(embedding_batch)
-            except Exception as error:
-                code = error.code.value if isinstance(error, CodeHarnessError) else "storage_error"
-                semantic_warning = f"Semantic persistence unavailable ({code}): {error}"
-                report = replace(
-                    report,
-                    state=IndexState.READY_WITH_WARNINGS,
-                    warnings=tuple(sorted((*report.warnings, semantic_warning))),
-                    warning_files=len(report.warnings) + 1,
-                    generated_embeddings=0,
-                    reused_embeddings=0,
-                    embedded_chunks=0,
-                    embedding_failures=report.embedding_failures + 1,
-                )
-            self._assert_owner_thread()
+            finalize_started = perf_counter_ns()
             self._store.complete_run(run_id, report)
+            timings.commit_finalize_ms += _elapsed_ms_precise(finalize_started)
             timings.commit_ms = _elapsed_ms_precise(commit_started)
             parser_after = _parser_metrics_snapshot(self._analyzer)
             parser_delta = _parser_metrics_delta(parser_before, parser_after)

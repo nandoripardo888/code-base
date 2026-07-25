@@ -3,6 +3,7 @@ from code_harness.application.tools._timing import timed
 from code_harness.application.tools.index_state import resolve_index_state
 from code_harness.domain.models.code_chunk import SourceRead
 from code_harness.domain.models.project import Project
+from code_harness.domain.models.result_truncation import TruncationReason, truncation
 from code_harness.domain.models.tool_result import ToolResult, normalize_warnings
 from code_harness.domain.protocols.repository_store import RepositoryStore
 from code_harness.domain.protocols.source_reader import SourceReader
@@ -34,6 +35,11 @@ class ReadRangeTool:
             outcome,
             elapsed_ms,
             truncated=outcome.truncated,
+            truncation=(
+                truncation(TruncationReason.SNIPPET_CHAR_LIMIT, snippets=True)
+                if outcome.truncated
+                else None
+            ),
             warnings=normalize_warnings(outcome.warnings, capability="filesystem"),
             index_state=resolve_index_state(self._store, self._project),
         )

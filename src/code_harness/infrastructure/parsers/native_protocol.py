@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 # Structural extraction / chunk semantics. Keep in sync with historical parser_version.
-ANALYSIS_VERSION = "4"
+ANALYSIS_VERSION = "5"
 
 # NDJSON envelope between supervisor and persistent worker.
 PROTOCOL_VERSION = 1

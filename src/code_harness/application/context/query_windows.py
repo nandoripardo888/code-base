@@ -55,7 +55,6 @@ def select_query_windows(
     windows: list[LineWindow] = [
         LineWindow(start, min(end, start + 6), "method_signature", 1.0),
     ]
-
     scored_lines: list[tuple[float, int]] = []
     for line_no in range(start, end + 1):
         text = lines[line_no - 1].casefold()

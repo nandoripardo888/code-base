@@ -8,6 +8,7 @@ from code_harness.domain.errors import (
     RipgrepTimeoutError,
     RipgrepUnavailableError,
 )
+from code_harness.domain.models.result_truncation import TruncationReason, truncation
 from code_harness.domain.models.search_hit import SearchHit, SearchOutcome
 from code_harness.domain.protocols.source_reader import SourceReader
 from code_harness.infrastructure.ripgrep.command_builder import RipgrepCommandBuilder
@@ -142,5 +143,8 @@ class RipgrepSearcher:
         return SearchOutcome(
             tuple(hits),
             truncated=truncated,
+            truncation=(
+                truncation(TruncationReason.RESULT_LIMIT, results=True) if truncated else None
+            ),
             warnings=tuple(dict.fromkeys(warnings)),
         )

@@ -30,6 +30,7 @@ def test_index_coordinator_emits_analyze_progress(copied_repository: Path) -> No
     ).index(IndexMode.FULL, progress=events.append)
 
     phases = [event.phase for event in events]
+    assert IndexProgressPhase.INITIALIZING in phases
     assert IndexProgressPhase.DISCOVERING in phases
     assert IndexProgressPhase.ANALYZING in phases
     assert IndexProgressPhase.COMMITTING in phases
@@ -41,6 +42,12 @@ def test_index_coordinator_emits_analyze_progress(copied_repository: Path) -> No
     assert analyzing[-1].current == analyzing[-1].total == report.discovered_files
     assert analyzing[-1].percent == 100
     assert all(event.path for event in analyzing)
+    committing = [event for event in events if event.phase is IndexProgressPhase.COMMITTING]
+    messages = {event.message for event in committing}
+    assert "Writing file metadata" in messages
+    assert "Writing full-text index" in messages
+    assert "Writing structural index" in messages
+    assert "Finalizing index" in messages
 
 
 def test_index_progress_printer_reports_percent_without_tty() -> None:
@@ -51,6 +58,12 @@ def test_index_progress_printer_reports_percent_without_tty() -> None:
     try:
         printer(
             IndexProgressEvent(
+                IndexProgressPhase.INITIALIZING,
+                message="Preparing index database",
+            )
+        )
+        printer(
+            IndexProgressEvent(
                 IndexProgressPhase.DISCOVERING,
                 message="Discovering project files",
             )
@@ -58,13 +71,33 @@ def test_index_progress_printer_reports_percent_without_tty() -> None:
         printer(IndexProgressEvent(IndexProgressPhase.ANALYZING, current=1, total=20, path="a.py"))
         printer(IndexProgressEvent(IndexProgressPhase.ANALYZING, current=5, total=20, path="b.py"))
         printer(IndexProgressEvent(IndexProgressPhase.ANALYZING, current=20, total=20, path="z.py"))
+        printer(
+            IndexProgressEvent(
+                IndexProgressPhase.COMMITTING,
+                current=1,
+                total=20,
+                path="a.py",
+                message="Writing full-text index",
+            )
+        )
+        printer(
+            IndexProgressEvent(
+                IndexProgressPhase.COMMITTING,
+                current=20,
+                total=20,
+                path="z.py",
+                message="Writing full-text index",
+            )
+        )
         printer(IndexProgressEvent(IndexProgressPhase.COMMITTING, message="Writing index to disk"))
         printer(IndexProgressEvent(IndexProgressPhase.COMPLETE, current=20, total=20))
     finally:
         progress_module._echo_err = original
 
-    assert lines[0] == "Indexing: discovering files..."
+    assert lines[0] == "Indexing: preparing index database..."
+    assert "Indexing: discovering files..." in lines
     assert any("5/20 (25%)" in line for line in lines)
     assert any("20/20 (100%)" in line for line in lines)
+    assert any("writing full-text index 20/20 (100%)" in line for line in lines)
     assert "Indexing: writing index to disk..." in lines
     assert "Indexing: complete." in lines

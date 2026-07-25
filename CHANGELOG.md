@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Changed hybrid scoring to an absolute evidence/coverage formula, added
+  anchor-first query planning, and stopped broad container symbols from merging
+  with nested members.
+- Changed context enumeration to consume bounded contiguous anchor blocks before
+  considering global fallback, with consistent considered/selected/omitted counts.
+- Added language-aware lexical reference classification, Java type/instantiation
+  references, parser analysis version 5, runtime build identity, and correlated
+  `internal_error` responses.
+- Added structured truncation causes, removed FTS/Ripgrep duplicate false
+  positives, and made result limits prove an additional unique result.
+- Normalized repository-map path filters across slash styles and trailing
+  separators.
+- Added safe query coverage metadata and capped path/comment confidence.
+- Added comment-aware lexical references with `include_comments`, plus an MCP
+  enum schema for all five `response_detail` values.
 - Added compact, budget-aware MCP and CLI JSON/JSONL response profiles, with
   explicit debug/full modes and safe query-focused hybrid snippets.
 - Added capability statuses, structured warnings, strategy outcomes, and

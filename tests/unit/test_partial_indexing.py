@@ -6,6 +6,7 @@ import asyncio
 import json
 import sqlite3
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,12 @@ from code_harness import CodeHarness
 from code_harness.application.indexing import IndexCoordinator, IndexScope
 from code_harness.bootstrap.settings import Settings
 from code_harness.domain.enums import IndexMode, IndexState
-from code_harness.domain.models.index_report import IndexReport, StoredFile
+from code_harness.domain.models.index_report import (
+    CommitFilesMetrics,
+    IndexReport,
+    PersistenceProgress,
+    StoredFile,
+)
 from code_harness.domain.models.project import Project
 from code_harness.domain.models.semantic import EmbeddingBatch
 from code_harness.infrastructure.filesystem import (
@@ -290,12 +296,21 @@ class _ThreadTrackingStore:
 
     def commit_files(
         self,
-        report: IndexReport,
+        project_id: str,
+        indexed_at: str,
         updates: tuple[Any, ...],
         removed_paths: tuple[str, ...],
-    ) -> None:
+        *,
+        progress: Callable[[PersistenceProgress], None] | None = None,
+    ) -> CommitFilesMetrics:
         self.write_threads.append(threading.get_ident())
-        return self._delegate.commit_files(report, updates, removed_paths)
+        return self._delegate.commit_files(
+            project_id,
+            indexed_at,
+            updates,
+            removed_paths,
+            progress=progress,
+        )
 
     def commit_embeddings(self, embeddings: EmbeddingBatch) -> None:
         self.write_threads.append(threading.get_ident())

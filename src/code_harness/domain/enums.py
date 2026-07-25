@@ -96,6 +96,7 @@ class ExecutionRiskSeverity(StrEnum):
 
 
 class ErrorCode(StrEnum):
+    INTERNAL_ERROR = "internal_error"
     PROJECT_NOT_FOUND = "project_not_found"
     PATH_OUTSIDE_PROJECT = "path_outside_project"
     FILE_NOT_FOUND = "file_not_found"
@@ -120,3 +121,6 @@ class ErrorCode(StrEnum):
     EXECUTION_APPROVAL_REQUIRED = "execution_approval_required"
     EXECUTION_ELEVATED_SESSION = "execution_elevated_session"
     INVALID_EXECUTION_REQUEST = "invalid_execution_request"
+    POWERSHELL_UNAVAILABLE = "powershell_unavailable"
+    POWERSHELL_PARSE_FAILED = "powershell_parse_failed"
+    POWERSHELL_ANALYSIS_FAILED = "powershell_analysis_failed"

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from pathlib import PurePath, PureWindowsPath
 
 from code_harness.application.execution.approval_digest import compute_approval_digest, script_hash
@@ -16,6 +15,7 @@ from code_harness.domain.models.execution import (
     NormalizedPowerShellCommand,
     NormalizedProcessCommand,
     PolicyReason,
+    PowerShellAstAnalysis,
     RiskFinding,
 )
 
@@ -66,23 +66,6 @@ _PROTECTED_PATH_MARKERS = (
     "secret",
     ".pem",
     ".key",
-)
-
-_POWERSHELL_DYNAMIC_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("invoke_expression", re.compile(r"(?i)\bInvoke-Expression\b|\biex\b")),
-    ("call_operator_dynamic", re.compile(r"(?i)&\s*\$")),
-    ("dot_source_dynamic", re.compile(r"(?i)^\s*\.\s*\$", re.MULTILINE)),
-    ("start_process", re.compile(r"(?i)\bStart-Process\b")),
-    ("add_type", re.compile(r"(?i)\bAdd-Type\b")),
-    ("encoded_command", re.compile(r"(?i)\bEncodedCommand\b|-enc(?:odedcommand)?\b")),
-    ("import_module_dynamic", re.compile(r"(?i)\bImport-Module\b.*\$")),
-    ("download_cradle", re.compile(r"(?i)\b(Invoke-WebRequest|Invoke-RestMethod|wget|curl)\b")),
-    ("registry", re.compile(r"(?i)\b(HKLM:|HKCU:|Registry::)")),
-    (
-        "service_control",
-        re.compile(r"(?i)\b(Get-Service|Stop-Service|Start-Service|Set-Service)\b"),
-    ),
-    ("remove_item", re.compile(r"(?i)\bRemove-Item\b")),
 )
 
 
@@ -315,12 +298,14 @@ class DeterministicPolicyEngine:
             digest_capabilities=required_caps,
         )
 
-    def inspect_powershell(self, command: NormalizedPowerShellCommand) -> CommandInspection:
+    def inspect_powershell(
+        self, command: NormalizedPowerShellCommand, analysis: PowerShellAstAnalysis
+    ) -> CommandInspection:
         reasons: list[PolicyReason] = []
         risks: list[RiskFinding] = []
         blocks: list[PolicyReason] = []
-        dynamic: list[str] = []
-        protected = _protected_matches((command.script, command.cwd))
+        dynamic = list(analysis.dynamic_features)
+        protected = _protected_matches((*analysis.text_fragments, command.cwd))
         required = list(command.requested_capabilities)
         required.extend(
             (
@@ -354,17 +339,15 @@ class DeterministicPolicyEngine:
                 script=command.script,
             )
 
-        for feature, pattern in _POWERSHELL_DYNAMIC_PATTERNS:
-            if pattern.search(command.script):
-                dynamic.append(feature)
-                risks.append(
-                    RiskFinding(
-                        feature,
-                        ExecutionRiskSeverity.HIGH,
-                        f"PowerShell script matches dynamic/risky pattern: {feature}.",
-                        evidence=feature,
-                    )
+        for feature in dynamic:
+            risks.append(
+                RiskFinding(
+                    feature,
+                    ExecutionRiskSeverity.HIGH,
+                    "PowerShell AST contains a dynamic or high-risk feature.",
+                    evidence=feature,
                 )
+            )
 
         if "encoded_command" in dynamic or "invoke_expression" in dynamic:
             decision = PolicyDecision.DENY
@@ -434,9 +417,6 @@ class DeterministicPolicyEngine:
             protected_path_matches=protected,
             digest_capabilities=required_caps,
             script=command.script,
-            warnings=(
-                "PowerShell analysis in E0 is superficial pattern matching; it does not parse AST.",
-            ),
         )
 
     def _result(
@@ -494,6 +474,7 @@ class DeterministicPolicyEngine:
             cwd=cwd,
             timeout_seconds=timeout_seconds,
             max_output_bytes=max_output_bytes,
+            backend_guarantees=self._config.backend_guarantees,
             executable=executable,
             args=args,
             script_hash=script_hash_value,

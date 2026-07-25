@@ -17,6 +17,12 @@ from code_harness.domain.models.file_match import FileMatch
 from code_harness.domain.models.hybrid import HybridSearchHit
 from code_harness.domain.models.index_report import DoctorReport, IndexReport, IndexStatus
 from code_harness.domain.models.repository_map import RepositoryMap
+from code_harness.domain.models.result_truncation import (
+    ResultTruncation,
+    TruncationReason,
+    merge_truncations,
+    truncation,
+)
 from code_harness.domain.models.search_hit import SearchHit
 from code_harness.domain.models.semantic import SemanticPreparationReport
 from code_harness.domain.models.source_file import SourceFile
@@ -106,11 +112,15 @@ def _hybrid_hit(hit: HybridSearchHit, detail: ResponseDetail) -> dict[str, Any]:
     if detail is not ResponseDetail.MINIMAL:
         payload["score"] = hit.score
         payload["match_types"] = sorted({item.match_type.value for item in hit.evidence})
+        payload["matched_terms"] = list(hit.matched_terms)
+        payload["scope"] = hit.scope
         if hit.snippet_truncated:
             payload["snippet_truncated"] = True
     if detail is ResponseDetail.DETAILED:
-        payload["matched_terms"] = list(hit.matched_terms)
+        payload["query_coverage"] = hit.query_coverage
         payload["reason"] = hit.reason
+        if hit.score_components is not None:
+            payload["score_components"] = to_primitive(hit.score_components)
         if hit.source_location is not None:
             payload["source_location"] = _location(hit.source_location)
     return payload
@@ -217,19 +227,37 @@ def _context_bundle(bundle: ContextBundle, detail: ResponseDetail) -> dict[str, 
         "estimated_tokens": bundle.estimated_tokens,
         "available_tokens": bundle.available_tokens,
     }
-    if detail is ResponseDetail.DETAILED:
+    if bundle.results_truncated:
+        payload["results_truncated"] = True
+    if bundle.candidates_truncated:
+        payload["candidates_truncated"] = True
+    if bundle.snippet_truncated:
+        payload["snippet_truncated"] = True
+    if bundle.budget_exhausted:
+        payload["budget_exhausted"] = True
+    if bundle.expansion_limited:
+        payload["expansion_limited"] = True
+    if bundle.omitted:
+        payload["omitted"] = bundle.omitted
+    has_limits = bool(
+        bundle.omitted_results
+        or bundle.results_truncated
+        or bundle.candidates_truncated
+        or bundle.snippet_truncated
+        or bundle.budget_exhausted
+        or bundle.expansion_limited
+    )
+    if detail is ResponseDetail.DETAILED or (
+        detail is ResponseDetail.COMPACT and has_limits
+    ):
         payload.update(
             {
-                "query": bundle.query,
                 "considered_results": bundle.considered_results,
                 "selected_results": bundle.selected_results,
-                "omitted": bundle.omitted,
-                "results_truncated": bundle.results_truncated,
-                "snippet_truncated": bundle.snippet_truncated,
-                "budget_exhausted": bundle.budget_exhausted,
-                "expansion_limited": bundle.expansion_limited,
             }
         )
+    if detail is ResponseDetail.DETAILED:
+        payload["query"] = bundle.query
         if bundle.warnings:
             payload["warnings"] = list(bundle.warnings)
     return payload
@@ -254,7 +282,10 @@ def _capability(
 
 
 def _index_status(status: IndexStatus, detail: ResponseDetail) -> dict[str, Any]:
-    payload: dict[str, Any] = {"state": status.state.value}
+    payload: dict[str, Any] = {
+        "state": status.state.value,
+        "service_version": status.service_version,
+    }
     if detail is not ResponseDetail.MINIMAL:
         payload.update(
             {
@@ -263,6 +294,9 @@ def _index_status(status: IndexStatus, detail: ResponseDetail) -> dict[str, Any]
                 "reference_count": status.reference_count,
                 "chunk_count": status.chunk_count,
                 "warning_files": status.warning_files,
+                "build_commit": status.build_commit,
+                "service_started_at": status.service_started_at,
+                "service_instance_id": status.service_instance_id,
             }
         )
         degraded = [
@@ -567,6 +601,13 @@ def _sync_budget_metadata(data: Any, removed: list[Any], content_trimmed: bool) 
         return max(omitted, removed_files)
     if "snippets" in data and "omitted_results" in data:
         data["omitted_results"] = int(data["omitted_results"]) + len(removed)
+        if "selected_results" in data:
+            data["selected_results"] = max(0, int(data["selected_results"]) - len(removed))
+        omitted_by_reason = data.setdefault("omitted", {}) if removed else data.get("omitted")
+        if isinstance(omitted_by_reason, dict) and removed:
+            omitted_by_reason["response_budget"] = (
+                int(omitted_by_reason.get("response_budget", 0)) + len(removed)
+            )
     removed_files = sum(_repository_file_count(item) for item in removed)
     if removed_files and {"included_files", "omitted_files"} <= data.keys():
         data["included_files"] = max(0, int(data["included_files"]) - removed_files)
@@ -594,6 +635,8 @@ class BudgetedData:
     data: Any
     truncated: bool
     omitted_results: int
+    results_truncated: bool = False
+    snippets_truncated: bool = False
 
 
 def apply_data_budget(data: Any, max_chars: int = DEFAULT_MAX_DATA_CHARS) -> BudgetedData:
@@ -622,7 +665,30 @@ def apply_data_budget(data: Any, max_chars: int = DEFAULT_MAX_DATA_CHARS) -> Bud
             break
         removed.append(sequence.pop())
     omitted = _sync_budget_metadata(data, removed, content_trimmed)
-    return BudgetedData(data, True, omitted)
+    return BudgetedData(
+        data,
+        True,
+        omitted,
+        results_truncated=bool(removed),
+        snippets_truncated=content_trimmed,
+    )
+
+
+def _truncation_payload(value: ResultTruncation) -> dict[str, Any]:
+    payload: dict[str, Any] = {"reasons": [reason.value for reason in value.reasons]}
+    if value.results:
+        payload["results"] = True
+    if value.snippets:
+        payload["snippets"] = True
+    if value.candidates:
+        payload["candidates"] = True
+    if value.budget_exhausted:
+        payload["budget_exhausted"] = True
+    if value.omitted_results is not None:
+        payload["omitted_results"] = value.omitted_results
+    cleaned = _strip_empty(payload)
+    assert isinstance(cleaned, dict)
+    return cleaned
 
 
 def serialize_projected_result(
@@ -636,12 +702,34 @@ def serialize_projected_result(
         return full_payload
 
     data = project_value(result.data, selected)
+    if (
+        isinstance(result.data, ContextBundle)
+        and selected is ResponseDetail.COMPACT
+        and isinstance(data, dict)
+        and _json_chars(data) > DEFAULT_MAX_DATA_CHARS
+    ):
+        data.setdefault("considered_results", result.data.considered_results)
+        data.setdefault("selected_results", result.data.selected_results)
     budgeted = apply_data_budget(data)
+    budget_truncation = (
+        truncation(
+            TruncationReason.RESPONSE_BUDGET,
+            results=budgeted.results_truncated,
+            snippets=budgeted.snippets_truncated,
+            budget_exhausted=True,
+            omitted_results=budgeted.omitted_results or None,
+        )
+        if budgeted.truncated
+        else None
+    )
+    result_truncation = merge_truncations(result.truncation, budget_truncation)
     response_payload: dict[str, Any] = {"data": budgeted.data}
     if result.truncated or budgeted.truncated:
         response_payload["truncated"] = True
-    if budgeted.omitted_results:
-        response_payload["omitted_results"] = budgeted.omitted_results
+    if result_truncation is not None:
+        response_payload["truncation"] = _truncation_payload(result_truncation)
+        if result_truncation.omitted_results:
+            response_payload["omitted_results"] = result_truncation.omitted_results
     if result.warnings:
         response_payload["warnings"] = [project_value(item, selected) for item in result.warnings]
     if selected in {ResponseDetail.MINIMAL, ResponseDetail.COMPACT}:

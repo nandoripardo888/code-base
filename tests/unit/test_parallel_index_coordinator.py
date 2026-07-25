@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -16,8 +17,10 @@ from code_harness.application.indexing import (
 from code_harness.bootstrap.settings import Settings
 from code_harness.domain.enums import IndexMode
 from code_harness.domain.models.index_report import (
+    CommitFilesMetrics,
     FileIndexUpdate,
     IndexReport,
+    PersistenceProgress,
     StoredFile,
 )
 from code_harness.domain.models.project import Project
@@ -220,12 +223,21 @@ class _ThreadTrackingStore:
 
     def commit_files(
         self,
-        report: IndexReport,
+        project_id: str,
+        indexed_at: str,
         updates: tuple[FileIndexUpdate, ...],
         removed_paths: tuple[str, ...],
-    ) -> None:
+        *,
+        progress: Callable[[PersistenceProgress], None] | None = None,
+    ) -> CommitFilesMetrics:
         self.write_threads.append(threading.get_ident())
-        return self._delegate.commit_files(report, updates, removed_paths)
+        return self._delegate.commit_files(
+            project_id,
+            indexed_at,
+            updates,
+            removed_paths,
+            progress=progress,
+        )
 
     def commit_embeddings(self, embeddings: EmbeddingBatch) -> None:
         self.write_threads.append(threading.get_ident())

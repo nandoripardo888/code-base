@@ -19,13 +19,30 @@ class IndexProgressPrinter:
     def __init__(self, *, stream_is_tty: bool | None = None) -> None:
         self._tty = sys.stderr.isatty() if stream_is_tty is None else stream_is_tty
         self._last_percent: int | None = None
+        self._last_status_key: tuple[IndexProgressPhase, str] | None = None
         self._active_line = False
 
     def __call__(self, event: IndexProgressEvent) -> None:
-        if event.phase is IndexProgressPhase.ANALYZING and event.total > 0:
+        if event.phase in (
+            IndexProgressPhase.ANALYZING,
+            IndexProgressPhase.COMMITTING,
+        ) and event.total > 0:
+            message = event.message or (
+                "Analyzing" if event.phase is IndexProgressPhase.ANALYZING else "Writing index"
+            )
+            status_key = (event.phase, message)
+            if status_key != self._last_status_key:
+                self._last_status_key = status_key
+                self._last_percent = None
             percent = event.percent or 0
             path = event.path or ""
-            line = f"Indexing: analyzing {event.current}/{event.total} ({percent}%) {path}"
+            if event.phase is IndexProgressPhase.ANALYZING:
+                line = f"Indexing: analyzing {event.current}/{event.total} ({percent}%) {path}"
+            else:
+                line = (
+                    f"Indexing: {message.casefold()} "
+                    f"{event.current}/{event.total} ({percent}%) {path}"
+                )
             if self._tty:
                 self._write_status(line)
                 self._active_line = True
@@ -41,12 +58,15 @@ class IndexProgressPrinter:
             _echo_err("")
             self._active_line = False
 
-        if event.phase is IndexProgressPhase.DISCOVERING:
+        if event.phase is IndexProgressPhase.INITIALIZING:
+            _echo_err("Indexing: preparing index database...")
+        elif event.phase is IndexProgressPhase.DISCOVERING:
             _echo_err("Indexing: discovering files...")
         elif event.phase is IndexProgressPhase.EMBEDDING:
             _echo_err("Indexing: preparing embeddings...")
         elif event.phase is IndexProgressPhase.COMMITTING:
-            _echo_err("Indexing: writing index to disk...")
+            message = event.message or "Writing index to disk"
+            _echo_err(f"Indexing: {message.casefold()}...")
         elif event.phase is IndexProgressPhase.COMPLETE:
             _echo_err("Indexing: complete.")
 

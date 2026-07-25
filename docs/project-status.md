@@ -9,6 +9,11 @@ foi verificado no repositório.
 
 ## Resumo executivo
 
+Além das fases de retrieval, a capacidade opcional de execução concluiu a
+**E0 — contratos e inspeção sem execução** em 25 de julho de 2026. Ela está
+desabilitada por padrão e oferece apenas inspeção de processos e PowerShell;
+não há runner, Job Object, auditoria nem exposição MCP de execução.
+
 O projeto concluiu localmente as **Fases 0, 1, 2, 3, 4, 5 e 6**. O produto oferece
 pela CLI, pela API Python e pelo adaptador MCP opcional busca lexical direta,
 persistência SQLite, FTS, indexação incremental, análise estrutural isolada,

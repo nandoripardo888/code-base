@@ -116,6 +116,20 @@ class FakeLexical:
         return SearchOutcome(self._hits)
 
 
+class GrowingLexical(FakeLexical):
+    def __init__(self, hits: tuple[SearchHit, ...]) -> None:
+        super().__init__(hits=hits)
+        self.limits: list[int] = []
+
+    def search(self, **kwargs: object) -> SearchOutcome:
+        limit = int(kwargs["max_results"])
+        self.limits.append(limit)
+        return SearchOutcome(
+            self._hits[:limit],
+            truncated=len(self._hits) > limit,
+        )
+
+
 def _source(path: str, content: str, content_hash: str = "hash") -> IndexedSource:
     return IndexedSource(
         path=path,
@@ -200,9 +214,183 @@ def test_find_references_returns_lexical_when_structural_unavailable() -> None:
 
     assert len(result.data) == 1
     assert result.data[0].reference is not None
-    assert result.data[0].reference.kind == "unknown_textual"
+    assert result.data[0].reference.kind == "call"
     assert result.data[0].reference.source == "lexical"
     assert any("lexical" in warning_message(warning).casefold() for warning in result.warnings)
+
+
+def test_find_references_classifies_orders_and_filters_comments() -> None:
+    code = _lexical_hit(
+        path="src/Use.java",
+        line=10,
+        content="OS_AGENDA_TMP cursor = new OS_AGENDA_TMP();\n",
+        content_hash="use-hash",
+    )
+    comment = _lexical_hit(
+        path="src/Docs.java",
+        line=2,
+        content="* OS_AGENDA_TMP.COD_TECNICO\n",
+        content_hash="docs-hash",
+    )
+    preprocessor = _lexical_hit(
+        path="src/native.c",
+        line=1,
+        content="#include <OS_AGENDA_TMP.h>\n",
+        content_hash="native-hash",
+    )
+    sources = {
+        "src/Use.java": _source(
+            "src/Use.java",
+            "\n" * 9 + "OS_AGENDA_TMP cursor = new OS_AGENDA_TMP();\n",
+            "use-hash",
+        ),
+        "src/Docs.java": _source(
+            "src/Docs.java",
+            "/*\n* OS_AGENDA_TMP.COD_TECNICO\n*/\n",
+            "docs-hash",
+        ),
+        "src/native.c": _source(
+            "src/native.c",
+            "#include <OS_AGENDA_TMP.h>\n",
+            "native-hash",
+        ),
+    }
+    tool = FindReferencesTool(
+        Project("p", "root"),
+        FakeStore(status=FakeStatus(structural_schema_ready=False)),  # type: ignore[arg-type]
+        FakeReader(sources),
+        FakeLexical(hits=(comment, preprocessor, code)),
+    )
+
+    included = tool.execute(FindReferencesRequest("OS_AGENDA_TMP"))
+    excluded = tool.execute(FindReferencesRequest("OS_AGENDA_TMP", include_comments=False))
+
+    assert [item.reference.kind for item in included.data if item.reference] == [
+        "instantiation",
+        "unknown_textual",
+        "comment_textual",
+    ]
+    assert len(excluded.data) == 2
+    assert excluded.data[0].reference is not None
+    assert excluded.data[0].reference.kind == "instantiation"
+
+
+def test_find_references_uses_full_source_comment_state_and_ignores_strings() -> None:
+    path = "src/Comments.java"
+    content = (
+        'String text = "// TARGET_ID inside a string";\n'
+        "/* TARGET_ID inside a block comment */\n"
+        "TARGET_ID.execute();\n"
+    )
+    hits = (
+        _lexical_hit(path=path, line=1, content=content.splitlines(keepends=True)[0]),
+        _lexical_hit(path=path, line=2, content=content.splitlines(keepends=True)[1]),
+        _lexical_hit(path=path, line=3, content=content.splitlines(keepends=True)[2]),
+    )
+    tool = FindReferencesTool(
+        Project("p", "root"),
+        FakeStore(status=FakeStatus(structural_schema_ready=False)),  # type: ignore[arg-type]
+        FakeReader({path: _source(path, content, "hash-other")}),
+        FakeLexical(hits=hits),
+    )
+
+    included = tool.execute(FindReferencesRequest("TARGET_ID"))
+    excluded = tool.execute(FindReferencesRequest("TARGET_ID", include_comments=False))
+
+    kinds = [item.reference.kind for item in included.data if item.reference]
+    assert kinds == ["unknown_textual", "unknown_textual", "comment_textual"]
+    assert all(
+        item.reference is not None and item.reference.kind != "comment_textual"
+        for item in excluded.data
+    )
+
+
+def test_find_references_expands_lexical_limit_to_backfill_filtered_comments() -> None:
+    comment_hits = tuple(
+        _lexical_hit(
+            path=f"src/Comment{index}.java",
+            line=1,
+            content="/* TARGET_ID */\n",
+            content_hash=f"comment-{index}",
+        )
+        for index in range(40)
+    )
+    code_hits = tuple(
+        _lexical_hit(
+            path=f"src/Use{index}.java",
+            line=1,
+            content="TARGET_ID.execute();\n",
+            content_hash=f"use-{index}",
+        )
+        for index in range(3)
+    )
+    hits = (*comment_hits, *code_hits)
+    sources = {
+        hit.snippet.location.path: _source(
+            hit.snippet.location.path,
+            hit.snippet.content,
+            hit.snippet.file_hash,
+        )
+        for hit in hits
+    }
+    lexical = GrowingLexical(hits)
+    tool = FindReferencesTool(
+        Project("p", "root"),
+        FakeStore(status=FakeStatus(structural_schema_ready=False)),  # type: ignore[arg-type]
+        FakeReader(sources),
+        lexical,
+    )
+
+    result = tool.execute(
+        FindReferencesRequest("TARGET_ID", max_results=2, include_comments=False)
+    )
+
+    assert len(result.data) == 2
+    assert all(
+        item.reference is not None and item.reference.kind != "comment_textual"
+        for item in result.data
+    )
+    assert lexical.limits[:2] == [32, 64]
+
+
+def test_find_references_only_marks_limit_when_an_extra_unique_result_exists() -> None:
+    hits = tuple(
+        _lexical_hit(
+            path=f"src/Use{index}.java",
+            line=1,
+            content="validarAgenda();\n",
+            content_hash=f"hash-{index}",
+        )
+        for index in range(3)
+    )
+    sources = {
+        hit.snippet.location.path: _source(
+            hit.snippet.location.path,
+            hit.snippet.content,
+            hit.snippet.file_hash,
+        )
+        for hit in hits
+    }
+    tool = FindReferencesTool(
+        Project("p", "root"),
+        FakeStore(status=FakeStatus(structural_schema_ready=False)),  # type: ignore[arg-type]
+        FakeReader(sources),
+        FakeLexical(hits=hits[:2]),
+    )
+    exact = tool.execute(FindReferencesRequest("validarAgenda", max_results=2))
+
+    tool_with_extra = FindReferencesTool(
+        Project("p", "root"),
+        FakeStore(status=FakeStatus(structural_schema_ready=False)),  # type: ignore[arg-type]
+        FakeReader(sources),
+        FakeLexical(hits=hits),
+    )
+    limited = tool_with_extra.execute(FindReferencesRequest("validarAgenda", max_results=2))
+
+    assert exact.truncated is False
+    assert limited.truncated is True
+    assert limited.truncation is not None
+    assert limited.truncation.results is True
 
 
 def test_find_references_raises_when_both_strategies_unavailable() -> None:

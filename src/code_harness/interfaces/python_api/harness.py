@@ -187,9 +187,19 @@ class CodeHarness:
         return self._container.find_definition.execute(FindDefinitionRequest(query, max_results))
 
     def find_references(
-        self, query: str, *, max_results: int = 100
+        self,
+        query: str,
+        *,
+        max_results: int = 100,
+        include_comments: bool = True,
     ) -> ToolResult[tuple[StructuralSearchResult, ...]]:
-        return self._container.find_references.execute(FindReferencesRequest(query, max_results))
+        return self._container.find_references.execute(
+            FindReferencesRequest(
+                query,
+                max_results,
+                include_comments=include_comments,
+            )
+        )
 
     def list_files(
         self,

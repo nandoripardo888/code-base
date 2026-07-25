@@ -136,7 +136,9 @@ def test_context_builder_expands_references_and_deduplicates_parent() -> None:
 
     assert {item.role for item in result.data.snippets} == {"definition", "reference"}
     assert any(warning_message(item) == "search warning" for item in result.warnings)
-    assert result.data.omitted_results >= 1
+    assert result.data.omitted_results == 0
+    assert result.data.considered_results == result.data.selected_results
+    assert any("overlapping" in warning_message(item) for item in result.warnings)
 
 
 def test_context_builder_reports_unavailable_or_stale_expansion() -> None:
@@ -181,6 +183,90 @@ def test_context_builder_clips_complete_lines_to_budget() -> None:
     assert result.data.estimated_tokens <= 50
     assert result.data.snippets[0].truncated
     assert result.data.snippets[0].snippet.content.endswith("\n")
+
+
+def test_context_builder_uses_original_range_for_enumeration_queries() -> None:
+    content = "".join(
+        ["class Cursor:\n"]
+        + [f'    item{number}.setName("FIELD_{number}")\n' for number in range(1, 31)]
+    )
+    snippet = CodeSnippet(
+        CodeLocation("src/module.py", 1, 5),
+        "".join(content.splitlines(keepends=True)[:5]),
+        "python",
+        "hash",
+    )
+    evidence = SearchEvidence(MatchType.SYMBOL, 1, 1.0, 1.0, 0.1, "child", "Cursor")
+    hit = HybridSearchHit(
+        snippet,
+        1.0,
+        (evidence,),
+        ("Cursor",),
+        "Matching symbol definition.",
+        snippet_truncated=True,
+        source_location=CodeLocation("src/module.py", 1, 31),
+        scope="anchor",
+    )
+    result = BuildContextTool(
+        FakeSearchCode((hit,)),  # type: ignore[arg-type]
+        Project("project", "root"),
+        FakeStore(),  # type: ignore[arg-type]
+        FakeReader({"src/module.py": _source("src/module.py", content)}),
+    ).execute(
+        BuildContextRequest(
+            "Quais campos Cursor possui?",
+            max_tokens=5_000,
+            max_snippets=1,
+            max_expansion_depth=0,
+        )
+    )
+
+    rendered = result.data.snippets[0].snippet.content
+    assert "FIELD_1" in rendered
+    assert "FIELD_30" in rendered
+
+
+def test_context_builder_is_stable_across_repeated_anchor_enumeration() -> None:
+    content = "".join(
+        ["class Cursor:\n"]
+        + [f'    item{number}.setName("FIELD_{number}")\n' for number in range(1, 1_202)]
+    )
+    snippet = CodeSnippet(
+        CodeLocation("src/module.py", 1, 40),
+        "".join(content.splitlines(keepends=True)[:40]),
+        "python",
+        "hash",
+    )
+    evidence = SearchEvidence(MatchType.SYMBOL, 1, 1.0, 1.0, 0.95, "cursor", "Cursor")
+    hit = HybridSearchHit(
+        snippet,
+        0.9,
+        (evidence,),
+        ("Cursor",),
+        "Matching symbol definition.",
+        snippet_truncated=True,
+        source_location=CodeLocation("src/module.py", 1, 1_202),
+        scope="anchor",
+    )
+    tool = BuildContextTool(
+        FakeSearchCode((hit,)),  # type: ignore[arg-type]
+        Project("project", "root"),
+        FakeStore(),  # type: ignore[arg-type]
+        FakeReader({"src/module.py": _source("src/module.py", content)}),
+    )
+
+    for _ in range(100):
+        result = tool.execute(
+            BuildContextRequest(
+                "Quais campos Cursor possui?",
+                max_tokens=1_800,
+                max_expansion_depth=0,
+            )
+        )
+        assert result.data.snippets
+        assert result.data.considered_results == (
+            result.data.selected_results + result.data.omitted_results
+        )
 
 
 def test_context_builder_revalidates_seed_immediately_before_selection() -> None:

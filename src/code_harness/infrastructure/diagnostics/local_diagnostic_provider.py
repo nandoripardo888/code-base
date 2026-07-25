@@ -220,6 +220,11 @@ class LocalDiagnosticProvider:
 
 def _nearest_existing_parent(path: Path) -> Path:
     current = path
-    while not current.exists() and current != current.parent:
+    while current != current.parent:
+        try:
+            if current.exists():
+                return current
+        except OSError:
+            return current
         current = current.parent
     return current

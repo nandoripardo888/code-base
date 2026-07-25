@@ -1,11 +1,14 @@
+from collections.abc import Callable
 from typing import Protocol
 
 from code_harness.domain.enums import IndexMode
 from code_harness.domain.models.index_report import (
+    CommitFilesMetrics,
     FileIndexUpdate,
     FtsCandidate,
     IndexReport,
     IndexStatus,
+    PersistenceProgress,
     StoredFile,
 )
 from code_harness.domain.models.project import Project
@@ -22,10 +25,13 @@ class RepositoryStore(Protocol):
 
     def commit_files(
         self,
-        report: IndexReport,
+        project_id: str,
+        indexed_at: str,
         updates: tuple[FileIndexUpdate, ...],
         removed_paths: tuple[str, ...],
-    ) -> None: ...
+        *,
+        progress: Callable[[PersistenceProgress], None] | None = None,
+    ) -> CommitFilesMetrics: ...
 
     def commit_embeddings(self, embeddings: EmbeddingBatch) -> None: ...
 

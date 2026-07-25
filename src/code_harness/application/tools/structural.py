@@ -1,6 +1,8 @@
+import re
 from collections.abc import Callable
 from dataclasses import replace
 from hashlib import sha256
+from pathlib import PurePosixPath
 from time import perf_counter
 
 from code_harness.application.dto.requests import (
@@ -16,11 +18,221 @@ from code_harness.domain.models.capability import StrategyOutcome, ToolWarning
 from code_harness.domain.models.code_location import CodeLocation
 from code_harness.domain.models.index_report import IndexedSource
 from code_harness.domain.models.project import Project
+from code_harness.domain.models.result_truncation import (
+    ResultTruncation,
+    TruncationReason,
+    merge_truncations,
+    truncation,
+)
 from code_harness.domain.models.structural import CodeReference, CodeSymbol, StructuralSearchResult
 from code_harness.domain.models.tool_result import ToolResult, normalize_warnings
 from code_harness.domain.protocols.index_source_reader import IndexSourceReader
 from code_harness.domain.protocols.repository_store import RepositoryStore
 from code_harness.domain.protocols.text_searcher import TextSearcher
+
+_HASH_COMMENT_SUFFIXES = {
+    ".ps1",
+    ".py",
+    ".r",
+    ".rb",
+    ".sh",
+    ".toml",
+    ".yaml",
+    ".yml",
+}
+_DASH_COMMENT_SUFFIXES = {".hs", ".lua", ".pck", ".pkg", ".sql"}
+_C_LINE_COMMENT_SUFFIXES = {
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cs",
+    ".css",
+    ".go",
+    ".h",
+    ".hpp",
+    ".java",
+    ".js",
+    ".jsx",
+    ".kt",
+    ".kts",
+    ".rs",
+    ".scala",
+    ".swift",
+    ".ts",
+    ".tsx",
+}
+_CONFIGURATION_SUFFIXES = {
+    ".cfg",
+    ".conf",
+    ".dtm",
+    ".ini",
+    ".json",
+    ".properties",
+    ".toml",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
+_REFERENCE_KIND_PRIORITY = {
+    "definition": 0,
+    "instantiation": 1,
+    "call": 2,
+    "type_use": 3,
+    "import": 4,
+    "configuration_textual": 5,
+    "unknown_textual": 6,
+    "comment_textual": 7,
+}
+
+
+def _comment_syntax(path: str) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...]]:
+    suffix = PurePosixPath(path).suffix.casefold()
+    if suffix in _C_LINE_COMMENT_SUFFIXES:
+        return ("//",), (("/*", "*/"),)
+    if suffix in _HASH_COMMENT_SUFFIXES:
+        return ("#",), ()
+    if suffix in _DASH_COMMENT_SUFFIXES:
+        return ("--",), (("/*", "*/"),)
+    if suffix in {".html", ".htm", ".xml"}:
+        return (), (("<!--", "-->"),)
+    return (), ()
+
+
+def _comment_mask(path: str, content: str, line_number: int) -> tuple[bool, ...]:
+    lines = content.splitlines()
+    if not 1 <= line_number <= len(lines):
+        return ()
+    line_markers, block_pairs = _comment_syntax(path)
+    block_end: str | None = None
+    requested: tuple[bool, ...] = ()
+    for current_line, line in enumerate(lines, start=1):
+        mask = [False] * len(line)
+        quote: str | None = None
+        escaped = False
+        index = 0
+        while index < len(line):
+            if block_end is not None:
+                end = line.find(block_end, index)
+                if end < 0:
+                    for position in range(index, len(line)):
+                        mask[position] = True
+                    index = len(line)
+                    continue
+                for position in range(index, min(len(line), end + len(block_end))):
+                    mask[position] = True
+                index = end + len(block_end)
+                block_end = None
+                continue
+            if quote is not None:
+                if escaped:
+                    escaped = False
+                elif line[index] == "\\":
+                    escaped = True
+                elif line[index] == quote:
+                    quote = None
+                index += 1
+                continue
+            if line[index] in {"'", '"', "`"}:
+                quote = line[index]
+                index += 1
+                continue
+            marker = next(
+                (value for value in line_markers if line.startswith(value, index)),
+                None,
+            )
+            if marker is not None:
+                for position in range(index, len(line)):
+                    mask[position] = True
+                break
+            pair = next(
+                (value for value in block_pairs if line.startswith(value[0], index)),
+                None,
+            )
+            if pair is not None:
+                block_end = pair[1]
+                continue
+            index += 1
+        if current_line == line_number:
+            requested = tuple(mask)
+            break
+    return requested
+
+
+def _is_confirmed_comment(
+    path: str,
+    source_content: str | None,
+    line_number: int,
+    target: str,
+) -> bool:
+    if not source_content or not target:
+        return False
+    lines = source_content.splitlines()
+    if not 1 <= line_number <= len(lines):
+        return False
+    line = lines[line_number - 1]
+    mask = _comment_mask(path, source_content, line_number)
+    folded = line.casefold()
+    needle = target.casefold()
+    positions: list[int] = []
+    start = 0
+    while True:
+        found = folded.find(needle, start)
+        if found < 0:
+            break
+        positions.append(found)
+        start = found + max(1, len(needle))
+    return bool(positions) and all(
+        position < len(mask) and mask[position] for position in positions
+    )
+
+
+def _classify_lexical_reference(
+    path: str,
+    source_content: str | None,
+    line_number: int,
+    target: str,
+    fallback_content: str,
+) -> str:
+    if _is_confirmed_comment(path, source_content, line_number, target):
+        return "comment_textual"
+    lines = source_content.splitlines() if source_content else fallback_content.splitlines()
+    line = (
+        lines[line_number - 1]
+        if source_content and 1 <= line_number <= len(lines)
+        else fallback_content
+    )
+    code_chars = list(line)
+    quote: str | None = None
+    escaped = False
+    for index, character in enumerate(line):
+        if quote is not None:
+            code_chars[index] = " "
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == quote:
+                quote = None
+            continue
+        if character in {"'", '"', "`"}:
+            quote = character
+            code_chars[index] = " "
+    code_line = "".join(code_chars)
+    escaped_target = re.escape(target)
+    if re.search(rf"(?i)^\s*(?:import|from|using)\b.*\b{escaped_target}\b", code_line):
+        return "import"
+    if re.search(rf"(?i)\bnew\s+{escaped_target}\b", code_line):
+        return "instantiation"
+    if re.search(rf"(?i)\b{escaped_target}\s*\(", code_line):
+        return "call"
+    if re.search(
+        rf"(?i)(?:^|[\s<>,?&|]){escaped_target}(?:\[\])?\s+[A-Za-z_$][\w$]*",
+        code_line,
+    ):
+        return "type_use"
+    if PurePosixPath(path).suffix.casefold() in _CONFIGURATION_SUFFIXES:
+        return "configuration_textual"
+    return "unknown_textual"
 
 
 def _warning_from_error(error: CodeHarnessError, *, message: str | None = None) -> ToolWarning:
@@ -338,6 +550,7 @@ class FindReferencesTool(_StructuralTool):
         status = self._store.get_status(self._project)
         warnings: list[str | ToolWarning] = []
         strategies: list[StrategyOutcome] = []
+        upstream_truncations: list[ResultTruncation] = []
         structural_ready = (
             status.state in (IndexState.READY, IndexState.READY_WITH_WARNINGS)
             and status.structural_schema_ready
@@ -356,7 +569,7 @@ class FindReferencesTool(_StructuralTool):
                     raw = self._store.find_references(
                         self._project.project_id,
                         simple_name,
-                        limit=request.max_results,
+                        limit=request.max_results + 1,
                     )
                     structural_hits, validation_warnings = self._validate(
                         raw, require_target_name=True, include_content=True
@@ -414,22 +627,78 @@ class FindReferencesTool(_StructuralTool):
             lexical_hits: list[StructuralSearchResult] = []
             lexical_started = perf_counter()
             try:
-                lexical = self._lexical_searcher.search(
-                    query=simple_name,
-                    regex=False,
-                    include_globs=request.include_globs,
-                    exclude_globs=request.exclude_globs,
-                    case_sensitive=False,
-                    max_results=request.max_results,
-                    context_lines=0,
-                    timeout_seconds=request.timeout_seconds,
-                )
-                # Lexical searcher may return string warnings; normalize later.
-                warnings.extend(normalize_warnings(lexical.warnings))
+                lexical_limit = min(10_000, max(32, request.max_results + 1))
+                lexical = None
+                source_cache: dict[str, IndexedSource | CodeHarnessError] = {}
+                while True:
+                    lexical = self._lexical_searcher.search(
+                        query=simple_name,
+                        regex=False,
+                        include_globs=request.include_globs,
+                        exclude_globs=request.exclude_globs,
+                        case_sensitive=False,
+                        max_results=lexical_limit,
+                        context_lines=0,
+                        timeout_seconds=request.timeout_seconds,
+                    )
+                    warnings.extend(normalize_warnings(lexical.warnings))
+                    classified_non_comments = 0
+                    for hit in lexical.hits:
+                        path = hit.snippet.location.path
+                        if path not in source_cache:
+                            try:
+                                source_cache[path] = self._reader.load(path)
+                            except CodeHarnessError as error:
+                                source_cache[path] = error
+                        source = source_cache[path]
+                        source_content = (
+                            None if isinstance(source, CodeHarnessError) else source.content
+                        )
+                        kind = _classify_lexical_reference(
+                            path,
+                            source_content,
+                            hit.snippet.location.start_line,
+                            simple_name,
+                            hit.snippet.content,
+                        )
+                        if kind != "comment_textual":
+                            classified_non_comments += 1
+                    if (
+                        not lexical.truncated
+                        or classified_non_comments > request.max_results
+                        or lexical_limit >= 10_000
+                    ):
+                        break
+                    lexical_limit = min(10_000, lexical_limit * 2)
+
+                assert lexical is not None
+                if lexical.truncated:
+                    upstream_truncations.append(
+                        truncation(TruncationReason.CANDIDATE_LIMIT, candidates=True)
+                    )
                 for hit in lexical.hits:
                     location = hit.snippet.location
+                    cached_source = source_cache.get(location.path)
+                    source_content = (
+                        None
+                        if cached_source is None
+                        or isinstance(cached_source, CodeHarnessError)
+                        else cached_source.content
+                    )
+                    kind = _classify_lexical_reference(
+                        location.path,
+                        source_content,
+                        location.start_line,
+                        simple_name,
+                        hit.snippet.content,
+                    )
+                    if kind == "comment_textual" and not request.include_comments:
+                        continue
                     reference_id = sha256(
-                        f"{location.path}\x1f{location.start_line}\x1f{simple_name}".encode()
+                        (
+                            f"{location.path}\x1f{location.start_line}\x1f"
+                            f"{location.start_column}\x1f{simple_name}\x1f{kind}"
+                        ).encode()
                     ).hexdigest()[:32]
                     lexical_hits.append(
                         StructuralSearchResult(
@@ -437,10 +706,18 @@ class FindReferencesTool(_StructuralTool):
                             CodeReference(
                                 reference_id,
                                 simple_name,
-                                "unknown_textual",
+                                kind,
                                 location,
                                 source="lexical",
-                                confidence=0.6,
+                                confidence=(
+                                    0.25
+                                    if kind == "comment_textual"
+                                    else (
+                                        0.45
+                                        if kind == "configuration_textual"
+                                        else 0.65
+                                    )
+                                ),
                                 validated=True,
                                 resolution="name_only",
                             ),
@@ -487,28 +764,47 @@ class FindReferencesTool(_StructuralTool):
                     )
                 )
 
-            combined: list[StructuralSearchResult] = list(structural_hits)
-            seen = {
-                (
-                    item.reference.location.path,
-                    item.reference.location.start_line,
+            lexical_hits.sort(
+                key=lambda item: (
+                    _REFERENCE_KIND_PRIORITY.get(
+                        item.reference.kind if item.reference is not None else "",
+                        6,
+                    ),
+                    item.reference.location.path if item.reference is not None else "",
+                    item.reference.location.start_line if item.reference is not None else 0,
                 )
-                for item in structural_hits
-                if item.reference is not None
-            }
-            for lexical_hit in lexical_hits:
-                assert lexical_hit.reference is not None
+            )
+            ordered_hits = sorted(
+                (*structural_hits, *lexical_hits),
+                key=lambda item: (
+                    item.reference is None or item.reference.source != "structural",
+                    _REFERENCE_KIND_PRIORITY.get(
+                        item.reference.kind if item.reference is not None else "",
+                        6,
+                    ),
+                    item.reference.location.path if item.reference is not None else "",
+                    item.reference.location.start_line if item.reference is not None else 0,
+                    item.reference.location.start_column
+                    if item.reference is not None
+                    and item.reference.location.start_column is not None
+                    else 0,
+                ),
+            )
+            combined: list[StructuralSearchResult] = []
+            seen: set[tuple[str, int, int]] = set()
+            for candidate in ordered_hits:
+                if candidate.reference is None:
+                    continue
                 key = (
-                    lexical_hit.reference.location.path,
-                    lexical_hit.reference.location.start_line,
+                    candidate.reference.location.path,
+                    candidate.reference.location.start_line,
+                    candidate.reference.location.end_line,
                 )
                 if key in seen:
                     continue
                 seen.add(key)
-                combined.append(lexical_hit)
-                if len(combined) >= request.max_results:
-                    break
-            return tuple(combined[: request.max_results])
+                combined.append(candidate)
+            return tuple(combined)
 
         results, elapsed_ms = timed(search)
         if (
@@ -518,10 +814,16 @@ class FindReferencesTool(_StructuralTool):
         ):
             raise _both_unavailable_error(strategies)
 
+        has_extra = len(results) > request.max_results
+        result_truncation = merge_truncations(
+            *upstream_truncations,
+            (truncation(TruncationReason.RESULT_LIMIT, results=True) if has_extra else None),
+        )
         return ToolResult(
-            results,
+            results[: request.max_results],
             elapsed_ms,
-            truncated=len(results) >= request.max_results,
+            truncated=result_truncation is not None,
+            truncation=result_truncation,
             warnings=normalize_warnings(warnings),
             index_state=status.state.value,
             strategies=tuple(strategies),

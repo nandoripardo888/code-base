@@ -48,6 +48,8 @@ class HybridCandidate:
     reason: str
     source_id: str | None = None
     source_name: str | None = None
+    snippet_truncated: bool = False
+    source_location: CodeLocation | None = None
 
 
 @dataclass(slots=True)
@@ -57,6 +59,8 @@ class _Aggregate:
     matched_terms: list[str]
     reasons: list[str]
     fused_score: float
+    snippet_truncated: bool
+    source_location: CodeLocation | None
 
 
 def _normalized(candidate: HybridCandidate) -> float:
@@ -164,9 +168,20 @@ class HybridRanker:
                         list(candidate.matched_terms),
                         [candidate.reason],
                         evidence.contribution,
+                        candidate.snippet_truncated,
+                        candidate.source_location,
                     )
                 )
                 continue
+            if candidate.snippet_truncated:
+                candidate_source = candidate.source_location or candidate.snippet.location
+                aggregate_source = aggregate.source_location or aggregate.snippet.location
+                if aggregate_source.path == candidate_source.path:
+                    aggregate.source_location = _merge_location(
+                        aggregate_source,
+                        candidate_source,
+                    )
+                aggregate.snippet_truncated = True
             aggregate_has_non_path = any(
                 item.match_type is not MatchType.PATH for item in aggregate.evidence
             )
@@ -257,6 +272,8 @@ class HybridRanker:
                     tuple(sorted(chosen.evidence, key=lambda item: item.match_type.value)),
                     tuple(dict.fromkeys(chosen.matched_terms)),
                     self._reason(chosen.evidence),
+                    chosen.snippet_truncated,
+                    chosen.source_location,
                 )
             )
             file_counts[path] = file_counts.get(path, 0) + 1

@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Added compact, budget-aware MCP and CLI JSON/JSONL response profiles, with
+  explicit debug/full modes and safe query-focused hybrid snippets.
 - Added capability statuses, structured warnings, strategy outcomes, and
   recoverable typed errors shared by Python, CLI, and MCP.
 - Made `find_references` structural-first with optional Ripgrep and controlled

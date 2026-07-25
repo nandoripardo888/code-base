@@ -110,6 +110,11 @@ CODE_HARNESS_PROJECT=/work/repository code-harness files list
 ```
 
 Use `--output json`, `jsonl`, `text`, `table`, or `llm` before the subcommand.
+JSON and JSONL use compact projections by default. Select
+`--response-detail minimal|compact|detailed|debug|full` before the subcommand,
+or set `CODE_HARNESS_RESPONSE_DETAIL`. MCP tools expose the same
+`response_detail` override. The four normal profiles limit projected `data` to
+30,000 serialized characters; `full` preserves the rich legacy envelope.
 Use `python -m code_harness` interchangeably with `code-harness`.
 
 Semantic search is disabled by default. Enable it before indexing:
@@ -159,7 +164,12 @@ for item in harness.find_symbol("AgendaService").data:
 for hit in harness.semantic_search("como a agenda funciona").data:
     print(hit.score, hit.snippet.location.path)
 
-for hit in harness.search_code("como AgendaService monta a agenda").data:
+for hit in harness.search_code(
+    "como AgendaService monta a agenda",
+    snippet_mode="match_window",
+    max_snippet_lines=40,
+    max_snippet_chars=6_000,
+).data:
     print(hit.score, [e.match_type for e in hit.evidence])
 
 context = harness.build_context("como a agenda funciona?", max_tokens=12_000).data

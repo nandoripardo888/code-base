@@ -50,21 +50,30 @@ such as `doctor` stay out of the MCP surface.
 
 ## Result envelope
 
-Successful calls return the shared structured payload used by CLI JSON output:
+Successful calls default to `response_detail=compact`, shared with CLI JSON:
 
 ```json
 {
-  "data": {},
-  "elapsed_ms": 12,
-  "truncated": false,
-  "warnings": [],
-  "index_state": "ready",
-  "strategies": []
+  "data": []
 }
 ```
 
-Warnings may be plain strings or structured objects with `code`, `message`,
-`recoverable`, `capability`, and `remediation`. Empty `strategies` are omitted.
+Every tool accepts `response_detail=minimal|compact|detailed|debug|full`.
+An explicit value overrides `CODE_HARNESS_RESPONSE_DETAIL`; the fallback is
+`compact`.
+
+- `minimal` returns only the essential tool data.
+- `compact` adds useful locations, types, scores, and truncation markers.
+- `detailed` adds consumer-facing metadata without internal IDs or hashes.
+- `debug` adds a `diagnostics` object with timings, index state, strategies,
+  evidence, and other internal metadata.
+- `full` returns the rich legacy envelope.
+
+The four normal profiles limit the serialized `data` section to 30,000
+characters. If the adapter removes tail items or clips a single read, it adds
+`truncated: true` and `omitted_results`. `full` bypasses this aggregate budget.
+Warnings may be structured objects with `code`, `message`, `recoverable`,
+`capability`, and `remediation`; non-empty warnings are always preserved.
 
 Typed failures return:
 
@@ -92,6 +101,11 @@ Recoverable capability errors such as `ripgrep_unavailable` and
   bodies (`include_content=false`, `response_format=compact`).
 - `list_files` returns a paginated page (`items`, `next_cursor`, …).
 - `read_file` / `read_range` return `SourceRead` with truncation metadata.
+- Numbered compact reads return `lines` without duplicating the same source in
+  `content`; `full` retains the legacy representation.
+- `search_code` defaults to query-focused snippets of at most 40 lines and
+  6,000 characters. These limits apply in every response profile, including
+  `full`, and can be increased explicitly with the search parameters.
 - `get_repository_map` defaults to `mode=summary` (no symbols); use `detailed`
   for symbol enrichment.
 - `get_index_status` exposes `capabilities`, `index_state`, and `service_state`.

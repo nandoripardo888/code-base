@@ -31,6 +31,7 @@ from code_harness.domain.errors import CodeHarnessError, InvalidQueryError
 from code_harness.interfaces.cli.execution_commands import execution_app
 from code_harness.interfaces.cli.renderers import OutputFormat, render_error, render_value
 from code_harness.interfaces.cli.renderers.progress import IndexProgressPrinter
+from code_harness.interfaces.response_projection import ResponseDetail, resolve_response_detail
 from code_harness.version import __version__
 
 app = typer.Typer(
@@ -55,6 +56,7 @@ app.add_typer(execution_app, name="execution")
 class CliState:
     project: Path | None
     output: OutputFormat
+    response_detail: ResponseDetail
     _container: ApplicationContainer | None = None
 
     def container(self) -> ApplicationContainer:
@@ -108,7 +110,7 @@ def _execute(state: CliState, operation: Any) -> None:
     except CodeHarnessError as error:
         render_error(error, state.output)
         raise typer.Exit(_exit_code(error)) from error
-    render_value(result, state.output)
+    render_value(result, state.output, state.response_detail)
 
 
 @app.callback()
@@ -122,6 +124,14 @@ def root_options(
         OutputFormat,
         typer.Option("--output", "-o", case_sensitive=False, help="Output renderer."),
     ] = OutputFormat.TEXT,
+    response_detail: Annotated[
+        ResponseDetail | None,
+        typer.Option(
+            "--response-detail",
+            case_sensitive=False,
+            help="Detail level for JSON and JSONL output.",
+        ),
+    ] = None,
     version: Annotated[
         bool,
         typer.Option("--version", is_eager=True, help="Show the installed version and exit."),
@@ -136,7 +146,11 @@ def root_options(
     if version:
         typer.echo(__version__)
         raise typer.Exit()
-    state = CliState(project, output)
+    try:
+        selected_detail = resolve_response_detail(response_detail)
+    except ValueError as error:
+        raise typer.BadParameter(str(error), param_hint="--response-detail") from error
+    state = CliState(project, output, selected_detail)
     ctx.obj = state
     ctx.call_on_close(state.shutdown)
 
@@ -370,16 +384,25 @@ def search_hybrid(
     max_results: Annotated[int, typer.Option("--max-results", min=1)] = 50,
     context_lines: Annotated[int, typer.Option("--context-lines", min=0)] = 2,
     timeout_seconds: Annotated[float, typer.Option("--timeout-seconds", min=0.1)] = 10.0,
+    snippet_mode: Annotated[
+        str,
+        typer.Option("--snippet-mode", help="match_window, symbol, or none."),
+    ] = "match_window",
+    max_snippet_lines: Annotated[int, typer.Option("--max-snippet-lines", min=1)] = 40,
+    max_snippet_chars: Annotated[int, typer.Option("--max-snippet-chars", min=1)] = 6_000,
 ) -> None:
     state: CliState = ctx.obj
     request = SearchCodeRequest(
-        query,
-        tuple(include or ()),
-        tuple(exclude or ()),
-        tuple(language or ()),
-        max_results,
-        context_lines,
-        timeout_seconds,
+        query=query,
+        include_globs=tuple(include or ()),
+        exclude_globs=tuple(exclude or ()),
+        languages=tuple(language or ()),
+        max_results=max_results,
+        context_lines=context_lines,
+        timeout_seconds=timeout_seconds,
+        snippet_mode=snippet_mode,
+        max_snippet_lines=max_snippet_lines,
+        max_snippet_chars=max_snippet_chars,
     )
     _execute(state, lambda: state.container().search_code.execute(request))
 

@@ -85,9 +85,23 @@ def test_mcp_handlers_match_application_tool_payloads(fixture_repository: Path) 
     read_request = ReadFileRequest("src/agenda.py")
     search_request = SearchTextRequest("AgendaService")
 
-    listed = _payload(asyncio.run(server.call_tool("list_files", {})))
-    read = _payload(asyncio.run(server.call_tool("read_file", {"path": "src/agenda.py"})))
-    searched = _payload(asyncio.run(server.call_tool("search_text", {"query": "AgendaService"})))
+    listed = _payload(asyncio.run(server.call_tool("list_files", {"response_detail": "full"})))
+    read = _payload(
+        asyncio.run(
+            server.call_tool(
+                "read_file",
+                {"path": "src/agenda.py", "response_detail": "full"},
+            )
+        )
+    )
+    searched = _payload(
+        asyncio.run(
+            server.call_tool(
+                "search_text",
+                {"query": "AgendaService", "response_detail": "full"},
+            )
+        )
+    )
 
     assert _without_timing(listed) == _without_timing(
         to_primitive(container.list_files.execute(list_request))
@@ -104,6 +118,39 @@ def test_mcp_handlers_match_application_tool_payloads(fixture_repository: Path) 
     }
     assert mcp_search["warnings"] == application_search["warnings"]
     assert any(item["path"] == "src/agenda.py" for item in listed["data"]["items"])
+
+
+def test_mcp_defaults_to_compact_projection(fixture_repository: Path) -> None:
+    server = create_server(fixture_repository)
+
+    searched = _payload(asyncio.run(server.call_tool("search_text", {"query": "AgendaService"})))
+
+    assert searched["data"]
+    assert "path" in searched["data"][0]
+    assert "snippet" not in searched["data"][0]
+    assert "file_hash" not in json.dumps(searched)
+    assert "elapsed_ms" not in searched
+
+
+def test_mcp_numbered_read_avoids_duplicate_content(fixture_repository: Path) -> None:
+    server = create_server(fixture_repository)
+
+    read = _payload(
+        asyncio.run(
+            server.call_tool(
+                "read_range",
+                {
+                    "path": "src/agenda.py",
+                    "start_line": 1,
+                    "end_line": 3,
+                    "include_line_numbers": True,
+                },
+            )
+        )
+    )
+
+    assert read["data"]["lines"]
+    assert "content" not in read["data"]
 
 
 def test_mcp_handlers_map_typed_errors(fixture_repository: Path) -> None:
@@ -126,6 +173,9 @@ def test_mcp_handlers_map_invalid_query_errors(fixture_repository: Path) -> None
 def test_mcp_server_exposes_implemented_tool_parameters(fixture_repository: Path) -> None:
     server = create_server(fixture_repository)
     tools = {tool.name: tool for tool in asyncio.run(server.list_tools())}
+
+    for tool_name in EXPECTED_TOOLS:
+        assert "response_detail" in tools[tool_name].inputSchema.get("properties", {})
 
     list_props = set(tools["list_files"].inputSchema.get("properties", {}))
     assert {"cursor", "sort", "sort_direction", "include_total_count"} <= list_props
@@ -162,6 +212,11 @@ def test_mcp_server_exposes_implemented_tool_parameters(fixture_repository: Path
 
     assert "include_line_numbers" in tools["read_file"].inputSchema.get("properties", {})
     assert "include_line_numbers" in tools["read_range"].inputSchema.get("properties", {})
+    assert {
+        "snippet_mode",
+        "max_snippet_lines",
+        "max_snippet_chars",
+    } <= set(tools["search_code"].inputSchema.get("properties", {}))
 
 
 def test_settings_reads_mcp_expose_index_flag(

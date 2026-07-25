@@ -32,7 +32,8 @@ def create_server(project: Path | str | None = None) -> FastMCP:
         "code-harness",
         instructions=(
             "Local-first, traceable code retrieval for the active project. "
-            "Tools return structured JSON envelopes with data, timings, and warnings."
+            "Tools return compact structured JSON by default. Use response_detail="
+            "minimal|compact|detailed|debug|full to control machine-readable output."
         ),
         lifespan=lifespan,
     )

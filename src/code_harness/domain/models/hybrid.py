@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from code_harness.domain.enums import MatchType, QueryKind
 from code_harness.domain.models.code_chunk import CodeSnippet
+from code_harness.domain.models.code_location import CodeLocation
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,3 +32,5 @@ class HybridSearchHit:
     evidence: tuple[SearchEvidence, ...]
     matched_terms: tuple[str, ...]
     reason: str
+    snippet_truncated: bool = False
+    source_location: CodeLocation | None = None

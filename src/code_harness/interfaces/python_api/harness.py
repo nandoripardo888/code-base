@@ -308,16 +308,22 @@ class CodeHarness:
         max_results: int = 50,
         context_lines: int = 2,
         timeout_seconds: float = 10.0,
+        snippet_mode: str = "match_window",
+        max_snippet_lines: int = 40,
+        max_snippet_chars: int = 6_000,
     ) -> ToolResult[tuple[HybridSearchHit, ...]]:
         return self._container.search_code.execute(
             SearchCodeRequest(
-                query,
-                include_globs,
-                exclude_globs,
-                languages,
-                max_results,
-                context_lines,
-                timeout_seconds,
+                query=query,
+                include_globs=include_globs,
+                exclude_globs=exclude_globs,
+                languages=languages,
+                max_results=max_results,
+                context_lines=context_lines,
+                timeout_seconds=timeout_seconds,
+                snippet_mode=snippet_mode,
+                max_snippet_lines=max_snippet_lines,
+                max_snippet_chars=max_snippet_chars,
             )
         )
 

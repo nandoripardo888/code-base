@@ -49,6 +49,8 @@ context:
 mcp:
   expose_index_commands: false
   expose_execution: false
+  # Machine output: CODE_HARNESS_RESPONSE_DETAIL=compact (default).
+  # Normal projections cap serialized data at 30000 characters.
 
 execution:
   enabled: false

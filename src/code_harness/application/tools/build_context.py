@@ -41,6 +41,7 @@ class _PendingSnippet:
     depth: int
     reason: str
     source_match_types: tuple[MatchType, ...]
+    snippet_truncated: bool = False
 
 
 def _header(item: _PendingSnippet) -> str:
@@ -168,6 +169,7 @@ class BuildContextTool:
             0,
             hit.reason,
             match_types,
+            hit.snippet_truncated,
         )
 
     def _expand(
@@ -394,7 +396,9 @@ class BuildContextTool:
             )
             estimate = estimate_tokens(_header(focused) + focused.snippet.content)
             selected_item = focused
-            truncated = False
+            truncated = item.snippet_truncated
+            if truncated:
+                flags["snippet_truncated"] = True
             if estimate > remaining:
                 clipped = self._clip(focused, remaining)
                 if clipped is None:

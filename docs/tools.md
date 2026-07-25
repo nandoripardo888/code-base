@@ -58,7 +58,22 @@ parser supervisor version 3 cover the signature fields.
 `read_file` and `read_range` return `SourceRead` with the snippet plus
 `TruncationInfo` (`truncated`, `reason`, `next_start_line`, character/line
 limits). Truncation prefers line boundaries. `include_line_numbers` controls
-prefixed line numbers in the returned text.
+prefixed line numbers in the returned text. Compact machine projections return
+either `content` or `lines`, never both; `response_detail=full` preserves the
+legacy rich representation.
+
+### Machine-readable response detail
+
+MCP and CLI JSON/JSONL default to `response_detail=compact`. All MCP tools
+accept `minimal|compact|detailed|debug|full`; the CLI exposes the same values
+through the root `--response-detail` option. An explicit argument overrides
+`CODE_HARNESS_RESPONSE_DETAIL`, whose fallback is `compact`.
+
+The four normal profiles omit empty/internal metadata and keep projected
+`data` within 30,000 serialized characters. `debug` places timings, index state,
+strategies, and ranking evidence under diagnostics. `full` returns the rich
+legacy structure without the aggregate response budget. Typed errors and
+non-empty warnings are never hidden.
 
 ### References and regex
 
@@ -93,6 +108,12 @@ are fused deterministically and results are diversified by file and directory.
 `search_code` may expand camelCase / snake_case terms for conceptual and mixed
 queries. Expansion is lexical only (no translation). Match evidence includes
 precise match types and character spans where available.
+
+Hybrid snippets default to `snippet_mode=match_window`, with limits of 40 lines
+and 6,000 characters per result. Oversized candidates choose the deterministic
+window covering the most query terms; if none occur, the declaration/start of
+the symbol is returned. `symbol` and `none` are also supported. `symbol`
+remains bounded unless its limits are explicitly increased.
 
 `build_context` expands only known symbol parents and direct references. Its
 token count is a conservative local estimate (`ceil(UTF-8 bytes / 3)`), not a

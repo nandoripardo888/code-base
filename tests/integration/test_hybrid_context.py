@@ -127,6 +127,35 @@ def test_hybrid_search_applies_file_and_language_filters(copied_repository: Path
     assert all(hit.snippet.language == "python" for hit in result.data)
 
 
+def test_hybrid_search_bounds_large_structural_symbols(copied_repository: Path) -> None:
+    source = copied_repository / "src" / "LargeType.java"
+    lines = ["public class LargeType {\n"]
+    lines.extend(f"    private int filler{index};\n" for index in range(1, 1_202))
+    lines[899] = '    private String universalNeedle = "universalNeedle";\n'
+    lines[900] = "    public void universalNeedleHandler() {}\n"
+    lines.append("}\n")
+    source.write_text("".join(lines), encoding="utf-8")
+    harness = CodeHarness.open(copied_repository)
+    harness.index_project()
+
+    result = harness.search_code(
+        "LargeType universalNeedle",
+        include_globs=("src/LargeType.java",),
+        max_results=5,
+    )
+
+    assert result.data
+    assert any("universalNeedle" in hit.snippet.content for hit in result.data)
+    assert all(len(hit.snippet.content) <= 6_000 for hit in result.data)
+    assert all(
+        hit.snippet.location.end_line - hit.snippet.location.start_line + 1 <= 40
+        for hit in result.data
+    )
+    truncated = next(hit for hit in result.data if hit.snippet_truncated)
+    assert truncated.source_location is not None
+    assert truncated.source_location.end_line >= 1_200
+
+
 def test_cli_exposes_hybrid_context_and_map(copied_repository: Path) -> None:
     runner = CliRunner()
     project = str(copied_repository)

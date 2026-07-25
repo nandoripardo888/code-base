@@ -92,6 +92,9 @@ class SearchCodeRequest:
     max_results: int = 50
     context_lines: int = 2
     timeout_seconds: float = 10.0
+    snippet_mode: str = "match_window"
+    max_snippet_lines: int = 40
+    max_snippet_chars: int = 6_000
 
     def __post_init__(self) -> None:
         if not self.query.strip():
@@ -100,6 +103,10 @@ class SearchCodeRequest:
         _require_positive("timeout_seconds", self.timeout_seconds)
         if self.context_lines < 0:
             raise ValueError("context_lines must be zero or greater")
+        if self.snippet_mode not in {"match_window", "symbol", "none"}:
+            raise ValueError("snippet_mode must be one of: match_window, symbol, none")
+        _require_positive("max_snippet_lines", self.max_snippet_lines)
+        _require_positive("max_snippet_chars", self.max_snippet_chars)
 
 
 @dataclass(frozen=True, slots=True)

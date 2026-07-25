@@ -40,6 +40,177 @@ def _matches_globs(path: str, includes: tuple[str, ...], excludes: tuple[str, ..
     return not any(fnmatchcase(path, pattern) for pattern in excludes)
 
 
+def _search_terms(
+    request: SearchCodeRequest,
+    classification: QueryClassification,
+) -> tuple[str, ...]:
+    values = (
+        *classification.lexical_terms,
+        *classification.identifiers,
+        *request.query.split(),
+    )
+    return tuple(dict.fromkeys(value.strip().casefold() for value in values if value.strip()))
+
+
+def _text_score(text: str, terms: tuple[str, ...]) -> tuple[int, int]:
+    folded = text.casefold()
+    counts = tuple(folded.count(term) for term in terms)
+    return sum(count > 0 for count in counts), sum(counts)
+
+
+def _best_line_window(
+    lines: list[str],
+    start_line: int,
+    end_line: int,
+    *,
+    terms: tuple[str, ...],
+    max_lines: int,
+) -> tuple[int, int]:
+    if end_line - start_line + 1 <= max_lines:
+        return start_line, end_line
+    latest_start = end_line - max_lines + 1
+    candidate_starts = {start_line}
+    radius = max_lines // 2
+    for line_number in range(start_line, end_line + 1):
+        if _text_score(lines[line_number - 1], terms) == (0, 0):
+            continue
+        candidate_starts.add(min(latest_start, max(start_line, line_number - radius)))
+    best_start = max(
+        (
+            (
+                *_text_score("".join(lines[value - 1 : value - 1 + max_lines]), terms),
+                -value,
+                value,
+            )
+            for value in candidate_starts
+        ),
+    )[-1]
+    return best_start, best_start + max_lines - 1
+
+
+def _long_line_slice(line: str, terms: tuple[str, ...], max_chars: int) -> str:
+    folded = line.casefold()
+    positions = [folded.find(term) for term in terms if term and folded.find(term) >= 0]
+    if not positions:
+        return line[:max_chars]
+    offset = max(0, min(positions) - max_chars // 2)
+    return line[offset : offset + max_chars]
+
+
+def _best_char_window(
+    lines: list[str],
+    start_line: int,
+    end_line: int,
+    *,
+    terms: tuple[str, ...],
+    max_chars: int,
+) -> tuple[str, int, int, bool]:
+    selected = "".join(lines[start_line - 1 : end_line])
+    if len(selected) <= max_chars:
+        return selected, start_line, end_line, False
+
+    candidates: list[tuple[int, int, int, int, str, int, int]] = []
+    for candidate_start in range(start_line, end_line + 1):
+        parts: list[str] = []
+        size = 0
+        candidate_end = candidate_start
+        for line_number in range(candidate_start, end_line + 1):
+            line = lines[line_number - 1]
+            if len(line) > max_chars and not parts:
+                part = _long_line_slice(line, terms, max_chars)
+                distinct, occurrences = _text_score(part, terms)
+                candidates.append(
+                    (
+                        distinct,
+                        occurrences,
+                        -candidate_start,
+                        len(part),
+                        part,
+                        candidate_start,
+                        candidate_start,
+                    )
+                )
+                break
+            if size + len(line) > max_chars:
+                break
+            parts.append(line)
+            size += len(line)
+            candidate_end = line_number
+        if parts:
+            content = "".join(parts)
+            distinct, occurrences = _text_score(content, terms)
+            candidates.append(
+                (
+                    distinct,
+                    occurrences,
+                    -candidate_start,
+                    len(content),
+                    content,
+                    candidate_start,
+                    candidate_end,
+                )
+            )
+    best = max(candidates, key=lambda item: item[:4])
+    return best[4], best[5], best[6], True
+
+
+def _bounded_snippet(
+    source: IndexedSource,
+    location: CodeLocation,
+    request: SearchCodeRequest,
+    classification: QueryClassification,
+) -> tuple[CodeSnippet, bool, CodeLocation | None]:
+    lines = source.content.splitlines(keepends=True)
+    if not lines:
+        location = CodeLocation(location.path, 1, 1)
+        return (
+            CodeSnippet(location, "", source.language, source.content_hash),
+            False,
+            None,
+        )
+    total_lines = max(1, len(lines))
+    start_line = min(location.start_line, total_lines)
+    end_line = min(location.end_line, total_lines)
+    original = CodeLocation(location.path, start_line, end_line)
+    if request.snippet_mode == "none":
+        return (
+            CodeSnippet(original, "", source.language, source.content_hash),
+            False,
+            None,
+        )
+
+    terms = _search_terms(request, classification)
+    if request.snippet_mode == "symbol":
+        window_start = start_line
+        window_end = min(end_line, start_line + request.max_snippet_lines - 1)
+    else:
+        window_start, window_end = _best_line_window(
+            lines,
+            start_line,
+            end_line,
+            terms=terms,
+            max_lines=request.max_snippet_lines,
+        )
+    content, actual_start, actual_end, char_truncated = _best_char_window(
+        lines,
+        window_start,
+        window_end,
+        terms=terms,
+        max_chars=request.max_snippet_chars,
+    )
+    truncated = window_start != start_line or window_end != end_line or char_truncated
+    return (
+        CodeSnippet(
+            CodeLocation(location.path, actual_start, actual_end),
+            content,
+            source.language,
+            source.content_hash,
+        ),
+        truncated,
+        original if truncated else None,
+    )
+
+
 class SearchCodeTool:
     def __init__(
         self,
@@ -135,7 +306,11 @@ class SearchCodeTool:
             }
             strategies.sort(key=lambda item: order.get(item.strategy, 99))
 
-            valid, validation_warnings = self._validate_candidates(request, candidates)
+            valid, validation_warnings = self._validate_candidates(
+                request,
+                classification,
+                candidates,
+            )
             warnings.extend(validation_warnings)
             ranked = self._ranker.rank(
                 request.query,
@@ -143,7 +318,11 @@ class SearchCodeTool:
                 valid,
                 max_results=request.max_results,
             )
-            materialized, materialization_warnings = self._materialize(ranked)
+            materialized, materialization_warnings = self._materialize(
+                ranked,
+                request,
+                classification,
+            )
             warnings.extend(materialization_warnings)
             return (
                 materialized,
@@ -437,6 +616,7 @@ class SearchCodeTool:
     def _validate_candidates(
         self,
         request: SearchCodeRequest,
+        classification: QueryClassification,
         candidates: list[HybridCandidate],
     ) -> tuple[tuple[HybridCandidate, ...], tuple[ToolWarning, ...]]:
         sources: dict[str, IndexedSource | CodeHarnessError] = {}
@@ -474,20 +654,27 @@ class SearchCodeTool:
                     )
                 )
                 continue
-            lines = source.content.splitlines(keepends=True)
-            end_line = min(location.end_line, max(1, len(lines)))
-            snippet = CodeSnippet(
-                CodeLocation(location.path, location.start_line, end_line),
-                "".join(lines[location.start_line - 1 : end_line]),
-                source.language,
-                source.content_hash,
+            snippet, snippet_truncated, source_location = _bounded_snippet(
+                source,
+                location,
+                request,
+                classification,
             )
-            valid.append(replace(candidate, snippet=snippet))
+            valid.append(
+                replace(
+                    candidate,
+                    snippet=snippet,
+                    snippet_truncated=snippet_truncated,
+                    source_location=source_location,
+                )
+            )
         return tuple(valid), normalize_warnings(warnings)
 
     def _materialize(
         self,
         hits: tuple[HybridSearchHit, ...],
+        request: SearchCodeRequest,
+        classification: QueryClassification,
     ) -> tuple[tuple[HybridSearchHit, ...], tuple[ToolWarning, ...]]:
         sources: dict[str, IndexedSource | CodeHarnessError] = {}
         materialized: list[HybridSearchHit] = []
@@ -519,13 +706,21 @@ class SearchCodeTool:
                     )
                 )
                 continue
-            lines = source.content.splitlines(keepends=True)
-            end_line = min(location.end_line, max(1, len(lines)))
-            snippet = CodeSnippet(
-                CodeLocation(location.path, location.start_line, end_line),
-                "".join(lines[location.start_line - 1 : end_line]),
-                source.language,
-                source.content_hash,
+            snippet, snippet_truncated, source_location = _bounded_snippet(
+                source,
+                location,
+                request,
+                classification,
             )
-            materialized.append(replace(hit, snippet=snippet))
+            if hit.source_location is not None:
+                source_location = hit.source_location
+                snippet_truncated = True
+            materialized.append(
+                replace(
+                    hit,
+                    snippet=snippet,
+                    snippet_truncated=hit.snippet_truncated or snippet_truncated,
+                    source_location=source_location,
+                )
+            )
         return tuple(materialized), normalize_warnings(warnings)

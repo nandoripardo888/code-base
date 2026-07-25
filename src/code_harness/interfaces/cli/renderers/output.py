@@ -17,6 +17,12 @@ from code_harness.domain.models.search_hit import SearchHit
 from code_harness.domain.models.source_file import SourceFile
 from code_harness.domain.models.structural import StructuralSearchResult
 from code_harness.domain.models.tool_result import ToolResult
+from code_harness.interfaces.response_projection import (
+    ResponseDetail,
+    project_value,
+    resolve_response_detail,
+    serialize_projected_result,
+)
 from code_harness.interfaces.serialization import serialize_error, to_primitive
 
 __all__ = ["OutputFormat", "render_error", "render_value", "to_primitive"]
@@ -154,15 +160,30 @@ def _render_directory(directory: RepositoryDirectory, prefix: str = "") -> list[
     return lines
 
 
-def render_value(value: Any, output: OutputFormat) -> None:
+def render_value(
+    value: Any,
+    output: OutputFormat,
+    response_detail: ResponseDetail | str | None = None,
+) -> None:
     if output is OutputFormat.JSON:
-        _echo(_json(to_primitive(value), indent=2))
+        detail = resolve_response_detail(response_detail)
+        projected = (
+            serialize_projected_result(value, detail)
+            if isinstance(value, ToolResult)
+            else project_value(value, detail)
+        )
+        _echo(_json(projected, indent=2))
         return
     data = value.data if isinstance(value, ToolResult) else value
     if output is OutputFormat.JSONL:
-        items = data if isinstance(data, tuple) else (data,)
+        detail = resolve_response_detail(response_detail)
+        if isinstance(value, ToolResult):
+            data = serialize_projected_result(value, detail)["data"]
+        else:
+            data = project_value(data, detail)
+        items = data if isinstance(data, list) else (data,)
         for item in items:
-            _echo(_json(to_primitive(item)))
+            _echo(_json(item))
         return
     if isinstance(data, tuple):
         _echo("\n\n".join(_render_item(item) for item in data))

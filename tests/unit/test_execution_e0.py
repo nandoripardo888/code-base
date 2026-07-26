@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -44,6 +45,7 @@ def _config(tmp_path: Path, **overrides: object) -> ExecutionRuntimeConfig:
         "default_timeout_seconds": 60.0,
         "max_timeout_seconds": 1800.0,
         "max_output_bytes": 200_000,
+        "max_processes": 32,
         "allow_elevated": False,
         "execution_home": str(tmp_path / "executions" / "proj"),
         "project_id": "proj",
@@ -75,6 +77,7 @@ def test_execution_disabled_by_default(tmp_path: Path) -> None:
     assert settings.mcp_expose_execution is False
     assert settings.execution_backend == "host_supervised"
     assert settings.execution_require_approval is True
+    assert settings.execution_approval_ttl_seconds == 600
     assert settings.execution_allow_elevated is False
     assert (
         settings.execution_home.name == "executions"
@@ -94,6 +97,7 @@ def test_settings_reads_execution_environment(
     monkeypatch.setenv("CODE_HARNESS_EXECUTION_DEFAULT_TIMEOUT_SECONDS", "30")
     monkeypatch.setenv("CODE_HARNESS_EXECUTION_MAX_TIMEOUT_SECONDS", "90")
     monkeypatch.setenv("CODE_HARNESS_EXECUTION_MAX_OUTPUT_BYTES", "1000")
+    monkeypatch.setenv("CODE_HARNESS_EXECUTION_APPROVAL_TTL_SECONDS", "120")
     monkeypatch.setenv("CODE_HARNESS_EXECUTION_ALLOW_ELEVATED", "true")
     monkeypatch.setenv("CODE_HARNESS_EXECUTION_HOME", str(home))
 
@@ -104,6 +108,7 @@ def test_settings_reads_execution_environment(
     assert settings.execution_default_timeout_seconds == 30.0
     assert settings.execution_max_timeout_seconds == 90.0
     assert settings.execution_max_output_bytes == 1000
+    assert settings.execution_approval_ttl_seconds == 120
     assert settings.execution_allow_elevated is True
     assert settings.execution_home == home.resolve()
     assert settings.execution_project_home() == home.resolve() / settings.project.project_id
@@ -662,8 +667,8 @@ def test_inspection_reports_e0_backend_guarantees(
 
     guarantees = result.data.backend_guarantees
     assert guarantees.backend == "host_supervised"
-    assert guarantees.execution_available is False
-    assert guarantees.process_tree_containment is False
+    assert guarantees.execution_available is (os.name == "nt")
+    assert guarantees.process_tree_containment is (os.name == "nt")
     assert guarantees.filesystem_isolated is False
 
 

@@ -20,7 +20,7 @@ approved commands may run on the host, while retrieval remains unchanged.
 - `host_supervised` declares its current guarantees in every inspection. In
   E0 it applies no execution guarantees because no runner exists; it is not a
   sandbox and must not be named or marketed as one.
-- Approval state and future audit storage belong under
+- Approval state and audit storage belong under
   `<CODE_HARNESS_HOME>/executions/<project_id>/`, never under
   `<project>/.code-harness/`.
 - MCP must not expose approval tools. E0 does not register any execution MCP

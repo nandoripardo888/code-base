@@ -63,7 +63,10 @@ execution:
   default_timeout_seconds: 60
   max_timeout_seconds: 1800
   max_output_bytes: 200000
+  max_processes: 32
+  approval_ttl_seconds: 600
   allow_elevated: false
   # State directory outside the project workspace:
   # home: ${CODE_HARNESS_HOME}/executions
+  # audit database: <home>/<project_id>/execution.db
   home: null

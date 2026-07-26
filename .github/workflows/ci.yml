@@ -79,3 +79,19 @@ jobs:
         run: python -m pip install -c constraints/semantic.txt -e ".[semantic]"
       - name: Run real semantic smoke test
         run: python scripts/semantic_smoke.py
+
+  execution-e1:
+    name: E1 Windows Job Object
+    runs-on: [self-hosted, Windows, execution-e1]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package
+        run: python -m pip install -e ".[dev,execution]"
+      - name: Run E1 integration tests
+        env:
+          CODE_HARNESS_EXECUTION: "1"
+          CODE_HARNESS_RUN_WINDOWS_E1: "1"
+        run: pytest tests/integration/test_execution_e1.py

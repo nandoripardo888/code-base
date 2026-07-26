@@ -1,9 +1,11 @@
 from dataclasses import dataclass, field
 
 from code_harness.domain.enums import (
+    ApprovalState,
     CommandKind,
     ExecutionCapability,
     ExecutionRiskSeverity,
+    ExecutionState,
     PolicyDecision,
 )
 
@@ -66,6 +68,7 @@ class ExecutionRuntimeConfig:
     default_timeout_seconds: float
     max_timeout_seconds: float
     max_output_bytes: int
+    max_processes: int
     allow_elevated: bool
     execution_home: str
     project_id: str
@@ -84,6 +87,7 @@ class ExecutionRuntimeConfig:
     powershell_executable: str = "pwsh"
     policy_name: str = "deterministic_v1"
     policy_version: str = "1"
+    approval_ttl_seconds: int = 600
     elevated_session: bool = False
 
 
@@ -96,6 +100,7 @@ class NormalizedProcessCommand:
     max_output_bytes: int
     requested_capabilities: tuple[ExecutionCapability, ...]
     reason: str | None
+    resolved_executable: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +140,7 @@ class CommandInspection:
         )
     )
     executable: str | None = None
+    resolved_executable: str | None = None
     args: tuple[str, ...] = ()
     script_hash: str | None = None
     dynamic_features: tuple[str, ...] = ()
@@ -142,4 +148,80 @@ class CommandInspection:
     backend: str = "host_supervised"
     policy_name: str = "deterministic_v1"
     policy_version: str = "1"
+    ruleset_hash: str = ""
     warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessRunOutcome:
+    exit_code: int | None
+    stdout: str
+    stderr: str
+    stdout_bytes: int
+    stderr_bytes: int
+    stdout_truncated: bool
+    stderr_truncated: bool
+    timed_out: bool
+    elapsed_ms: int
+    stdout_sha256: str | None = None
+    stderr_sha256: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionResult:
+    """Result of a synchronous supervised process run."""
+
+    execution_id: str
+    state: ExecutionState
+    inspection: CommandInspection
+    backend_guarantees: BackendGuarantees
+    exit_code: int | None
+    stdout: str
+    stderr: str
+    stdout_bytes: int
+    stderr_bytes: int
+    stdout_truncated: bool
+    stderr_truncated: bool
+    elapsed_ms: int
+    started_at: str | None = None
+    finished_at: str | None = None
+    warnings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionApproval:
+    approval_id: str
+    project_id: str
+    digest: str
+    state: ApprovalState
+    command_kind: CommandKind
+    command_summary: str
+    required_capabilities: tuple[ExecutionCapability, ...]
+    backend: str
+    policy_name: str
+    policy_version: str
+    ruleset_hash: str
+    created_at: str
+    expires_at: str
+    decided_at: str | None = None
+    consumed_at: str | None = None
+    decision_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionAuditStart:
+    execution_id: str
+    project_id: str
+    digest: str | None
+    state: ExecutionState
+    command_kind: CommandKind
+    command_summary: str
+    requested_capabilities: tuple[ExecutionCapability, ...]
+    required_capabilities: tuple[ExecutionCapability, ...]
+    backend: str
+    backend_guarantees_json: str
+    policy_decision: PolicyDecision
+    policy_name: str
+    policy_version: str
+    ruleset_hash: str
+    created_at: str

@@ -108,3 +108,22 @@ def test_bootstrap_execution_avoids_process_host_apis() -> None:
     top_levels = {name.split(".", 1)[0] for name in imported}
     assert "subprocess" not in top_levels
     assert "ctypes" not in top_levels
+
+
+def test_execution_approval_is_not_exposed_by_mcp() -> None:
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in Path("src/code_harness/interfaces/mcp").rglob("*.py")
+    ).casefold()
+    assert "approve_execution" not in source
+    assert "deny_execution" not in source
+    assert "execution approvals" not in source
+
+
+def test_index_schema_does_not_contain_execution_tables() -> None:
+    source = Path("src/code_harness/infrastructure/persistence/schema.py").read_text(
+        encoding="utf-8"
+    )
+    assert "approval_requests" not in source
+    assert "execution_events" not in source
+    assert "execution_capabilities" not in source

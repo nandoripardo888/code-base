@@ -7,7 +7,11 @@ from code_harness.domain.models.execution import (
     NormalizedProcessCommand,
 )
 from code_harness.domain.models.tool_result import ToolResult
-from code_harness.domain.protocols.command_policy import CommandPolicy, WorkspacePathResolver
+from code_harness.domain.protocols.command_policy import (
+    CommandPolicy,
+    ProcessExecutableResolver,
+    WorkspacePathResolver,
+)
 
 
 class InspectProcessTool:
@@ -17,10 +21,12 @@ class InspectProcessTool:
         paths: WorkspacePathResolver,
         policy: CommandPolicy,
         config: ExecutionRuntimeConfig,
+        executable_resolver: ProcessExecutableResolver | None = None,
     ) -> None:
         self._paths = paths
         self._policy = policy
         self._config = config
+        self._executable_resolver = executable_resolver
 
     def execute(self, request: InspectProcessRequest) -> ToolResult[CommandInspection]:
         def inspect() -> CommandInspection:
@@ -47,14 +53,21 @@ class InspectProcessTool:
                 if request.max_output_bytes is not None
                 else self._config.max_output_bytes
             )
+            requested_executable = request.executable.strip()
+            resolved_executable = (
+                self._executable_resolver.resolve(requested_executable, cwd=absolute_cwd)
+                if self._executable_resolver is not None
+                else None
+            )
             command = NormalizedProcessCommand(
-                executable=request.executable.strip(),
+                executable=requested_executable,
                 args=request.args,
                 cwd=absolute_cwd,
                 timeout_seconds=timeout,
                 max_output_bytes=max_output,
                 requested_capabilities=request.requested_capabilities,
                 reason=request.reason,
+                resolved_executable=resolved_executable,
             )
             return self._policy.inspect_process(command)
 

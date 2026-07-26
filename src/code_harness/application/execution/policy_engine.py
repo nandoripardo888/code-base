@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from hashlib import sha256
 from pathlib import PurePath, PureWindowsPath
 
 from code_harness.application.execution.approval_digest import compute_approval_digest, script_hash
@@ -68,10 +70,41 @@ _PROTECTED_PATH_MARKERS = (
     ".key",
 )
 
+_RULESET_MANIFEST = {
+    "autoallow_process": sorted((name, list(arguments)) for name, arguments in _AUTOALLOW_PROCESS),
+    "protected_path_markers": list(_PROTECTED_PATH_MARKERS),
+    "shell_executables": sorted(_SHELL_EXECUTABLES),
+    "classified_executables": [
+        "ant",
+        "git",
+        "mvn",
+        "node",
+        "npm",
+        "npx",
+        "pytest",
+        "python",
+        "python3",
+        "rg",
+    ],
+    "hard_deny_git": ["clean", "push", "reset"],
+    "repository_code_tools": ["ant", "mvn", "node", "npm", "npx", "pytest", "python", "python3"],
+    "powershell_hard_deny": ["encodedcommand", "invoke-expression"],
+    "policy_name": "deterministic_v1",
+    "policy_version": "1",
+}
+RULESET_HASH = sha256(
+    json.dumps(_RULESET_MANIFEST, separators=(",", ":"), sort_keys=True).encode("utf-8")
+).hexdigest()
+
 
 def _executable_name(executable: str) -> str:
     name = PureWindowsPath(executable).name or PurePath(executable).name or executable
     return name.casefold()
+
+
+def _is_bare_executable(executable: str) -> bool:
+    path = PureWindowsPath(executable)
+    return not path.is_absolute() and str(path.parent) in {".", ""}
 
 
 def _unique_capabilities(
@@ -120,6 +153,7 @@ class DeterministicPolicyEngine:
                 timeout_seconds=command.timeout_seconds,
                 max_output_bytes=command.max_output_bytes,
                 executable=command.executable,
+                resolved_executable=command.resolved_executable,
                 args=args,
                 dynamic_features=tuple(dynamic),
                 protected_path_matches=protected,
@@ -127,7 +161,7 @@ class DeterministicPolicyEngine:
             )
 
         autoallow_key = (name.removesuffix(".exe"), args)
-        if autoallow_key in _AUTOALLOW_PROCESS:
+        if autoallow_key in _AUTOALLOW_PROCESS and _is_bare_executable(command.executable):
             required_caps = _unique_capabilities(
                 command.requested_capabilities,
                 (ExecutionCapability.PROCESS_SPAWN,),
@@ -147,13 +181,19 @@ class DeterministicPolicyEngine:
                 timeout_seconds=command.timeout_seconds,
                 max_output_bytes=command.max_output_bytes,
                 executable=command.executable,
+                resolved_executable=command.resolved_executable,
                 args=args,
                 dynamic_features=tuple(dynamic),
                 protected_path_matches=protected,
                 digest_capabilities=required_caps,
             )
 
-        if name in _SHELL_EXECUTABLES or name.endswith((".bat", ".cmd", ".ps1")):
+        resolved_suffix = PureWindowsPath(command.resolved_executable or "").suffix.casefold()
+        if (
+            name in _SHELL_EXECUTABLES
+            or name.endswith((".bat", ".cmd", ".ps1"))
+            or resolved_suffix in {".bat", ".cmd", ".ps1"}
+        ):
             blocks.append(
                 PolicyReason(
                     "shell_or_script_wrapper",
@@ -187,6 +227,7 @@ class DeterministicPolicyEngine:
                 timeout_seconds=command.timeout_seconds,
                 max_output_bytes=command.max_output_bytes,
                 executable=command.executable,
+                resolved_executable=command.resolved_executable,
                 args=args,
                 dynamic_features=("shell_wrapper",),
                 protected_path_matches=protected,
@@ -273,12 +314,14 @@ class DeterministicPolicyEngine:
                 )
             )
 
-        if (
-            decision is PolicyDecision.ALLOW
-            and self._config.require_approval
-            and ExecutionCapability.NETWORK_OUTBOUND in required_caps
-        ):
+        if decision is PolicyDecision.ALLOW and self._config.require_approval:
             decision = PolicyDecision.APPROVAL_REQUIRED
+            reasons.append(
+                PolicyReason(
+                    "approval_mode_always",
+                    "Execution is configured to require approval for every command.",
+                )
+            )
 
         return self._result(
             kind=CommandKind.PROCESS,
@@ -292,6 +335,7 @@ class DeterministicPolicyEngine:
             timeout_seconds=command.timeout_seconds,
             max_output_bytes=command.max_output_bytes,
             executable=command.executable,
+            resolved_executable=command.resolved_executable,
             args=args,
             dynamic_features=tuple(dynamic),
             protected_path_matches=protected,
@@ -434,6 +478,7 @@ class DeterministicPolicyEngine:
         max_output_bytes: int,
         digest_capabilities: tuple[ExecutionCapability, ...],
         executable: str | None = None,
+        resolved_executable: str | None = None,
         args: tuple[str, ...] = (),
         script: str | None = None,
         script_hash_value: str | None = None,
@@ -450,7 +495,7 @@ class DeterministicPolicyEngine:
             digest = compute_approval_digest(
                 project_id=self._config.project_id,
                 kind=kind,
-                executable=executable,
+                executable=resolved_executable or executable,
                 args=args,
                 script=script,
                 cwd=cwd,
@@ -460,6 +505,7 @@ class DeterministicPolicyEngine:
                 backend=self._config.backend,
                 policy_version=self._config.policy_version,
                 policy_name=self._config.policy_name,
+                ruleset_hash=RULESET_HASH,
             )
         return CommandInspection(
             kind=kind,
@@ -476,6 +522,7 @@ class DeterministicPolicyEngine:
             max_output_bytes=max_output_bytes,
             backend_guarantees=self._config.backend_guarantees,
             executable=executable,
+            resolved_executable=resolved_executable,
             args=args,
             script_hash=script_hash_value,
             dynamic_features=dynamic_features,
@@ -483,6 +530,7 @@ class DeterministicPolicyEngine:
             backend=self._config.backend,
             policy_name=self._config.policy_name,
             policy_version=self._config.policy_version,
+            ruleset_hash=RULESET_HASH,
             warnings=warnings,
         )
 

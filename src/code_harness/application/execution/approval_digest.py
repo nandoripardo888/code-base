@@ -25,6 +25,7 @@ def compute_approval_digest(
     backend: str,
     policy_version: str,
     policy_name: str,
+    ruleset_hash: str = "",
 ) -> ApprovalDigest:
     payload = {
         "project_id": project_id,
@@ -35,10 +36,12 @@ def compute_approval_digest(
         "cwd": cwd,
         "timeout_seconds": timeout_seconds,
         "max_output_bytes": max_output_bytes,
-        "capabilities": [item.value for item in capabilities],
+        "capabilities": sorted(item.value for item in capabilities),
         "backend": backend,
         "policy_name": policy_name,
         "policy_version": policy_version,
+        "ruleset_hash": ruleset_hash,
+        "canonical_version": 1,
     }
     canonical = json.dumps(payload, separators=(",", ":"), sort_keys=True)
     return ApprovalDigest(value=sha256(canonical.encode("utf-8")).hexdigest())

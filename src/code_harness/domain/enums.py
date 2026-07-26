@@ -95,6 +95,22 @@ class ExecutionRiskSeverity(StrEnum):
     CRITICAL = "critical"
 
 
+class ApprovalState(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    DENIED = "denied"
+    CONSUMED = "consumed"
+    EXPIRED = "expired"
+
+
+class ExecutionState(StrEnum):
+    STARTING = "starting"
+    BLOCKED = "blocked"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+
+
 class ErrorCode(StrEnum):
     INTERNAL_ERROR = "internal_error"
     PROJECT_NOT_FOUND = "project_not_found"
@@ -119,8 +135,15 @@ class ErrorCode(StrEnum):
     EXECUTION_NOT_SUPPORTED = "execution_not_supported"
     EXECUTION_POLICY_DENIED = "execution_policy_denied"
     EXECUTION_APPROVAL_REQUIRED = "execution_approval_required"
+    EXECUTION_APPROVAL_NOT_FOUND = "execution_approval_not_found"
+    EXECUTION_APPROVAL_INVALID = "execution_approval_invalid"
+    EXECUTION_APPROVAL_EXPIRED = "execution_approval_expired"
+    EXECUTION_APPROVAL_CONSUMED = "execution_approval_consumed"
+    EXECUTION_APPROVAL_DENIED = "execution_approval_denied"
+    EXECUTION_STORE_UNAVAILABLE = "execution_store_unavailable"
     EXECUTION_ELEVATED_SESSION = "execution_elevated_session"
     INVALID_EXECUTION_REQUEST = "invalid_execution_request"
     POWERSHELL_UNAVAILABLE = "powershell_unavailable"
     POWERSHELL_PARSE_FAILED = "powershell_parse_failed"
     POWERSHELL_ANALYSIS_FAILED = "powershell_analysis_failed"
+    PROCESS_START_FAILED = "process_start_failed"

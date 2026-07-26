@@ -1,6 +1,6 @@
 # Status do projeto
 
-Última atualização: **22 de julho de 2026**.
+Última atualização: **25 de julho de 2026**.
 
 Este documento é a fotografia operacional do `code-harness`. O
 [plano de implementação](../plano-implementacao.md) continua sendo a referência
@@ -9,10 +9,12 @@ foi verificado no repositório.
 
 ## Resumo executivo
 
-Além das fases de retrieval, a capacidade opcional de execução concluiu a
-**E0 — contratos e inspeção sem execução** em 25 de julho de 2026. Ela está
-desabilitada por padrão e oferece apenas inspeção de processos e PowerShell;
-não há runner, Job Object, auditoria nem exposição MCP de execução.
+Além das fases de retrieval, a capacidade opcional de execução concluiu E0, E1 e
+a **E2 — aprovação e auditoria** em 25 de julho de 2026. Ela continua desabilitada
+por padrão; no Windows executa a allowlist determinística de leitura ou comandos
+aprovados para um único uso, sob Job Object e sem shell. Aprovações são vinculadas
+ao digest exato e auditadas com redaction em banco externo ao workspace.
+PowerShell livre, execução MCP e operações assíncronas ainda não existem.
 
 O projeto concluiu localmente as **Fases 0, 1, 2, 3, 4, 5 e 6**. O produto oferece
 pela CLI, pela API Python e pelo adaptador MCP opcional busca lexical direta,
@@ -112,10 +114,23 @@ critérios de saída estejam satisfeitos.
 - registro e seleção explícita de projeto;
 - comandos `init`, `index`, `status`, `doctor`, `files list`, `files search`,
   `search text`, `search regex`, `search hybrid`, `context`, `map`, `read` e
-  `mcp serve`;
+  `mcp serve`, além do grupo opcional `execution`;
 - renderização em `text`, `table`, `json`, `jsonl` e `llm`;
 - envelopes estruturados de sucesso e erro;
 - códigos de saída estáveis.
+
+### Execução opcional
+
+- inspeção determinística separada de processos e PowerShell, sem executar o
+  script analisado;
+- `run_process` estruturado, sem shell, supervisionado por Job Object no Windows;
+- allowlist de leitura e hard-deny para shells, wrappers e Git destrutivo;
+- aprovações locais com TTL, digest canônico, vínculo ao projeto e consumo único;
+- consumo da aprovação e criação da execução na mesma transação SQLite;
+- auditoria sanitizada fora do workspace, com eventos, capacidades, hashes e
+  métricas, sem persistir stdout/stderr completos;
+- redaction de tokens, headers, credenciais em URL e chaves privadas;
+- administração pela API Python e `code-harness execution approvals`, ausente do MCP.
 
 ### Busca semântica
 
@@ -174,6 +189,15 @@ Validação local executada no Windows com Python 3.12 em 21 de julho de 2026:
 | Fluxos lexical e incremental pela CLI/API | Passaram |
 | Contratos MCP e isolamento do SDK | Passaram |
 
+Validação incremental de E0–E2 executada em 25 de julho de 2026:
+
+- `ruff check .`: passou;
+- `mypy`: passou em 155 arquivos-fonte;
+- `pytest --cov`: 305 passaram e 2 integrações Job Object foram puladas por
+  exigirem sessão Windows não administradora;
+- cobertura total: 85,01%, acima do mínimo de 85%;
+- os 54 arquivos envolvidos em E0–E2 passaram em `ruff format --check`.
+
 A workflow de CI está configurada para Ubuntu e Windows. Esta fotografia não
 afirma o estado de uma execução remota específica; registra apenas a validação
 local e a existência da matriz.
@@ -187,7 +211,8 @@ Dos 20 critérios globais do plano, 15 estão comprovadamente atendidos:
 3. resultados incluem caminho e linhas;
 4. o conteúdo devolvido é relido do arquivo atual;
 5. caminhos fora da raiz são rejeitados;
-6. nenhum código do repositório analisado é executado;
+6. retrieval não executa código do repositório; a capacidade separada de execução
+   permanece desabilitada por padrão e exige policy/aprovação;
 7. as tools devolvem objetos estruturados.
 8. o índice incremental ignora arquivos inalterados;
 9. o estado do índice reflete warnings parciais.

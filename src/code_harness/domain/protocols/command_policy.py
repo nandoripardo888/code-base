@@ -5,7 +5,32 @@ from code_harness.domain.models.execution import (
     NormalizedPowerShellCommand,
     NormalizedProcessCommand,
     PowerShellAstAnalysis,
+    ProcessRunOutcome,
 )
+
+
+class ProcessRunner(Protocol):
+    def run(self, command: NormalizedProcessCommand) -> ProcessRunOutcome:
+        """Run one already-authorized structured process."""
+        ...
+
+
+class ProcessExecutableResolver(Protocol):
+    def resolve(self, executable: str, *, cwd: str) -> str:
+        """Resolve a bare executable using the same sanitized rules as the runner."""
+        ...
+
+
+class SensitiveValueRedactor(Protocol):
+    def redact(self, value: str | None) -> str | None: ...
+
+    def summarize_command(
+        self,
+        executable: str,
+        args: tuple[str, ...],
+        *,
+        cwd: str,
+    ) -> str: ...
 
 
 class CommandPolicy(Protocol):

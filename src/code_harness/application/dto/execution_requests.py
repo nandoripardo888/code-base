@@ -92,3 +92,15 @@ class InspectPowerShellRequest:
         )
         if self.reason is not None and len(self.reason) > 4_000:
             raise ValueError("reason must not exceed 4000 characters")
+
+
+@dataclass(frozen=True, slots=True)
+class RunProcessRequest(InspectProcessRequest):
+    """A synchronous structured process request."""
+
+    approval_id: str | None = None
+
+    def __post_init__(self) -> None:
+        InspectProcessRequest.__post_init__(self)
+        if self.approval_id is not None and not self.approval_id.strip():
+            raise ValueError("approval_id must not be empty")

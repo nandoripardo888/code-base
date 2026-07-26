@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from code_harness.application.dto.execution_requests import (
     InspectPowerShellRequest,
     InspectProcessRequest,
+    RunProcessRequest,
 )
 from code_harness.application.dto.requests import (
     BuildContextRequest,
@@ -26,11 +27,15 @@ from code_harness.application.dto.requests import (
 )
 from code_harness.bootstrap.container import ApplicationContainer, build_container
 from code_harness.bootstrap.settings import Settings
-from code_harness.domain.enums import ExecutionCapability, IndexMode
+from code_harness.domain.enums import ApprovalState, ExecutionCapability, IndexMode
 from code_harness.domain.errors import ExecutionDisabledError
 from code_harness.domain.models.code_chunk import SourceRead
 from code_harness.domain.models.context import ContextBundle
-from code_harness.domain.models.execution import CommandInspection
+from code_harness.domain.models.execution import (
+    CommandInspection,
+    ExecutionApproval,
+    ExecutionResult,
+)
 from code_harness.domain.models.file_listing import FileListingPage
 from code_harness.domain.models.file_match import FileMatch
 from code_harness.domain.models.hybrid import HybridSearchHit
@@ -119,6 +124,66 @@ class CodeHarness:
                 reason,
             )
         )
+
+    def run_process(
+        self,
+        executable: str,
+        args: tuple[str, ...] = (),
+        *,
+        cwd: str = ".",
+        timeout_seconds: float | None = None,
+        max_output_bytes: int | None = None,
+        requested_capabilities: tuple[ExecutionCapability | str, ...] = (),
+        reason: str | None = None,
+        approval_id: str | None = None,
+    ) -> ToolResult[ExecutionResult]:
+        capabilities = tuple(
+            item if isinstance(item, ExecutionCapability) else ExecutionCapability(item)
+            for item in requested_capabilities
+        )
+        return self._execution().run_process.execute(
+            RunProcessRequest(
+                executable=executable,
+                args=args,
+                cwd=cwd,
+                timeout_seconds=timeout_seconds,
+                max_output_bytes=max_output_bytes,
+                requested_capabilities=capabilities,
+                reason=reason,
+                approval_id=approval_id,
+            )
+        )
+
+    def list_execution_approvals(
+        self,
+        *,
+        state: ApprovalState | str | None = None,
+        limit: int = 50,
+    ) -> ToolResult[tuple[ExecutionApproval, ...]]:
+        selected = ApprovalState(state) if state is not None else None
+        return self._execution().approvals.list(state=selected, limit=limit)
+
+    def get_execution_approval(
+        self,
+        approval_id: str,
+    ) -> ToolResult[ExecutionApproval]:
+        return self._execution().approvals.get(approval_id)
+
+    def approve_execution(
+        self,
+        approval_id: str,
+        *,
+        reason: str | None = None,
+    ) -> ToolResult[ExecutionApproval]:
+        return self._execution().approvals.approve(approval_id, reason=reason)
+
+    def deny_execution(
+        self,
+        approval_id: str,
+        *,
+        reason: str | None = None,
+    ) -> ToolResult[ExecutionApproval]:
+        return self._execution().approvals.deny(approval_id, reason=reason)
 
     def initialize_index(self) -> ToolResult[Project]:
         return self._container.initialize_index.execute()

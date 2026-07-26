@@ -42,12 +42,16 @@ over stdio.
 - paginate file listings and return read truncation metadata for agents;
 - return a structured repository tree (symbols in detailed mode);
 - expose the same application tools over optional MCP stdio via `mcp serve`;
-- optionally inspect proposed process/PowerShell commands without running them
-  (`CODE_HARNESS_EXECUTION=1`, CLI `execution inspect-*`; disabled by default).
+- optionally inspect proposed process/PowerShell commands and, on Windows, run the
+  small read-only process allowlist under Job Object supervision;
+- request, review, and consume exact single-use process approvals locally, with a
+  sanitized SQLite audit trail outside the project workspace
+  (`CODE_HARNESS_EXECUTION=1`, CLI `execution inspect-*` / `run-process`; disabled by default).
 
 By default no repository code is executed and the analyzed repository is treated
-as read-only. Optional agent execution remains opt-in and is inspection-only in
-the current release (see `docs/adr/0005-execution-trust-boundary.md`).
+as read-only. Optional agent execution remains opt-in; E2 adds local approval and
+auditing without exposing PowerShell execution, approval, or execution through
+MCP (see `docs/adr/0005-execution-trust-boundary.md`).
 
 ## Requirements
 
@@ -155,6 +159,25 @@ are cached outside temporary storage; override the location with
 `CODE_HARNESS_MODEL_CACHE`. The CLI and embedding worker use the operating
 system trust store by default. Enterprise installations may set
 `CODE_HARNESS_CA_BUNDLE` to an explicit PEM bundle.
+
+### Optional supervised execution
+
+Execution is disabled by default. After reviewing the trust boundary:
+
+```powershell
+$env:CODE_HARNESS_EXECUTION = "1"
+
+# An approval-required command returns execution_approval_required with an ID.
+code-harness --project . execution run-process python -c "print('review')"
+code-harness --project . execution approvals show <approval-id>
+code-harness --project . execution approvals approve <approval-id> --reason "reviewed"
+code-harness --project . execution run-process --approval-id <approval-id> python -c "print('review')"
+```
+
+Approvals expire after 600 seconds by default and are consumed once. Configure
+the TTL with `CODE_HARNESS_EXECUTION_APPROVAL_TTL_SECONDS`. Sanitized audit state
+is stored at `<CODE_HARNESS_EXECUTION_HOME>/<project_id>/execution.db`; full
+stdout/stderr, raw environment values, and scripts are not persisted.
 
 ## Python API
 

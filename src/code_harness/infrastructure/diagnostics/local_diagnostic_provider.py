@@ -30,6 +30,12 @@ class LocalDiagnosticProvider:
         semantic_enabled: bool = False,
         model_cache_path: Path | None = None,
         capability_reporter: CapabilityReporter | None = None,
+        execution_enabled: bool = False,
+        execution_backend: str = "host_supervised",
+        execution_home: Path | None = None,
+        execution_store_path: Path | None = None,
+        execution_allow_elevated: bool = False,
+        mcp_expose_execution: bool = False,
     ) -> None:
         self._root = root
         self._index_path = index_path
@@ -39,6 +45,12 @@ class LocalDiagnosticProvider:
         self._semantic_enabled = semantic_enabled
         self._model_cache_path = model_cache_path
         self._capability_reporter = capability_reporter
+        self._execution_enabled = execution_enabled
+        self._execution_backend = execution_backend
+        self._execution_home = execution_home
+        self._execution_store_path = execution_store_path
+        self._execution_allow_elevated = execution_allow_elevated
+        self._mcp_expose_execution = mcp_expose_execution
 
     def run(self, *, deep: bool = False) -> DoctorReport:
         if deep and self._capability_reporter is not None:
@@ -94,9 +106,94 @@ class LocalDiagnosticProvider:
                 )
             )
         checks.append(self._semantic_check(deep=deep))
+        checks.extend(self._execution_checks())
         return DoctorReport(
             healthy=not any(check.status is DiagnosticStatus.FAIL for check in checks),
             checks=tuple(checks),
+        )
+
+    def _execution_checks(self) -> tuple[DiagnosticCheck, ...]:
+        if not self._execution_enabled:
+            return (
+                DiagnosticCheck(
+                    "execution",
+                    DiagnosticStatus.PASS,
+                    "Command execution is disabled.",
+                ),
+            )
+        windows = os.name == "nt"
+        home = self._execution_home
+        home_parent = _nearest_existing_parent(home) if home is not None else self._root
+        elevated = _is_windows_elevated() if windows else False
+        job_object_available = _windows_job_object_available() if windows else False
+        audit_check = self._execution_store_check()
+        return (
+            DiagnosticCheck(
+                "execution_backend",
+                DiagnosticStatus.PASS
+                if windows and self._execution_backend == "host_supervised"
+                else DiagnosticStatus.WARNING,
+                "host_supervised backend is available."
+                if windows and self._execution_backend == "host_supervised"
+                else "Process execution requires the Windows host_supervised backend.",
+            ),
+            DiagnosticCheck(
+                "execution_job_object",
+                DiagnosticStatus.PASS if job_object_available else DiagnosticStatus.WARNING,
+                "Windows Job Object API is available."
+                if job_object_available
+                else "Windows Job Object API is unavailable; execution cannot start.",
+            ),
+            DiagnosticCheck(
+                "execution_home",
+                DiagnosticStatus.PASS
+                if os.access(home_parent, os.W_OK)
+                else DiagnosticStatus.WARNING,
+                f"Execution runtime directory: {home or self._root}.",
+            ),
+            audit_check,
+            DiagnosticCheck(
+                "execution_elevation",
+                DiagnosticStatus.WARNING
+                if elevated and not self._execution_allow_elevated
+                else DiagnosticStatus.PASS,
+                "Execution is blocked in the current elevated session."
+                if elevated and not self._execution_allow_elevated
+                else "Execution session elevation policy is satisfied.",
+            ),
+            DiagnosticCheck(
+                "execution_mcp",
+                DiagnosticStatus.WARNING if self._mcp_expose_execution else DiagnosticStatus.PASS,
+                "MCP execution exposure is configured but is not implemented."
+                if self._mcp_expose_execution
+                else "MCP execution exposure is disabled.",
+            ),
+        )
+
+    def _execution_store_check(self) -> DiagnosticCheck:
+        path = self._execution_store_path
+        if path is None or not path.is_file():
+            return DiagnosticCheck(
+                "execution_audit_store",
+                DiagnosticStatus.WARNING,
+                "Execution audit store has not been initialized.",
+            )
+        try:
+            uri = path.resolve().as_uri() + "?mode=ro"
+            with sqlite3.connect(uri, uri=True) as connection:
+                integrity = str(connection.execute("PRAGMA integrity_check").fetchone()[0])
+                version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        except sqlite3.DatabaseError as error:
+            return DiagnosticCheck(
+                "execution_audit_store",
+                DiagnosticStatus.FAIL,
+                f"Execution audit store check failed: {error}.",
+            )
+        healthy = integrity == "ok" and version == 1
+        return DiagnosticCheck(
+            "execution_audit_store",
+            DiagnosticStatus.PASS if healthy else DiagnosticStatus.FAIL,
+            f"Execution audit store integrity={integrity}; schema={version}/1.",
         )
 
     def _ripgrep_check(self) -> DiagnosticCheck:
@@ -228,3 +325,21 @@ def _nearest_existing_parent(path: Path) -> Path:
             return current
         current = current.parent
     return current
+
+
+def _is_windows_elevated() -> bool:
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):  # pragma: no cover - unavailable Windows API
+        return True
+
+
+def _windows_job_object_available() -> bool:
+    try:
+        import ctypes
+
+        return hasattr(ctypes.WinDLL("kernel32"), "CreateJobObjectW")
+    except (AttributeError, OSError):  # pragma: no cover - unavailable Windows API
+        return False

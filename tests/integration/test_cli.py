@@ -74,6 +74,71 @@ def test_cli_version() -> None:
     assert result.stdout.strip() == "0.2.0"
 
 
+def test_cli_creates_and_decides_execution_approval(
+    fixture_repository: Path,
+    tmp_path: Path,
+) -> None:
+    environment = {
+        "CODE_HARNESS_EXECUTION": "1",
+        "CODE_HARNESS_EXECUTION_HOME": str(tmp_path / "execution-state"),
+    }
+    requested = runner.invoke(
+        app,
+        [
+            "--project",
+            str(fixture_repository),
+            "--output",
+            "json",
+            "execution",
+            "run-process",
+            "python",
+            "-c",
+            "print('review')",
+        ],
+        env=environment,
+    )
+
+    assert requested.exit_code == 2, requested.output
+    approval_id = json.loads(requested.stderr)["error"]["details"]["approval_id"]
+
+    approved = runner.invoke(
+        app,
+        [
+            "--project",
+            str(fixture_repository),
+            "--output",
+            "json",
+            "execution",
+            "approvals",
+            "approve",
+            approval_id,
+            "--reason",
+            "reviewed",
+        ],
+        env=environment,
+    )
+    listed = runner.invoke(
+        app,
+        [
+            "--project",
+            str(fixture_repository),
+            "--output",
+            "json",
+            "execution",
+            "approvals",
+            "list",
+            "--state",
+            "approved",
+        ],
+        env=environment,
+    )
+
+    assert approved.exit_code == 0, approved.output
+    assert json.loads(approved.stdout)["data"]["state"] == "approved"
+    assert listed.exit_code == 0, listed.output
+    assert json.loads(listed.stdout)["data"][0]["approval_id"] == approval_id
+
+
 def test_cli_indexes_reports_status_and_runs_doctor(
     copied_repository: Path, tmp_path: Path
 ) -> None:

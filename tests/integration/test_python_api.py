@@ -5,7 +5,7 @@ import pytest
 
 from code_harness import CodeHarness
 from code_harness.domain.enums import MatchType
-from code_harness.domain.errors import CodeHarnessError
+from code_harness.domain.errors import CodeHarnessError, ExecutionApprovalRequiredError
 
 pytestmark = pytest.mark.skipif(shutil.which("rg") is None, reason="Ripgrep is unavailable")
 
@@ -35,3 +35,21 @@ def test_python_api_reports_invalid_regex(fixture_repository: Path) -> None:
         CodeHarness.open(fixture_repository).search_regex("[")
 
     assert captured.value.code.value == "invalid_query"
+
+
+def test_python_api_administers_local_execution_approval(
+    fixture_repository: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CODE_HARNESS_EXECUTION", "1")
+    monkeypatch.setenv("CODE_HARNESS_EXECUTION_HOME", str(tmp_path / "execution-state"))
+    harness = CodeHarness.open(fixture_repository)
+
+    with pytest.raises(ExecutionApprovalRequiredError) as required:
+        harness.run_process("python", ("-c", "print('review')"))
+
+    approval_id = str(required.value.details["approval_id"])
+    assert harness.get_execution_approval(approval_id).data.state.value == "pending"
+    assert harness.approve_execution(approval_id, reason="reviewed").data.state.value == "approved"
+    assert harness.list_execution_approvals(state="approved").data[0].approval_id == approval_id

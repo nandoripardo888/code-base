@@ -275,6 +275,70 @@ class ExecutionApprovalRequiredError(CodeHarnessError):
         )
 
 
+class ExecutionApprovalNotFoundError(CodeHarnessError):
+    def __init__(self, approval_id: str) -> None:
+        super().__init__(
+            ErrorCode.EXECUTION_APPROVAL_NOT_FOUND,
+            "Execution approval was not found for the active project.",
+            details={"approval_id": approval_id},
+            capability="execution",
+        )
+
+
+class ExecutionApprovalInvalidError(CodeHarnessError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__(
+            ErrorCode.EXECUTION_APPROVAL_INVALID,
+            message,
+            details=details,
+            capability="execution",
+        )
+
+
+class ExecutionApprovalExpiredError(CodeHarnessError):
+    def __init__(self, approval_id: str) -> None:
+        super().__init__(
+            ErrorCode.EXECUTION_APPROVAL_EXPIRED,
+            "Execution approval has expired.",
+            details={"approval_id": approval_id},
+            capability="execution",
+            recoverable=True,
+            remediation="Request a new approval for the exact command.",
+        )
+
+
+class ExecutionApprovalConsumedError(CodeHarnessError):
+    def __init__(self, approval_id: str) -> None:
+        super().__init__(
+            ErrorCode.EXECUTION_APPROVAL_CONSUMED,
+            "Execution approval has already been consumed.",
+            details={"approval_id": approval_id},
+            capability="execution",
+            recoverable=True,
+            remediation="Request and approve a new single-use approval.",
+        )
+
+
+class ExecutionApprovalDeniedError(CodeHarnessError):
+    def __init__(self, approval_id: str) -> None:
+        super().__init__(
+            ErrorCode.EXECUTION_APPROVAL_DENIED,
+            "Execution approval was denied.",
+            details={"approval_id": approval_id},
+            capability="execution",
+        )
+
+
+class ExecutionStoreUnavailableError(CodeHarnessError):
+    def __init__(self, message: str = "Execution audit storage is unavailable.") -> None:
+        super().__init__(
+            ErrorCode.EXECUTION_STORE_UNAVAILABLE,
+            message,
+            capability="execution",
+            remediation="Run code-harness doctor and verify CODE_HARNESS_EXECUTION_HOME.",
+        )
+
+
 class ExecutionElevatedSessionError(CodeHarnessError):
     def __init__(
         self,
@@ -294,6 +358,16 @@ class InvalidExecutionRequestError(CodeHarnessError):
     def __init__(self, message: str, **details: Any) -> None:
         super().__init__(
             ErrorCode.INVALID_EXECUTION_REQUEST,
+            message,
+            details=details,
+            capability="execution",
+        )
+
+
+class ProcessStartError(CodeHarnessError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__(
+            ErrorCode.PROCESS_START_FAILED,
             message,
             details=details,
             capability="execution",

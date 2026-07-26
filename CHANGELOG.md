@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Added single-use execution approvals bound to canonical command digests,
+  sanitized SQLite auditing outside the workspace, output redaction, and local
+  Python/CLI approval administration.
 - Changed hybrid scoring to an absolute evidence/coverage formula, added
   anchor-first query planning, and stopped broad container symbols from merging
   with nested members.

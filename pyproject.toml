@@ -29,6 +29,7 @@ semantic = [
 mcp = [
   "mcp>=1.9,<2",
 ]
+execution = []
 all = [
   "fastembed==0.8.0",
   "huggingface-hub==1.24.0",
@@ -56,10 +57,18 @@ packages = ["src/code_harness"]
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers"
 testpaths = ["tests"]
+markers = [
+  "windows_e1: real Windows Job Object integration tests; run only in a non-administrator CI job",
+]
 
 [tool.coverage.run]
 branch = true
 source = ["code_harness"]
+# WinAPI wrappers are exercised by the dedicated non-administrator E1 CI job.
+omit = [
+  "*/infrastructure/execution/runners/windows_process.py",
+  "*/infrastructure/execution/windows/job_object.py",
+]
 
 [tool.coverage.report]
 show_missing = true

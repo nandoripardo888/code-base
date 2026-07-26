@@ -84,6 +84,8 @@ class Settings:
     execution_default_timeout_seconds: float = 60.0
     execution_max_timeout_seconds: float = 1_800.0
     execution_max_output_bytes: int = 200_000
+    execution_max_processes: int = 32
+    execution_approval_ttl_seconds: int = 600
     execution_allow_elevated: bool = False
     execution_home: Path = field(default_factory=_default_execution_home)
     mcp_expose_execution: bool = False
@@ -124,6 +126,10 @@ class Settings:
             )
         if self.execution_max_output_bytes <= 0:
             raise ValueError("execution_max_output_bytes must be greater than zero")
+        if not 1 <= self.execution_max_processes <= 32:
+            raise ValueError("execution_max_processes must be between 1 and 32")
+        if self.execution_approval_ttl_seconds <= 0:
+            raise ValueError("execution_approval_ttl_seconds must be greater than zero")
         if self.mcp_expose_execution and not self.execution_enabled:
             raise ValueError("mcp_expose_execution requires execution_enabled")
 
@@ -134,6 +140,9 @@ class Settings:
 
     def execution_project_home(self) -> Path:
         return self.execution_home / self.project.project_id
+
+    def execution_store_path(self) -> Path:
+        return self.execution_project_home() / "execution.db"
 
     @classmethod
     def for_root(cls, root: str | Path) -> "Settings":
@@ -212,6 +221,12 @@ class Settings:
             ),
             execution_max_output_bytes=int(
                 os.environ.get("CODE_HARNESS_EXECUTION_MAX_OUTPUT_BYTES", "200000")
+            ),
+            execution_max_processes=int(
+                os.environ.get("CODE_HARNESS_EXECUTION_MAX_PROCESSES", "32")
+            ),
+            execution_approval_ttl_seconds=int(
+                os.environ.get("CODE_HARNESS_EXECUTION_APPROVAL_TTL_SECONDS", "600")
             ),
             execution_allow_elevated=_env_flag("CODE_HARNESS_EXECUTION_ALLOW_ELEVATED"),
             execution_home=configured_execution_home,

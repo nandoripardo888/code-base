@@ -2,9 +2,9 @@
 
 ## 0. Controle do documento
 
-Última atualização: **25 de julho de 2026** (E0 concluída localmente).
+Última atualização: **25 de julho de 2026** (E0, E1 e E2 concluídas localmente).
 
-Clone validado: repositório Git `code-base` (`origin`: `nandoripardo888/code-base`), pacote Python `code-harness` em `src/code_harness/`, branch `main` em `2434c8e`, working tree limpa.
+Clone validado: repositório Git `code-base` (`origin`: `nandoripardo888/code-base`), pacote Python `code-harness` em `src/code_harness/`, branch `main` em `ae62c74` antes desta entrega.
 
 Este documento define a introdução de uma capacidade opcional de execução de comandos no `code-harness`, com foco inicial em Windows e PowerShell.
 
@@ -29,9 +29,9 @@ O repositório já possui:
 - testes arquiteturais em `tests/contract/test_architecture.py`;
 - cobertura mínima (`fail_under = 85` em `pyproject.toml`).
 
-**Ainda não existe** nenhum módulo `infrastructure/execution/`, `bootstrap/execution.py`, tool de execução, extra `execution` no `pyproject.toml`, nem campos de execução em `Settings`.
-
-A nova capacidade deverá preservar esses padrões.
+E0–E2 já introduziram os contratos, inspeção, runner supervisionado, aprovação e
+auditoria descritos neste plano. PowerShell livre, assíncrono, MCP de execução,
+worktree e Windows Sandbox permanecem futuros.
 
 ### 0.2 Nova fronteira de confiança
 
@@ -284,13 +284,14 @@ ApprovalStore
 ExecutionArtifactStore
 ```
 
-Banco padrão (espelhando `CODE_HARNESS_INDEX_PATH`):
+Banco padrão, fora do workspace conforme o ADR 0005:
 
 ```text
-.code-harness/execution.db
+<CODE_HARNESS_HOME>/executions/<project_id>/execution.db
 ```
 
-via `CODE_HARNESS_EXECUTION_STORE_PATH` (relativo à raiz do projeto se não absoluto).
+O caminho deriva de `CODE_HARNESS_EXECUTION_HOME`; não existe override relativo à
+raiz do projeto.
 
 O índice permanece em:
 
@@ -774,10 +775,10 @@ A aprovação expira, é de uso único, pertence ao projeto e digest, é consumi
 CLI (Typer sub-app `exec`):
 
 ```powershell
-code-harness exec approvals list
-code-harness exec approvals show <approval-id>
-code-harness exec approvals approve <approval-id>
-code-harness exec approvals deny <approval-id>
+code-harness execution approvals list
+code-harness execution approvals show <approval-id>
+code-harness execution approvals approve <approval-id>
+code-harness execution approvals deny <approval-id>
 ```
 
 ---
@@ -875,7 +876,7 @@ execution_max_script_chars: int = 100_000
 execution_max_argument_chars: int = 16_384
 execution_max_processes: int = 32
 execution_max_concurrent: int = 1
-execution_store_path: Path  # default .code-harness/execution.db sob root
+execution_home: Path  # default <CODE_HARNESS_HOME>/executions
 execution_artifacts_path: Path
 execution_approval_ttl_seconds: int = 600
 execution_keep_artifacts: bool = False
@@ -895,7 +896,7 @@ CODE_HARNESS_EXECUTION_DEFAULT_TIMEOUT_SECONDS
 CODE_HARNESS_EXECUTION_MAX_TIMEOUT_SECONDS
 CODE_HARNESS_EXECUTION_MAX_OUTPUT_BYTES
 CODE_HARNESS_EXECUTION_MAX_CONCURRENT
-CODE_HARNESS_EXECUTION_STORE_PATH
+CODE_HARNESS_EXECUTION_HOME
 CODE_HARNESS_EXECUTION_ARTIFACTS_PATH
 CODE_HARNESS_EXECUTION_APPROVAL_TTL_SECONDS
 CODE_HARNESS_MCP_EXPOSE_EXECUTION
@@ -951,14 +952,14 @@ Novo módulo `interfaces/cli/execution_commands.py` exportando `exec_app = typer
 Em `main.py`: `app.add_typer(exec_app, name="exec")` (mesmo padrão das linhas 45–48).
 
 ```powershell
-code-harness exec inspect-process git status --short
-code-harness exec inspect-powershell --file script.ps1
-code-harness exec run-process git status --short
-code-harness exec run-powershell --file script.ps1
-code-harness exec status <execution-id>
-code-harness exec terminate <execution-id>
-code-harness exec approvals list
-code-harness exec approvals approve <approval-id>
+code-harness execution inspect-process git status --short
+code-harness execution inspect-powershell --file script.ps1
+code-harness execution run-process git status --short
+code-harness execution run-powershell --file script.ps1
+code-harness execution status <execution-id>
+code-harness execution terminate <execution-id>
+code-harness execution approvals list
+code-harness execution approvals approve <approval-id>
 ```
 
 Scripts grandes por arquivo ou stdin.
@@ -1121,6 +1122,13 @@ o analisador AST e a declaração do backend vivem em
 
 ### E1 — `run_process` supervisionado síncrono
 
+**Estado: concluída localmente em 25/07/2026.** O backend `host_supervised`
+executa somente a allowlist determinística de leitura, em Windows não elevado,
+com `CreateProcessW` suspenso, Job Object, timeout, encerramento da árvore,
+ambiente sanitizado e saída limitada. Não há persistência, aprovação, MCP ou
+PowerShell livre nesta fase. A integração real fica em job CI Windows self-hosted
+não administrador; nesta máquina elevada ela é pulada.
+
 **Criar:** `runners/*`, `windows/job_object.py`, `windows/process_factory.py`, `application/tools/run_process.py`, testes de integração Job Object.
 
 **Alterar:** `pyproject.toml` (extra `execution`), `bootstrap/execution.py`, API/CLI, doctor checks.
@@ -1129,11 +1137,25 @@ o analisador AST e a declaração do backend vivem em
 
 ### E2 — Aprovação e auditoria
 
-**Criar:** `persistence/*`, `approvals/sqlite_approval_store.py`, redaction, CLI approvals.
+**Estado: concluída localmente em 25/07/2026.** Aprovações locais são vinculadas
+ao digest canônico, expiram, têm uso único e são consumidas atomicamente com a
+criação da execução. O SQLite de auditoria vive em
+`<CODE_HARNESS_HOME>/executions/<project_id>/execution.db`; argumentos, erros e
+saídas são sanitizados e stdout/stderr completos não são persistidos. A API
+Python e `code-harness execution approvals` administram a decisão; o MCP não
+expõe aprovação.
 
-**Alterar:** tools de run para consumir aprovação; settings de TTL/path.
+**Criado:** `infrastructure/execution/persistence/*`, redaction,
+`ApprovalAdminTool`, protocolos de store e CLI/API de aprovações. Uma única
+implementação SQLite satisfaz os stores lógicos para manter consumo + início
+atômicos.
 
-**Aceite:** aprovar `mvn test` não autoriza `mvn deploy` nem outro `cwd`.
+**Alterado:** `run_process` para criar/consumir aprovação e auditar; settings de
+TTL/home, digest com executável resolvido + `ruleset_hash`, doctor e contratos.
+
+**Aceite:** mudanças em argumentos, `cwd`, limites, capabilities, backend ou
+policy invalidam a aprovação; concorrência executa no máximo uma vez. `mvn.cmd`
+continua bloqueado como wrapper de shell no host.
 
 ### E3 — PowerShell livre
 

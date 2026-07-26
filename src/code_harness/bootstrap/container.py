@@ -178,6 +178,12 @@ def build_container(settings: Settings) -> ApplicationContainer:
         settings.semantic_enabled,
         settings.embedding_cache_path,
         capability_reporter=capability_reporter,
+        execution_enabled=settings.execution_enabled,
+        execution_backend=settings.execution_backend,
+        execution_home=settings.execution_project_home(),
+        execution_store_path=settings.execution_store_path(),
+        execution_allow_elevated=settings.execution_allow_elevated,
+        mcp_expose_execution=settings.mcp_expose_execution,
     )
     search_files_tool = SearchFilesTool(catalog, project=project, store=store)
     search_text_tool = SearchTextTool(searcher)

@@ -75,7 +75,11 @@ class CliState:
 
 
 def _exit_code(error: CodeHarnessError) -> int:
-    if error.code is ErrorCode.PROJECT_NOT_FOUND or error.code is ErrorCode.FILE_NOT_FOUND:
+    if error.code in (
+        ErrorCode.PROJECT_NOT_FOUND,
+        ErrorCode.FILE_NOT_FOUND,
+        ErrorCode.EXECUTION_APPROVAL_NOT_FOUND,
+    ):
         return 3
     if error.code in (
         ErrorCode.RIPGREP_UNAVAILABLE,
@@ -88,7 +92,11 @@ def _exit_code(error: CodeHarnessError) -> int:
         ErrorCode.EXECUTION_NOT_SUPPORTED,
     ):
         return 4
-    if error.code in (ErrorCode.INDEX_NOT_READY, ErrorCode.INDEX_CORRUPTED):
+    if error.code in (
+        ErrorCode.INDEX_NOT_READY,
+        ErrorCode.INDEX_CORRUPTED,
+        ErrorCode.EXECUTION_STORE_UNAVAILABLE,
+    ):
         return 5
     if error.code in (
         ErrorCode.INVALID_QUERY,
@@ -97,6 +105,10 @@ def _exit_code(error: CodeHarnessError) -> int:
         ErrorCode.INVALID_EXECUTION_REQUEST,
         ErrorCode.EXECUTION_POLICY_DENIED,
         ErrorCode.EXECUTION_APPROVAL_REQUIRED,
+        ErrorCode.EXECUTION_APPROVAL_INVALID,
+        ErrorCode.EXECUTION_APPROVAL_EXPIRED,
+        ErrorCode.EXECUTION_APPROVAL_CONSUMED,
+        ErrorCode.EXECUTION_APPROVAL_DENIED,
         ErrorCode.EXECUTION_ELEVATED_SESSION,
     ):
         return 2

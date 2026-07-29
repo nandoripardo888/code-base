@@ -10,6 +10,7 @@ import typer
 from code_harness.application.dto.execution_requests import (
     InspectPowerShellRequest,
     InspectProcessRequest,
+    RunPowerShellRequest,
     RunProcessRequest,
 )
 from code_harness.domain.enums import ApprovalState, ExecutionCapability
@@ -259,19 +260,7 @@ def inspect_powershell(
         container = state.container()
         if container.execution is None:
             raise ExecutionDisabledError()
-        if file is not None and script is not None:
-            raise InvalidQueryError("Provide either --script or --file, not both.")
-        if file is not None:
-            absolute, _relative = PathGuard(container.project.root).resolve_within_root(
-                str(file),
-                expected_kind="file",
-                must_exist=True,
-            )
-            script_text = Path(absolute).read_text(encoding="utf-8")
-        elif script is not None:
-            script_text = script
-        else:
-            raise InvalidQueryError("Provide --script or --file.")
+        script_text = _load_powershell_script(container.project.root, script=script, file=file)
         request = InspectPowerShellRequest(
             script_text,
             cwd,
@@ -283,3 +272,69 @@ def inspect_powershell(
         return container.execution.inspect_powershell.execute(request)
 
     _execute(state, operation)
+
+
+@execution_app.command("run-powershell")
+def run_powershell(
+    ctx: typer.Context,
+    script: Annotated[
+        str | None,
+        typer.Option("--script", help="PowerShell script text to execute."),
+    ] = None,
+    file: Annotated[
+        Path | None,
+        typer.Option("--file", help="Read script text from a file under the project."),
+    ] = None,
+    cwd: Annotated[str, typer.Option("--cwd", help="Working directory inside the project.")] = ".",
+    timeout_seconds: Annotated[float | None, typer.Option("--timeout-seconds")] = None,
+    max_output_bytes: Annotated[int | None, typer.Option("--max-output-bytes")] = None,
+    capability: Annotated[list[str] | None, typer.Option("--capability")] = None,
+    reason: Annotated[str | None, typer.Option("--reason")] = None,
+    approval_id: Annotated[
+        str | None,
+        typer.Option("--approval-id", help="Approved single-use request ID."),
+    ] = None,
+) -> None:
+    """Run an approved PowerShell 7 script under Windows supervision."""
+    from code_harness.interfaces.cli.main import _execute
+
+    state: CliState = ctx.obj
+
+    def operation() -> ToolResult[ExecutionResult]:
+        container = state.container()
+        if container.execution is None:
+            raise ExecutionDisabledError()
+        script_text = _load_powershell_script(container.project.root, script=script, file=file)
+        return container.execution.run_powershell.execute(
+            RunPowerShellRequest(
+                script=script_text,
+                cwd=cwd,
+                timeout_seconds=timeout_seconds,
+                max_output_bytes=max_output_bytes,
+                requested_capabilities=_parse_capabilities(capability),
+                reason=reason,
+                approval_id=approval_id,
+            )
+        )
+
+    _execute(state, operation)
+
+
+def _load_powershell_script(
+    project_root: str,
+    *,
+    script: str | None,
+    file: Path | None,
+) -> str:
+    if file is not None and script is not None:
+        raise InvalidQueryError("Provide either --script or --file, not both.")
+    if file is not None:
+        absolute, _relative = PathGuard(project_root).resolve_within_root(
+            str(file),
+            expected_kind="file",
+            must_exist=True,
+        )
+        return Path(absolute).read_text(encoding="utf-8")
+    if script is not None:
+        return script
+    raise InvalidQueryError("Provide --script or --file.")

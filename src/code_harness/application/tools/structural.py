@@ -681,8 +681,7 @@ class FindReferencesTool(_StructuralTool):
                     cached_source = source_cache.get(location.path)
                     source_content = (
                         None
-                        if cached_source is None
-                        or isinstance(cached_source, CodeHarnessError)
+                        if cached_source is None or isinstance(cached_source, CodeHarnessError)
                         else cached_source.content
                     )
                     kind = _classify_lexical_reference(
@@ -712,11 +711,7 @@ class FindReferencesTool(_StructuralTool):
                                 confidence=(
                                     0.25
                                     if kind == "comment_textual"
-                                    else (
-                                        0.45
-                                        if kind == "configuration_textual"
-                                        else 0.65
-                                    )
+                                    else (0.45 if kind == "configuration_textual" else 0.65)
                                 ),
                                 validated=True,
                                 resolution="name_only",

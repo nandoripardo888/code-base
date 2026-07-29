@@ -216,7 +216,7 @@ class BuildContextTool:
                 snippets=bundle.snippet_truncated,
                 candidates=bundle.candidates_truncated,
                 budget_exhausted=bundle.budget_exhausted,
-                    omitted_results=bundle.omitted_results or None,
+                omitted_results=bundle.omitted_results or None,
             )
             if reasons
             else None
@@ -415,11 +415,7 @@ class BuildContextTool:
             return pending, []
         anchors = [item for item in pending if item.scope == "anchor"]
         if not anchors:
-            structural = [
-                item
-                for item in pending
-                if MatchType.SYMBOL in item.source_match_types
-            ]
+            structural = [item for item in pending if MatchType.SYMBOL in item.source_match_types]
             if structural:
                 inferred = max(
                     structural,
@@ -430,8 +426,7 @@ class BuildContextTool:
                     ),
                 )
                 pending = [
-                    replace(item, scope="anchor") if item is inferred else item
-                    for item in pending
+                    replace(item, scope="anchor") if item is inferred else item for item in pending
                 ]
                 anchors = [replace(inferred, scope="anchor")]
             else:
@@ -458,9 +453,7 @@ class BuildContextTool:
                 "using the bounded search snippets."
             ]
         if source.content_hash != primary.snippet.file_hash:
-            return pending, [
-                f"Could not expand stale anchor {location.path}; reindex it."
-            ]
+            return pending, [f"Could not expand stale anchor {location.path}; reindex it."]
 
         lines = source.content.splitlines(keepends=True)
         if not lines:
@@ -508,11 +501,7 @@ class BuildContextTool:
             )
             cursor = block_end + 1
 
-        fallback = [
-            item
-            for item in pending
-            if item.scope != "anchor" and item.score >= 0.65
-        ]
+        fallback = [item for item in pending if item.scope != "anchor" and item.score >= 0.65]
         return [*blocks, *fallback], []
 
     def _apply_budget(
@@ -576,9 +565,7 @@ class BuildContextTool:
                 rendered = "".join(lines[start_line - 1 : end_line])
                 window_start = start_line
                 window_end = end_line
-                windows = (
-                    LineWindow(start_line, end_line, "anchor_continuation", 1.0),
-                )
+                windows = (LineWindow(start_line, end_line, "anchor_continuation", 1.0),)
             else:
                 windows = select_query_windows(
                     content=source.content,

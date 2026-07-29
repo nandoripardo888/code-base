@@ -51,33 +51,67 @@ class ApprovalAdminTool:
         approval_id: str,
         *,
         reason: str | None = None,
+        decision_source: str = "local_admin",
+        session_id: str | None = None,
     ) -> ToolResult[ExecutionApproval]:
-        return self._decide(approval_id, ApprovalState.APPROVED, reason)
+        return self._decide(
+            approval_id,
+            ApprovalState.APPROVED,
+            reason,
+            decision_source=decision_source,
+            session_id=session_id,
+        )
 
     def deny(
         self,
         approval_id: str,
         *,
         reason: str | None = None,
+        decision_source: str = "local_admin",
+        session_id: str | None = None,
     ) -> ToolResult[ExecutionApproval]:
-        return self._decide(approval_id, ApprovalState.DENIED, reason)
+        return self._decide(
+            approval_id,
+            ApprovalState.DENIED,
+            reason,
+            decision_source=decision_source,
+            session_id=session_id,
+        )
 
     def _decide(
         self,
         approval_id: str,
         state: ApprovalState,
         reason: str | None,
+        *,
+        decision_source: str,
+        session_id: str | None,
     ) -> ToolResult[ExecutionApproval]:
         if not approval_id.strip():
             raise InvalidExecutionRequestError("approval_id must not be empty")
         if reason is not None and len(reason) > 4_000:
             raise InvalidExecutionRequestError("reason must not exceed 4000 characters")
+        if decision_source not in {"local_admin", "mcp_elicitation"}:
+            raise InvalidExecutionRequestError(
+                "decision_source must be local_admin or mcp_elicitation"
+            )
+        if decision_source == "mcp_elicitation":
+            if session_id is None or not session_id.strip():
+                raise InvalidExecutionRequestError("MCP elicitation decisions require a session_id")
+            if len(session_id) > 128:
+                raise InvalidExecutionRequestError("session_id must not exceed 128 characters")
+        elif session_id is not None:
+            raise InvalidExecutionRequestError(
+                "session_id is only valid for MCP elicitation decisions"
+            )
         approval, elapsed_ms = timed(
             lambda: self._store.decide_approval(
                 self._project_id,
                 approval_id,
                 state=state,
                 reason=self._redact.redact(reason),
+                decision_source=decision_source,
+                session_id=session_id,
             )
         )
         return ToolResult(approval, elapsed_ms)

@@ -6,6 +6,7 @@ from code_harness.domain.protocols.command_policy import (
 )
 from code_harness.domain.protocols.diagnostic_provider import DiagnosticProvider
 from code_harness.domain.protocols.embedding_provider import EmbeddingProvider
+from code_harness.domain.protocols.execution_runtime import ExecutionRegistry, ExecutionTaskControl
 from code_harness.domain.protocols.execution_store import ApprovalStore, ExecutionStore
 from code_harness.domain.protocols.file_catalog import FileCatalog
 from code_harness.domain.protocols.index_source_reader import IndexSourceReader
@@ -20,7 +21,9 @@ __all__ = [
     "CommandPolicy",
     "DiagnosticProvider",
     "EmbeddingProvider",
+    "ExecutionRegistry",
     "ExecutionStore",
+    "ExecutionTaskControl",
     "FileCatalog",
     "IndexSourceReader",
     "ProcessExecutableResolver",

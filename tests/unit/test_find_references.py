@@ -341,9 +341,7 @@ def test_find_references_expands_lexical_limit_to_backfill_filtered_comments() -
         lexical,
     )
 
-    result = tool.execute(
-        FindReferencesRequest("TARGET_ID", max_results=2, include_comments=False)
-    )
+    result = tool.execute(FindReferencesRequest("TARGET_ID", max_results=2, include_comments=False))
 
     assert len(result.data) == 2
     assert all(

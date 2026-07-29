@@ -4,9 +4,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from code_harness.application.dto.execution_requests import (
+    GetExecutionRequest,
     InspectPowerShellRequest,
     InspectProcessRequest,
+    RunPowerShellRequest,
     RunProcessRequest,
+    TerminateExecutionRequest,
 )
 from code_harness.application.dto.requests import (
     BuildContextRequest,
@@ -136,6 +139,7 @@ class CodeHarness:
         requested_capabilities: tuple[ExecutionCapability | str, ...] = (),
         reason: str | None = None,
         approval_id: str | None = None,
+        wait: bool = True,
     ) -> ToolResult[ExecutionResult]:
         capabilities = tuple(
             item if isinstance(item, ExecutionCapability) else ExecutionCapability(item)
@@ -151,7 +155,57 @@ class CodeHarness:
                 requested_capabilities=capabilities,
                 reason=reason,
                 approval_id=approval_id,
+                wait=wait,
             )
+        )
+
+    def run_powershell(
+        self,
+        script: str,
+        *,
+        cwd: str = ".",
+        timeout_seconds: float | None = None,
+        max_output_bytes: int | None = None,
+        requested_capabilities: tuple[ExecutionCapability | str, ...] = (),
+        reason: str | None = None,
+        approval_id: str | None = None,
+        wait: bool = True,
+    ) -> ToolResult[ExecutionResult]:
+        capabilities = tuple(
+            item if isinstance(item, ExecutionCapability) else ExecutionCapability(item)
+            for item in requested_capabilities
+        )
+        return self._execution().run_powershell.execute(
+            RunPowerShellRequest(
+                script=script,
+                cwd=cwd,
+                timeout_seconds=timeout_seconds,
+                max_output_bytes=max_output_bytes,
+                requested_capabilities=capabilities,
+                reason=reason,
+                approval_id=approval_id,
+                wait=wait,
+            )
+        )
+
+    def get_execution(
+        self,
+        execution_id: str,
+        *,
+        include_output: bool = True,
+    ) -> ToolResult[ExecutionResult]:
+        return self._execution().get_execution.execute(
+            GetExecutionRequest(execution_id, include_output)
+        )
+
+    def terminate_execution(
+        self,
+        execution_id: str,
+        *,
+        reason: str | None = None,
+    ) -> ToolResult[ExecutionResult]:
+        return self._execution().terminate_execution.execute(
+            TerminateExecutionRequest(execution_id, reason)
         )
 
     def list_execution_approvals(

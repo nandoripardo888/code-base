@@ -15,6 +15,9 @@ from code_harness.domain.models.index_report import (
 from code_harness.domain.protocols.capability_reporter import CapabilityReporter
 from code_harness.domain.protocols.embedding_provider import EmbeddingProvider
 from code_harness.domain.protocols.structural_analyzer import StructuralAnalyzer
+from code_harness.infrastructure.execution.persistence.migrations import (
+    SCHEMA_VERSION as EXECUTION_SCHEMA_VERSION,
+)
 from code_harness.infrastructure.persistence.migrations import SCHEMA_VERSION
 from code_harness.infrastructure.ripgrep.discovery import probe_ripgrep
 
@@ -35,6 +38,8 @@ class LocalDiagnosticProvider:
         execution_home: Path | None = None,
         execution_store_path: Path | None = None,
         execution_allow_elevated: bool = False,
+        execution_powershell_enabled: bool = False,
+        execution_powershell_executable: str = "pwsh",
         mcp_expose_execution: bool = False,
     ) -> None:
         self._root = root
@@ -50,6 +55,8 @@ class LocalDiagnosticProvider:
         self._execution_home = execution_home
         self._execution_store_path = execution_store_path
         self._execution_allow_elevated = execution_allow_elevated
+        self._execution_powershell_enabled = execution_powershell_enabled
+        self._execution_powershell_executable = execution_powershell_executable
         self._mcp_expose_execution = mcp_expose_execution
 
     def run(self, *, deep: bool = False) -> DoctorReport:
@@ -152,6 +159,7 @@ class LocalDiagnosticProvider:
                 f"Execution runtime directory: {home or self._root}.",
             ),
             audit_check,
+            self._execution_powershell_check(),
             DiagnosticCheck(
                 "execution_elevation",
                 DiagnosticStatus.WARNING
@@ -164,10 +172,39 @@ class LocalDiagnosticProvider:
             DiagnosticCheck(
                 "execution_mcp",
                 DiagnosticStatus.WARNING if self._mcp_expose_execution else DiagnosticStatus.PASS,
-                "MCP execution exposure is configured but is not implemented."
+                "MCP execution exposure is enabled; only connect trusted clients."
                 if self._mcp_expose_execution
                 else "MCP execution exposure is disabled.",
             ),
+        )
+
+    def _execution_powershell_check(self) -> DiagnosticCheck:
+        if not self._execution_powershell_enabled:
+            return DiagnosticCheck(
+                "execution_powershell",
+                DiagnosticStatus.PASS,
+                "PowerShell execution is disabled.",
+            )
+        try:
+            from code_harness.infrastructure.execution.analysis import PowerShellAstAnalyzer
+            from code_harness.infrastructure.execution.runners import (
+                PowerShell7ExecutableResolver,
+            )
+
+            executable = PowerShell7ExecutableResolver().resolve(
+                self._execution_powershell_executable
+            )
+            PowerShellAstAnalyzer(executable).analyze("", timeout_seconds=5)
+        except CodeHarnessError as error:
+            return DiagnosticCheck(
+                "execution_powershell",
+                DiagnosticStatus.WARNING,
+                error.message,
+            )
+        return DiagnosticCheck(
+            "execution_powershell",
+            DiagnosticStatus.PASS,
+            f"PowerShell 7 execution is available: {executable}.",
         )
 
     def _execution_store_check(self) -> DiagnosticCheck:
@@ -189,11 +226,14 @@ class LocalDiagnosticProvider:
                 DiagnosticStatus.FAIL,
                 f"Execution audit store check failed: {error}.",
             )
-        healthy = integrity == "ok" and version == 1
+        healthy = integrity == "ok" and version == EXECUTION_SCHEMA_VERSION
         return DiagnosticCheck(
             "execution_audit_store",
             DiagnosticStatus.PASS if healthy else DiagnosticStatus.FAIL,
-            f"Execution audit store integrity={integrity}; schema={version}/1.",
+            (
+                "Execution audit store "
+                f"integrity={integrity}; schema={version}/{EXECUTION_SCHEMA_VERSION}."
+            ),
         )
 
     def _ripgrep_check(self) -> DiagnosticCheck:

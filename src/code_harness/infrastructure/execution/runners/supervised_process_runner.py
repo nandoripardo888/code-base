@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 from code_harness.domain.errors import (
@@ -10,6 +11,7 @@ from code_harness.domain.errors import (
     ExecutionNotSupportedError,
 )
 from code_harness.domain.models.execution import NormalizedProcessCommand, ProcessRunOutcome
+from code_harness.domain.protocols.execution_runtime import ExecutionTaskControl
 from code_harness.infrastructure.execution.runners.executable_resolver import (
     HostExecutableResolver,
 )
@@ -22,6 +24,26 @@ class SupervisedProcessRunner:
         self._allow_elevated = allow_elevated
 
     def run(self, command: NormalizedProcessCommand) -> ProcessRunOutcome:
+        return self._run(command)
+
+    def run_controlled(
+        self,
+        command: NormalizedProcessCommand,
+        *,
+        control: ExecutionTaskControl,
+        on_started: Callable[[], None],
+    ) -> ProcessRunOutcome:
+        return self._run(command, control=control, on_started=on_started)
+
+    def _run(
+        self,
+        command: NormalizedProcessCommand,
+        *,
+        control: ExecutionTaskControl | None = None,
+        on_started: Callable[[], None] | None = None,
+    ) -> ProcessRunOutcome:
+        if control is not None and control.cancellation_requested:
+            return _cancelled_outcome()
         if os.name != "nt":
             raise ExecutionNotSupportedError(
                 "host_supervised execution currently requires Windows."
@@ -43,6 +65,8 @@ class SupervisedProcessRunner:
             max_output_bytes=command.max_output_bytes,
             execution_home=self._execution_home,
             max_processes=self._max_processes,
+            control=control,
+            on_started=on_started,
         )
 
     @staticmethod
@@ -57,3 +81,18 @@ def _is_elevated() -> bool:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except (AttributeError, OSError):  # pragma: no cover - unavailable Windows API
         return True
+
+
+def _cancelled_outcome() -> ProcessRunOutcome:
+    return ProcessRunOutcome(
+        exit_code=None,
+        stdout="",
+        stderr="",
+        stdout_bytes=0,
+        stderr_bytes=0,
+        stdout_truncated=False,
+        stderr_truncated=False,
+        timed_out=False,
+        elapsed_ms=0,
+        cancelled=True,
+    )

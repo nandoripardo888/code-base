@@ -133,9 +133,7 @@ def _percentile(sorted_values: list[float], percentile: float) -> float:
 def _summarize_metric(values: list[float]) -> dict[str, float]:
     ordered = sorted(values)
     mid = len(ordered) // 2
-    median = (
-        ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2.0
-    )
+    median = ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2.0
     return {
         "min": round(ordered[0], 3),
         "median": round(median, 3),
@@ -202,8 +200,7 @@ def _run_index(arguments: Namespace) -> dict[str, Any]:
     ]
     wall_ms_values = [float(item["wall_ms"]) for item in measured]
     commit_ms_values = [
-        float((item["report"].get("timings") or {}).get("commit_ms") or 0.0)
-        for item in measured
+        float((item["report"].get("timings") or {}).get("commit_ms") or 0.0) for item in measured
     ]
     files_per_second = [
         float((item["report"].get("timings") or {}).get("files_per_second") or 0.0)
@@ -273,14 +270,8 @@ def _run_index(arguments: Namespace) -> dict[str, Any]:
             encoding="utf-8",
         )
         print(f"wrote {arguments.output}")
-    if (
-        arguments.max_commit_ms is not None
-        and float(commit_agg["p95"]) > arguments.max_commit_ms
-    ):
-        raise SystemExit(
-            f"commit p95 {commit_agg['p95']} ms exceeds "
-            f"{arguments.max_commit_ms} ms"
-        )
+    if arguments.max_commit_ms is not None and float(commit_agg["p95"]) > arguments.max_commit_ms:
+        raise SystemExit(f"commit p95 {commit_agg['p95']} ms exceeds {arguments.max_commit_ms} ms")
     return summary if total_runs > 1 else measured[0]
 
 

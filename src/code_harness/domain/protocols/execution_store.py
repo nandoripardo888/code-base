@@ -37,6 +37,8 @@ class ApprovalStore(Protocol):
         *,
         state: ApprovalState,
         reason: str | None = None,
+        decision_source: str = "local_admin",
+        session_id: str | None = None,
     ) -> ExecutionApproval: ...
 
 
@@ -51,6 +53,20 @@ class ExecutionStore(Protocol):
     ) -> None: ...
 
     def record_blocked(self, start: ExecutionAuditStart, *, reason: str) -> None: ...
+
+    def mark_running(self, execution_id: str, *, started_at: str) -> None: ...
+
+    def record_cancellation_requested(
+        self,
+        execution_id: str,
+        *,
+        requested_at: str,
+        reason: str | None,
+    ) -> bool: ...
+
+    def list_active_slots(self, project_id: str) -> tuple[tuple[str, int | None], ...]: ...
+
+    def recover_interrupted(self, execution_id: str, *, finished_at: str) -> bool: ...
 
     def finish_execution(
         self,

@@ -195,9 +195,9 @@ def test_index_tracks_changed_removed_and_verify_differences(copied_repository: 
             ).fetchone()[0]
         )
         removed_fts_rows = int(
-            connection.execute(
-                "SELECT COUNT(*) FROM file_fts WHERE path = 'README.md'"
-            ).fetchone()[0]
+            connection.execute("SELECT COUNT(*) FROM file_fts WHERE path = 'README.md'").fetchone()[
+                0
+            ]
         )
     assert mismatched_fts_rows == 0
     assert removed_fts_rows == 0
@@ -315,9 +315,7 @@ def test_fts_migration_rolls_back_when_documents_do_not_match_files(
 
     with sqlite3.connect(database) as connection:
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        old_rows = connection.execute(
-            "SELECT rowid, path FROM file_fts ORDER BY rowid"
-        ).fetchall()
+        old_rows = connection.execute("SELECT rowid, path FROM file_fts ORDER BY rowid").fetchall()
         replacement = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE name = 'file_fts_v6'"
         ).fetchone()

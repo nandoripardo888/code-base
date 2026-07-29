@@ -2,7 +2,7 @@
 
 ## 0. Controle do documento
 
-Última atualização: **25 de julho de 2026** (E0, E1 e E2 concluídas localmente).
+Última atualização: **26 de julho de 2026** (E0–E5 concluídas localmente).
 
 Clone validado: repositório Git `code-base` (`origin`: `nandoripardo888/code-base`), pacote Python `code-harness` em `src/code_harness/`, branch `main` em `ae62c74` antes desta entrega.
 
@@ -29,9 +29,9 @@ O repositório já possui:
 - testes arquiteturais em `tests/contract/test_architecture.py`;
 - cobertura mínima (`fail_under = 85` em `pyproject.toml`).
 
-E0–E2 já introduziram os contratos, inspeção, runner supervisionado, aprovação e
-auditoria descritos neste plano. PowerShell livre, assíncrono, MCP de execução,
-worktree e Windows Sandbox permanecem futuros.
+E0–E5 já introduziram contratos, inspeção, runners supervisionados, aprovação,
+auditoria, PowerShell livre, assíncrono/cancelamento in-process e MCP
+separadamente opt-in. Worktree e Windows Sandbox permanecem futuros.
 
 ### 0.2 Nova fronteira de confiança
 
@@ -144,6 +144,7 @@ A primeira entrega não incluirá:
 execution_enabled = false
 mcp_expose_execution = false
 mcp_expose_powershell = false
+mcp_execution_elicitation_enabled = false
 ```
 
 Nenhuma dependência Windows de execução deverá ser importada no caminho frio quando a execução estiver desabilitada. Em concreto: `build_container` **não** importa `code_harness.infrastructure.execution*` no topo do módulo; o import fica dentro de `build_execution_container` chamado só se `execution_enabled`.
@@ -833,7 +834,10 @@ Se `pwsh` ausente → `PowerShellUnavailableError`.
 
 Limites separados para stdout, stderr e combinado; leitura concorrente; truncamento marcado; redaction de tokens/headers/URLs/keys; não persistir saída completa por padrão.
 
-Primeira versão síncrona; fase assíncrona adiciona `wait=false`, `get_execution`, `terminate_execution`.
+E4 adiciona `wait=false`, `get_execution` e `terminate_execution` na API Python.
+A execução assíncrona vive somente no processo atual; a CLI permanece bloqueante.
+Resultados redigidos ficam em LRU de memória com 100 entradas e não são gravados
+no SQLite.
 
 Serialização: reutilizar `interfaces/serialization.to_primitive` / `serialize_tool_result` / `serialize_error`. Estender renderer CLI (`output.py`) para formato texto de inspeção/execução.
 
@@ -882,7 +886,14 @@ execution_approval_ttl_seconds: int = 600
 execution_keep_artifacts: bool = False
 mcp_expose_execution: bool = False
 mcp_expose_powershell: bool = False
+mcp_execution_elicitation_enabled: bool = False
+mcp_execution_elicitation_trust_mode: str = "disabled"
 ```
+
+`mcp_execution_elicitation_trust_mode` começa com os valores `disabled` e
+`local_interactive`. O segundo só é válido para uma conexão local iniciada por
+uma UI que o operador decidiu tratar como canal de confirmação. Nome/versão
+declarados em `clientInfo` não bastam para estabelecer confiança.
 
 Variáveis de ambiente (espelhar nomenclatura existente `CODE_HARNESS_*`):
 
@@ -901,9 +912,14 @@ CODE_HARNESS_EXECUTION_ARTIFACTS_PATH
 CODE_HARNESS_EXECUTION_APPROVAL_TTL_SECONDS
 CODE_HARNESS_MCP_EXPOSE_EXECUTION
 CODE_HARNESS_MCP_EXPOSE_POWERSHELL
+CODE_HARNESS_MCP_EXECUTION_ELICITATION
+CODE_HARNESS_MCP_EXECUTION_ELICITATION_TRUST_MODE
 ```
 
-Combinações inseguras falham no `__post_init__` (ex.: `mcp_expose_execution` sem `execution_enabled`; `mcp_expose_powershell` sem powershell + execution; backend desconhecido).
+Combinações inseguras falham no `__post_init__` (ex.:
+`mcp_expose_execution` sem `execution_enabled`; `mcp_expose_powershell` sem
+powershell + execution; elicitação habilitada sem exposição MCP de execução ou
+com trust mode `disabled`; backend desconhecido).
 
 ---
 
@@ -988,6 +1004,35 @@ if settings.execution_enabled and settings.mcp_expose_execution:
 Tools: `inspect_process`, `inspect_powershell`, `run_process`, `run_powershell`, `get_execution`, `terminate_execution`.
 
 **Não** expor: `approve_execution`, `deny_execution`, `alter_policy`, `alter_protected_paths`, `alter_backend`.
+
+Quando uma execução exigir aprovação, E5 deverá preferir **elicitação MCP**
+(`elicitation`) se todas estas condições forem atendidas:
+
+- o cliente declarou suporte à capability durante a inicialização;
+- a elicitação está habilitada explicitamente nas settings;
+- a conexão pertence a um cliente interativo configurado como canal confiável
+  de confirmação humana.
+
+O servidor enviará ao cliente um pedido estruturado com resumo legível,
+comando ou hash do script, `cwd`, projeto, backend, capabilities/riscos,
+limites, validade e digest canônico. A interface deverá oferecer as decisões
+**aprovar**, **recusar** e **cancelar**. Aceite cria autorização de uso único,
+com TTL curto, vinculada à sessão, projeto, digest, `ruleset_hash`, backend e
+executável resolvido; não concede permissão geral e não altera policy.
+
+A resposta da elicitação é um transporte da decisão do usuário, não prova
+criptográfica de presença humana. Por isso, clientes não confiáveis, automações
+e sessões não interativas não poderão usar esse caminho para aprovar. Nesses
+casos, ou quando o cliente não suportar elicitação, `run_process` /
+`run_powershell` retornarão `approval_required` com instruções para aprovação
+pela CLI/API local. Recusa, cancelamento, timeout, digest divergente ou perda da
+sessão não consomem nem concedem aprovação.
+
+O handler poderá continuar a chamada original depois da confirmação ou pedir
+retry explícito, conforme o suporte do SDK MCP adotado, preservando a mesma
+semântica de autorização nos dois fluxos. A decisão e sua origem
+(`mcp_elicitation` ou `local_admin`) serão auditadas, sem persistir o conteúdo
+completo de stdout/stderr ou segredos.
 
 Handlers apenas: protocolo → DTO → tool → `serialize_tool_result` / `serialize_error`.
 
@@ -1159,6 +1204,11 @@ continua bloqueado como wrapper de shell no host.
 
 ### E3 — PowerShell livre
 
+**Estado: concluída localmente em 26/07/2026.** A execução PowerShell possui
+gate separado, aprovação obrigatória vinculada ao script hash e ao `pwsh`
+resolvido, script temporário com DACL protegida, argumentos fixos sem perfil,
+Job Object, timeout, limites de saída, cleanup e auditoria sanitizada.
+
 **Pré-requisito de máquina:** instalar PowerShell 7 (`pwsh` no PATH).
 
 **Criar:** `powershell_runner.py`, `windows/acl.py`, `run_powershell.py`, testes de segurança PS.
@@ -1167,17 +1217,69 @@ continua bloqueado como wrapper de shell no host.
 
 ### E4 — Assíncrono e cancelamento
 
-**Criar/alterar:** `process_registry.py`, `get_execution` / `terminate_execution`, recovery, concorrência.
+**Estado: concluída localmente em 26/07/2026.** `run_process` e `run_powershell`
+mantêm `wait=True` como default e aceitam `wait=False` na API Python. O registry
+in-process oferece polling, cancelamento idempotente, shutdown coordenado e LRU
+de 100 resultados redigidos. Concorrência por projeto usa slots de file lock
+crash-safe, com rejeição imediata antes do consumo de aprovação; recovery marca
+como `failed/execution_interrupted` somente registros cujo slot ficou livre.
 
-**Aceite:** cancelamento não deixa filhos.
+**Criado/alterado:** `process_registry.py`, limitador por projeto,
+`get_execution` / `terminate_execution`, migration v2, runners controláveis,
+settings/API/lifecycle e testes E4.
+
+**Aceite:** cancelamento via Job Object não deixa filhos; timeout continua
+distinto de cancelamento; stdout/stderr não são persistidos. A integração real
+fica no marker `windows_e4` do runner Windows não administrador.
 
 ### E5 — MCP opcional
 
-**Criar:** `interfaces/mcp/execution_handlers.py`
+**Estado: concluída localmente em 26/07/2026.** Execução, acompanhamento e
+cancelamento possuem gate MCP separado; PowerShell exige um segundo gate.
+Elicitação por formulário requer capability negociada, opt-in e trust mode
+`local_interactive`. O aceite aprova e consome o digest exato na mesma chamada;
+clientes incompatíveis preservam o retry após aprovação local. Nenhuma tool ou
+argumento MCP concede ou administra aprovação. A migration v3 persiste a origem
+e o identificador opaco da sessão confirmadora; o consumo por outra sessão é
+rejeitado. O resumo exibido escapa caracteres de controle e aplica redaction.
+Um teste com transporte MCP real em memória valida elicitação para processo e
+PowerShell, além dos testes unitários de recusa, cancelamento, timeout,
+desconexão, concorrência, replay e vínculo da sessão.
 
-**Alterar:** `handlers.py`, `server.py`, `test_mcp_adapter.py`
+**Objetivo:** expor execução, acompanhamento e cancelamento pelo MCP e permitir
+que um cliente interativo compatível apresente ao usuário a confirmação de uma
+execução sensível, sem registrar tools administrativas de aprovação.
 
-**Aceite:** cliente MCP não consegue se autoaprovar.
+**Criar:** `interfaces/mcp/execution_handlers.py` e adaptador de elicitação /
+confirmação humana interno ao MCP.
+
+**Alterar:** `handlers.py`, `server.py`, settings, capability/instructions,
+serialização de erros e `test_mcp_adapter.py`.
+
+**Fluxo principal:**
+
+1. cliente chama `run_process` ou `run_powershell`;
+2. policy inspeciona a solicitação e produz o digest;
+3. se for necessária aprovação e houver elicitação confiável, o servidor pede
+   a decisão ao usuário pela interface do cliente;
+4. aceite explícito gera aprovação atômica, temporária e de uso único para
+   aquele digest e permite continuar ou repetir a execução;
+5. recusa/cancelamento retorna resultado tipado sem iniciar processo;
+6. sem elicitação, o servidor retorna `approval_required` e orienta aprovação
+   pela CLI/API local.
+
+**Testes obrigatórios:** negociação de capability; cliente compatível e
+incompatível; feature desligada; aceite, recusa, cancelamento e timeout;
+alteração de script/comando, `cwd`, projeto, limites, backend, executável ou
+policy após a confirmação; replay e concorrência; sessão desconectada;
+redaction/auditoria; garantia de que nenhuma tool administrativa de aprovação
+foi registrada.
+
+**Aceite:** o usuário consegue aprovar pela UI de um cliente MCP interativo
+confiável; clientes sem suporte mantêm o fallback local; nenhuma execução
+ocorre após recusa/cancelamento; a confirmação vale uma única vez e somente
+para o digest exibido; o agente não dispõe de tool, argumento ou endpoint MCP
+para aprovar a própria solicitação.
 
 ### E6 — Worktree
 
@@ -1205,12 +1307,16 @@ Mantida a sequência original (§28 anterior), com ajustes de mensagem onde coub
 
 ## 29. Critérios globais
 
-Mantidos os 30 critérios do plano original (desabilitado por padrão; inspeção sem execução; `run_process` sem shell; PowerShell livre com aprovação no host; digest; MCP sem approve; stores separados; sem falsa garantia; etc.), com estes esclarecimentos:
+Mantidos os 30 critérios do plano original (desabilitado por padrão; inspeção sem execução; `run_process` sem shell; PowerShell livre com aprovação no host; digest; MCP sem tool administrativa de aprovação; stores separados; sem falsa garantia; etc.), com estes esclarecimentos:
 
 - instalação básica sem depender de `pwsh`/pywin32;
 - API retorna `ToolResult[…]`;
 - pasta de backends ≠ nome “sandbox” para o host;
 - CI Linux permanece verde sem o extra `execution`.
+- elicitação MCP é opt-in, negociada por capability e restrita a clientes
+  interativos configurados como canal confiável de confirmação;
+- ausência de elicitação sempre preserva o fluxo de aprovação local por
+  CLI/API.
 
 ---
 
@@ -1242,7 +1348,10 @@ Começar por E0 e revisar antes de E1.
 
 Não iniciar `run_process` antes de: modelos/erros estáveis; policy com testes negativos; AST validada como análise sem execução do usuário; digest canônico; guarantees modeladas.
 
-Não expor MCP antes de: CLI/API estáveis; aprovação local; cancelamento; Job Object validado; erros/redaction testados.
+Não expor MCP antes de: CLI/API estáveis; aprovação local; cancelamento; Job
+Object validado; erros/redaction testados. Não habilitar elicitação antes de:
+capability negotiation validada; vínculo sessão/digest implementado; fallback
+local testado; UI do cliente distinguindo aceitar, recusar e cancelar.
 
 Instalar PowerShell 7 neste host antes de E3 (e preferencialmente antes do smoke AST de E0 para `inspect_powershell`).
 
@@ -1261,7 +1370,9 @@ Decisões centrais **preservadas**:
 
 - execução opcional e desabilitada por padrão;
 - MCP como adaptador fino;
-- aprovação não disponível ao cliente MCP;
+- nenhuma tool administrativa de aprovação disponível ao cliente MCP;
+- elicitação opcional apenas transporta uma confirmação humana vinculada ao
+  digest; clientes não confiáveis continuam no fluxo local;
 - stores de índice e execução separados;
 - `host_supervised` não deve ser chamado de sandbox;
 - `run_process` sem shell;

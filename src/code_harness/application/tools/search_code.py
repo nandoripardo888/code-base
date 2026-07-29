@@ -283,9 +283,7 @@ class SearchCodeTool:
             tasks: dict[str, Callable[[], _StrategyResult]] = {
                 "fts": lambda: self._lexical_candidates(request, classification, plan),
                 "symbol": lambda: self._symbol_candidates(request, classification, plan),
-                "references": lambda: self._reference_candidates(
-                    request, classification, plan
-                ),
+                "references": lambda: self._reference_candidates(request, classification, plan),
                 "paths": lambda: self._path_candidates(request, classification),
             }
             if classification.kind is not QueryKind.EXACT:
@@ -530,13 +528,10 @@ class SearchCodeTool:
         plan: QueryPlan,
     ) -> tuple[tuple[str, ...], ...]:
         scopes: list[tuple[str, ...]] = []
-        if (
-            plan.anchor_path is not None
-            and _matches_globs(
-                plan.anchor_path,
-                request.include_globs,
-                request.exclude_globs,
-            )
+        if plan.anchor_path is not None and _matches_globs(
+            plan.anchor_path,
+            request.include_globs,
+            request.exclude_globs,
         ):
             scopes.append((plan.anchor_path,))
         scopes.append(request.include_globs)
@@ -743,9 +738,7 @@ class SearchCodeTool:
                                         "configuration_textual",
                                     }
                                     else (
-                                        0.45
-                                        if reference.kind == "configuration_textual"
-                                        else 0.70
+                                        0.45 if reference.kind == "configuration_textual" else 0.70
                                     )
                                 )
                             ),
@@ -1000,10 +993,7 @@ class SearchCodeTool:
                 group_id = (
                     f"path:{location.path}"
                     if candidate.match_type is MatchType.PATH
-                    else (
-                        f"location:{location.path}:"
-                        f"{location.start_line}:{location.end_line}"
-                    )
+                    else (f"location:{location.path}:{location.start_line}:{location.end_line}")
                 )
             valid.append(
                 replace(
@@ -1018,8 +1008,7 @@ class SearchCodeTool:
                     comment_only=comment_only,
                     scope=(
                         "anchor"
-                        if plan.anchor_path is not None
-                        and location.path == plan.anchor_path
+                        if plan.anchor_path is not None and location.path == plan.anchor_path
                         else "fallback"
                     ),
                 )
@@ -1043,8 +1032,7 @@ class SearchCodeTool:
         for path_candidate in paths:
             for code_candidate in code:
                 if (
-                    path_candidate.snippet.location.path
-                    != code_candidate.snippet.location.path
+                    path_candidate.snippet.location.path != code_candidate.snippet.location.path
                     or code_candidate.group_id is None
                 ):
                     continue

@@ -97,3 +97,33 @@ MIGRATION_1: tuple[str, ...] = (
     ON execution_events(project_id, occurred_at DESC)
     """,
 )
+
+
+MIGRATION_2: tuple[str, ...] = (
+    "ALTER TABLE executions ADD COLUMN slot_index INTEGER",
+    "ALTER TABLE executions ADD COLUMN cancellation_requested_at TEXT",
+    """
+    CREATE INDEX IF NOT EXISTS ix_executions_project_active
+    ON executions(project_id, state, slot_index)
+    """,
+)
+
+
+MIGRATION_3: tuple[str, ...] = (
+    "ALTER TABLE approval_requests ADD COLUMN decision_source TEXT",
+    "ALTER TABLE approval_requests ADD COLUMN session_id TEXT",
+    """
+    UPDATE approval_requests
+    SET decision_source = 'mcp_elicitation',
+        session_id = substr(
+            decision_reason,
+            instr(decision_reason, 'session=') + length('session=')
+        )
+    WHERE decision_reason LIKE 'mcp_elicitation% session=%'
+    """,
+    """
+    UPDATE approval_requests
+    SET decision_source = 'local_admin'
+    WHERE decision_source IS NULL AND decided_at IS NOT NULL
+    """,
+)

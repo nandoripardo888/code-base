@@ -79,16 +79,22 @@ class Settings:
     mcp_expose_index_commands: bool = False
     execution_enabled: bool = False
     execution_backend: str = "host_supervised"
+    execution_powershell_enabled: bool = False
     execution_powershell_executable: str = "pwsh"
     execution_require_approval: bool = True
     execution_default_timeout_seconds: float = 60.0
     execution_max_timeout_seconds: float = 1_800.0
     execution_max_output_bytes: int = 200_000
     execution_max_processes: int = 32
+    execution_max_concurrent: int = 1
     execution_approval_ttl_seconds: int = 600
     execution_allow_elevated: bool = False
     execution_home: Path = field(default_factory=_default_execution_home)
     mcp_expose_execution: bool = False
+    mcp_expose_powershell: bool = False
+    mcp_execution_elicitation_enabled: bool = False
+    mcp_execution_elicitation_trust_mode: str = "disabled"
+    mcp_execution_elicitation_timeout_seconds: float = 120.0
     build_commit: str | None = field(default_factory=_build_commit)
     service_started_at: str = field(default_factory=_service_started_at)
     service_instance_id: str = field(default_factory=_service_instance_id)
@@ -128,10 +134,39 @@ class Settings:
             raise ValueError("execution_max_output_bytes must be greater than zero")
         if not 1 <= self.execution_max_processes <= 32:
             raise ValueError("execution_max_processes must be between 1 and 32")
+        if not 1 <= self.execution_max_concurrent <= 32:
+            raise ValueError("execution_max_concurrent must be between 1 and 32")
         if self.execution_approval_ttl_seconds <= 0:
             raise ValueError("execution_approval_ttl_seconds must be greater than zero")
         if self.mcp_expose_execution and not self.execution_enabled:
             raise ValueError("mcp_expose_execution requires execution_enabled")
+        if self.mcp_expose_powershell and not (
+            self.execution_enabled
+            and self.execution_powershell_enabled
+            and self.mcp_expose_execution
+        ):
+            raise ValueError(
+                "mcp_expose_powershell requires execution_enabled and "
+                "execution_powershell_enabled and mcp_expose_execution"
+            )
+        if self.mcp_execution_elicitation_enabled and not self.mcp_expose_execution:
+            raise ValueError("mcp_execution_elicitation_enabled requires mcp_expose_execution")
+        if self.mcp_execution_elicitation_trust_mode not in {
+            "disabled",
+            "local_interactive",
+        }:
+            raise ValueError(
+                "mcp_execution_elicitation_trust_mode must be one of: disabled, local_interactive"
+            )
+        if (
+            self.mcp_execution_elicitation_enabled
+            and self.mcp_execution_elicitation_trust_mode != "local_interactive"
+        ):
+            raise ValueError("MCP execution elicitation requires trust mode local_interactive")
+        if self.mcp_execution_elicitation_timeout_seconds <= 0:
+            raise ValueError("mcp_execution_elicitation_timeout_seconds must be greater than zero")
+        if self.execution_powershell_enabled and not self.execution_enabled:
+            raise ValueError("execution_powershell_enabled requires execution_enabled")
 
     @property
     def project(self) -> Project:
@@ -208,6 +243,7 @@ class Settings:
             mcp_expose_index_commands=_env_flag("CODE_HARNESS_MCP_EXPOSE_INDEX"),
             execution_enabled=_env_flag("CODE_HARNESS_EXECUTION"),
             execution_backend=os.environ.get("CODE_HARNESS_EXECUTION_BACKEND", "host_supervised"),
+            execution_powershell_enabled=_env_flag("CODE_HARNESS_EXECUTION_POWERSHELL"),
             execution_powershell_executable=os.environ.get("CODE_HARNESS_POWERSHELL", "pwsh"),
             execution_require_approval=os.environ.get(
                 "CODE_HARNESS_EXECUTION_REQUIRE_APPROVAL", "1"
@@ -225,10 +261,25 @@ class Settings:
             execution_max_processes=int(
                 os.environ.get("CODE_HARNESS_EXECUTION_MAX_PROCESSES", "32")
             ),
+            execution_max_concurrent=int(
+                os.environ.get("CODE_HARNESS_EXECUTION_MAX_CONCURRENT", "1")
+            ),
             execution_approval_ttl_seconds=int(
                 os.environ.get("CODE_HARNESS_EXECUTION_APPROVAL_TTL_SECONDS", "600")
             ),
             execution_allow_elevated=_env_flag("CODE_HARNESS_EXECUTION_ALLOW_ELEVATED"),
             execution_home=configured_execution_home,
             mcp_expose_execution=_env_flag("CODE_HARNESS_MCP_EXPOSE_EXECUTION"),
+            mcp_expose_powershell=_env_flag("CODE_HARNESS_MCP_EXPOSE_POWERSHELL"),
+            mcp_execution_elicitation_enabled=_env_flag("CODE_HARNESS_MCP_EXECUTION_ELICITATION"),
+            mcp_execution_elicitation_trust_mode=os.environ.get(
+                "CODE_HARNESS_MCP_EXECUTION_ELICITATION_TRUST_MODE",
+                "disabled",
+            ),
+            mcp_execution_elicitation_timeout_seconds=float(
+                os.environ.get(
+                    "CODE_HARNESS_MCP_EXECUTION_ELICITATION_TIMEOUT_SECONDS",
+                    "120",
+                )
+            ),
         )

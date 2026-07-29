@@ -72,6 +72,7 @@ class ExecutionRuntimeConfig:
     allow_elevated: bool
     execution_home: str
     project_id: str
+    max_concurrent: int = 1
     backend_guarantees: BackendGuarantees = field(
         default_factory=lambda: BackendGuarantees(
             backend="host_supervised",
@@ -84,6 +85,7 @@ class ExecutionRuntimeConfig:
             credentials_isolated=False,
         )
     )
+    powershell_enabled: bool = False
     powershell_executable: str = "pwsh"
     policy_name: str = "deterministic_v1"
     policy_version: str = "1"
@@ -111,6 +113,7 @@ class NormalizedPowerShellCommand:
     max_output_bytes: int
     requested_capabilities: tuple[ExecutionCapability, ...]
     reason: str | None
+    resolved_executable: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +166,7 @@ class ProcessRunOutcome:
     stderr_truncated: bool
     timed_out: bool
     elapsed_ms: int
+    cancelled: bool = False
     stdout_sha256: str | None = None
     stderr_sha256: str | None = None
 
@@ -206,6 +210,8 @@ class ExecutionApproval:
     decided_at: str | None = None
     consumed_at: str | None = None
     decision_reason: str | None = None
+    decision_source: str | None = None
+    session_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,3 +231,5 @@ class ExecutionAuditStart:
     policy_version: str
     ruleset_hash: str
     created_at: str
+    slot_index: int | None = None
+    approval_session_id: str | None = None

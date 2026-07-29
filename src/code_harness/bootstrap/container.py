@@ -96,6 +96,8 @@ class ApplicationContainer:
         if self._shutdown_done[0]:
             return
         self._shutdown_done[0] = True
+        if self.execution is not None:
+            self.execution.shutdown()
         if self._analyzer is not None:
             self._analyzer.shutdown()
         provider = self._embedding_provider
@@ -183,6 +185,8 @@ def build_container(settings: Settings) -> ApplicationContainer:
         execution_home=settings.execution_project_home(),
         execution_store_path=settings.execution_store_path(),
         execution_allow_elevated=settings.execution_allow_elevated,
+        execution_powershell_enabled=settings.execution_powershell_enabled,
+        execution_powershell_executable=settings.execution_powershell_executable,
         mcp_expose_execution=settings.mcp_expose_execution,
     )
     search_files_tool = SearchFilesTool(catalog, project=project, store=store)

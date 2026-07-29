@@ -232,7 +232,5 @@ def test_compact_context_budget_keeps_count_invariant() -> None:
     data = compact["data"]
 
     assert compact["truncated"] is True
-    assert data["considered_results"] == (
-        data["selected_results"] + data["omitted_results"]
-    )
+    assert data["considered_results"] == (data["selected_results"] + data["omitted_results"])
     assert data["omitted"]["response_budget"] == data["omitted_results"]

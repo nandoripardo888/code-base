@@ -247,9 +247,7 @@ def _context_bundle(bundle: ContextBundle, detail: ResponseDetail) -> dict[str, 
         or bundle.budget_exhausted
         or bundle.expansion_limited
     )
-    if detail is ResponseDetail.DETAILED or (
-        detail is ResponseDetail.COMPACT and has_limits
-    ):
+    if detail is ResponseDetail.DETAILED or (detail is ResponseDetail.COMPACT and has_limits):
         payload.update(
             {
                 "considered_results": bundle.considered_results,
@@ -605,9 +603,9 @@ def _sync_budget_metadata(data: Any, removed: list[Any], content_trimmed: bool) 
             data["selected_results"] = max(0, int(data["selected_results"]) - len(removed))
         omitted_by_reason = data.setdefault("omitted", {}) if removed else data.get("omitted")
         if isinstance(omitted_by_reason, dict) and removed:
-            omitted_by_reason["response_budget"] = (
-                int(omitted_by_reason.get("response_budget", 0)) + len(removed)
-            )
+            omitted_by_reason["response_budget"] = int(
+                omitted_by_reason.get("response_budget", 0)
+            ) + len(removed)
     removed_files = sum(_repository_file_count(item) for item in removed)
     if removed_files and {"included_files", "omitted_files"} <= data.keys():
         data["included_files"] = max(0, int(data["included_files"]) - removed_files)

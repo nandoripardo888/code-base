@@ -96,3 +96,66 @@ def test_settings_defaults_mcp_expose_index_to_false(tmp_path: Path) -> None:
     assert not settings.mcp_expose_index_commands
     assert not settings.execution_enabled
     assert not settings.mcp_expose_execution
+    assert not settings.mcp_expose_powershell
+    assert not settings.mcp_execution_elicitation_enabled
+    assert settings.mcp_execution_elicitation_trust_mode == "disabled"
+
+
+def test_settings_reads_mcp_execution_confirmation_gates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CODE_HARNESS_EXECUTION", "1")
+    monkeypatch.setenv("CODE_HARNESS_EXECUTION_POWERSHELL", "1")
+    monkeypatch.setenv("CODE_HARNESS_MCP_EXPOSE_EXECUTION", "1")
+    monkeypatch.setenv("CODE_HARNESS_MCP_EXPOSE_POWERSHELL", "1")
+    monkeypatch.setenv("CODE_HARNESS_MCP_EXECUTION_ELICITATION", "1")
+    monkeypatch.setenv(
+        "CODE_HARNESS_MCP_EXECUTION_ELICITATION_TRUST_MODE",
+        "local_interactive",
+    )
+    monkeypatch.setenv(
+        "CODE_HARNESS_MCP_EXECUTION_ELICITATION_TIMEOUT_SECONDS",
+        "45",
+    )
+
+    settings = Settings.for_root(tmp_path)
+
+    assert settings.mcp_expose_powershell
+    assert settings.mcp_execution_elicitation_enabled
+    assert settings.mcp_execution_elicitation_trust_mode == "local_interactive"
+    assert settings.mcp_execution_elicitation_timeout_seconds == 45
+
+
+def test_settings_rejects_mcp_execution_gate_inconsistencies(tmp_path: Path) -> None:
+    index = tmp_path / "index.db"
+
+    with pytest.raises(ValueError, match="mcp_expose_execution"):
+        Settings(
+            root=tmp_path,
+            index_path=index,
+            mcp_execution_elicitation_enabled=True,
+        )
+    with pytest.raises(ValueError, match="mcp_expose_powershell"):
+        Settings(
+            root=tmp_path,
+            index_path=index,
+            execution_enabled=True,
+            mcp_expose_powershell=True,
+        )
+    with pytest.raises(ValueError, match="mcp_expose_execution"):
+        Settings(
+            root=tmp_path,
+            index_path=index,
+            execution_enabled=True,
+            execution_powershell_enabled=True,
+            mcp_expose_powershell=True,
+        )
+    with pytest.raises(ValueError, match="trust mode local_interactive"):
+        Settings(
+            root=tmp_path,
+            index_path=index,
+            execution_enabled=True,
+            mcp_expose_execution=True,
+            mcp_execution_elicitation_enabled=True,
+        )

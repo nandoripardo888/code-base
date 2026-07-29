@@ -42,16 +42,19 @@ over stdio.
 - paginate file listings and return read truncation metadata for agents;
 - return a structured repository tree (symbols in detailed mode);
 - expose the same application tools over optional MCP stdio via `mcp serve`;
-- optionally inspect proposed process/PowerShell commands and, on Windows, run the
-  small read-only process allowlist under Job Object supervision;
-- request, review, and consume exact single-use process approvals locally, with a
+- optionally inspect proposed process/PowerShell commands and, on Windows, run
+  approved PowerShell 7 scripts or the small read-only process allowlist under
+  Job Object supervision;
+- request, review, and consume exact single-use execution approvals locally, with a
   sanitized SQLite audit trail outside the project workspace
-  (`CODE_HARNESS_EXECUTION=1`, CLI `execution inspect-*` / `run-process`; disabled by default).
+  (`CODE_HARNESS_EXECUTION=1`; PowerShell additionally requires
+  `CODE_HARNESS_EXECUTION_POWERSHELL=1`; disabled by default).
 
 By default no repository code is executed and the analyzed repository is treated
-as read-only. Optional agent execution remains opt-in; E2 adds local approval and
-auditing without exposing PowerShell execution, approval, or execution through
-MCP (see `docs/adr/0005-execution-trust-boundary.md`).
+as read-only. Optional agent execution remains opt-in; E5 adds separately gated
+MCP inspection, execution, polling, cancellation, and interactive confirmation
+without exposing approval administration (see
+`docs/adr/0005-execution-trust-boundary.md`).
 
 ## Requirements
 
@@ -172,12 +175,50 @@ code-harness --project . execution run-process python -c "print('review')"
 code-harness --project . execution approvals show <approval-id>
 code-harness --project . execution approvals approve <approval-id> --reason "reviewed"
 code-harness --project . execution run-process --approval-id <approval-id> python -c "print('review')"
+
+# PowerShell has a separate opt-in and always requires exact local approval.
+$env:CODE_HARNESS_EXECUTION_POWERSHELL = "1"
+code-harness --project . execution run-powershell --script "Write-Output 'review'"
+code-harness --project . execution approvals approve <powershell-approval-id> --reason "reviewed"
+code-harness --project . execution run-powershell --approval-id <powershell-approval-id> --script "Write-Output 'review'"
 ```
 
 Approvals expire after 600 seconds by default and are consumed once. Configure
 the TTL with `CODE_HARNESS_EXECUTION_APPROVAL_TTL_SECONDS`. Sanitized audit state
 is stored at `<CODE_HARNESS_EXECUTION_HOME>/<project_id>/execution.db`; full
-stdout/stderr, raw environment values, and scripts are not persisted.
+stdout/stderr, raw environment values, and scripts are not persisted. PowerShell
+runs as `pwsh -NoLogo -NoProfile -NonInteractive -File <protected-temp-script>`
+under the same timeout, output, environment, and Job Object supervision as
+structured processes. The host backend is not a filesystem or network sandbox.
+Python callers may pass `wait=False`, then use `get_execution` or
+`terminate_execution` while the same `CodeHarness` instance remains open.
+Results are retained only in a 100-entry in-memory LRU; closing the harness
+cancels active trees. CLI execution remains blocking. Concurrent submissions
+above `CODE_HARNESS_EXECUTION_MAX_CONCURRENT` (default `1`) fail immediately
+without consuming an approval.
+
+MCP execution has additional gates:
+
+```powershell
+$env:CODE_HARNESS_MCP_EXPOSE_EXECUTION = "1"
+# PowerShell tools additionally require:
+$env:CODE_HARNESS_MCP_EXPOSE_POWERSHELL = "1"
+
+# Optional form elicitation is accepted only from a capability-compatible
+# local interactive channel explicitly trusted by the operator.
+$env:CODE_HARNESS_MCP_EXECUTION_ELICITATION = "1"
+$env:CODE_HARNESS_MCP_EXECUTION_ELICITATION_TRUST_MODE = "local_interactive"
+code-harness --project . mcp serve
+```
+
+Clients without form elicitation support, or when confirmation is disabled,
+receive `execution_approval_required` and can use the local CLI/API workflow.
+MCP exposes no approval ID argument or approval/policy administration tool.
+An elicited approval is persisted with its opaque MCP session identifier and is
+rejected if another session attempts to consume it. Confirmation summaries
+escape control characters and redact recognizable credentials.
+`stdout` and `stderr` are untrusted data and must never be treated as
+instructions.
 
 ## Python API
 

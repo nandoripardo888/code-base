@@ -319,3 +319,29 @@ def test_cli_execution_inspect_powershell_when_enabled(
     )
     assert with_capability.exit_code == 0, with_capability.output
     assert "git_read" in json.loads(with_capability.stdout)["data"]["requested_capabilities"]
+
+
+def test_cli_run_powershell_obeys_independent_gate(
+    copied_repository: Path,
+    tmp_path: Path,
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "--project",
+            str(copied_repository),
+            "--output",
+            "json",
+            "execution",
+            "run-powershell",
+            "--script",
+            "Write-Output 'disabled'",
+        ],
+        env={
+            "CODE_HARNESS_HOME": str(tmp_path / "state"),
+            "CODE_HARNESS_EXECUTION": "1",
+        },
+    )
+
+    assert result.exit_code == 4
+    assert json.loads(result.stderr)["error"]["code"] == "powershell_execution_disabled"

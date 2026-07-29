@@ -105,10 +105,12 @@ class ApprovalState(StrEnum):
 
 class ExecutionState(StrEnum):
     STARTING = "starting"
+    RUNNING = "running"
     BLOCKED = "blocked"
     COMPLETED = "completed"
     FAILED = "failed"
     TIMED_OUT = "timed_out"
+    CANCELLED = "cancelled"
 
 
 class ErrorCode(StrEnum):
@@ -142,7 +144,10 @@ class ErrorCode(StrEnum):
     EXECUTION_APPROVAL_DENIED = "execution_approval_denied"
     EXECUTION_STORE_UNAVAILABLE = "execution_store_unavailable"
     EXECUTION_ELEVATED_SESSION = "execution_elevated_session"
+    EXECUTION_NOT_FOUND = "execution_not_found"
+    EXECUTION_CONCURRENCY_LIMIT = "execution_concurrency_limit"
     INVALID_EXECUTION_REQUEST = "invalid_execution_request"
+    POWERSHELL_EXECUTION_DISABLED = "powershell_execution_disabled"
     POWERSHELL_UNAVAILABLE = "powershell_unavailable"
     POWERSHELL_PARSE_FAILED = "powershell_parse_failed"
     POWERSHELL_ANALYSIS_FAILED = "powershell_analysis_failed"

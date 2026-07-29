@@ -59,6 +59,8 @@ addopts = "-ra --strict-config --strict-markers"
 testpaths = ["tests"]
 markers = [
   "windows_e1: real Windows Job Object integration tests; run only in a non-administrator CI job",
+  "windows_e3: real PowerShell 7 execution tests; run only in a non-administrator CI job",
+  "windows_e4: real asynchronous cancellation tests; run only in a non-administrator CI job",
 ]
 
 [tool.coverage.run]

@@ -166,8 +166,7 @@ def test_anchor_ranking_and_context_enumeration_stay_in_resolved_container(
         lines.append(f'  void configure{number}() {{ setName("FIELD_{number}"); }}\n')
         lines.extend(f"  // filler {number}-{index}\n" for index in range(12))
     lines.append(
-        "  public void setFilterTECHNICIAN_CODE(Object value) { "
-        'setName("TECHNICIAN_CODE"); }\n'
+        '  public void setFilterTECHNICIAN_CODE(Object value) { setName("TECHNICIAN_CODE"); }\n'
     )
     lines.extend(f"  int tail{index};\n" for index in range(800))
     lines.append("}\n")
@@ -178,9 +177,7 @@ def test_anchor_ranking_and_context_enumeration_stay_in_resolved_container(
         encoding="utf-8",
     )
     (copied_repository / "src" / "GenericFields.java").write_text(
-        "public class GenericFields {\n"
-        "  void getTECHNICIAN_CODE() {}\n"
-        "}\n",
+        "public class GenericFields {\n  void getTECHNICIAN_CODE() {}\n}\n",
         encoding="utf-8",
     )
     harness = CodeHarness.open(copied_repository)
@@ -211,19 +208,13 @@ def test_anchor_ranking_and_context_enumeration_stay_in_resolved_container(
     assert small.data.snippets
     assert large.data.snippets
     assert all(
-        item.snippet.location.path == "src/WORK_ORDER_CURSOR.java"
-        for item in small.data.snippets
+        item.snippet.location.path == "src/WORK_ORDER_CURSOR.java" for item in small.data.snippets
     )
     assert all(
-        item.snippet.location.path == "src/WORK_ORDER_CURSOR.java"
-        for item in large.data.snippets
+        item.snippet.location.path == "src/WORK_ORDER_CURSOR.java" for item in large.data.snippets
     )
-    small_fields = sum(
-        item.snippet.content.count("FIELD_") for item in small.data.snippets
-    )
-    large_fields = sum(
-        item.snippet.content.count("FIELD_") for item in large.data.snippets
-    )
+    small_fields = sum(item.snippet.content.count("FIELD_") for item in small.data.snippets)
+    large_fields = sum(item.snippet.content.count("FIELD_") for item in large.data.snippets)
     assert large_fields > small_fields
     assert small.data.considered_results == (
         small.data.selected_results + small.data.omitted_results

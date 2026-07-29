@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import threading
 from ctypes import wintypes
 
 from code_harness.domain.errors import ExecutionNotSupportedError, ProcessStartError
@@ -69,6 +70,7 @@ class JobObject:
             )
         self._kernel32 = kernel32
         self._handle: int | None = int(handle)
+        self._lock = threading.Lock()
         limits = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         limits.BasicLimitInformation.LimitFlags = (
             _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | _JOB_OBJECT_LIMIT_ACTIVE_PROCESS
@@ -85,8 +87,10 @@ class JobObject:
             raise ProcessStartError("Could not configure the Windows Job Object.", winerror=error)
 
     def assign(self, process_handle: int) -> None:
-        if self._handle is None or not self._kernel32.AssignProcessToJobObject(
-            wintypes.HANDLE(self._handle), wintypes.HANDLE(process_handle)
+        with self._lock:
+            handle = self._handle
+        if handle is None or not self._kernel32.AssignProcessToJobObject(
+            wintypes.HANDLE(handle), wintypes.HANDLE(process_handle)
         ):
             raise ProcessStartError(
                 "Could not assign process to the Windows Job Object.",
@@ -94,13 +98,17 @@ class JobObject:
             )
 
     def terminate(self) -> None:
-        if self._handle is not None:
-            self._kernel32.TerminateJobObject(wintypes.HANDLE(self._handle), 1)
+        with self._lock:
+            handle = self._handle
+            if handle is not None:
+                self._kernel32.TerminateJobObject(wintypes.HANDLE(handle), 1)
 
     def close(self) -> None:
-        if self._handle is not None:
-            self._kernel32.CloseHandle(wintypes.HANDLE(self._handle))
+        with self._lock:
+            handle = self._handle
             self._handle = None
+            if handle is not None:
+                self._kernel32.CloseHandle(wintypes.HANDLE(handle))
 
     def __enter__(self) -> JobObject:
         return self

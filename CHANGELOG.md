@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Added separately gated MCP process and PowerShell inspection/execution,
+  polling and cancellation, with capability-negotiated local-interactive
+  elicitation, exact one-time approvals bound to the confirming MCP session,
+  escaped/redacted confirmation summaries, and no MCP approval administration.
+- Added in-process asynchronous execution, polling, idempotent cancellation,
+  crash-safe per-project concurrency slots, interrupted-run recovery, and a
+  bounded in-memory result cache without persisting stdout/stderr.
+- Added opt-in, approval-only PowerShell 7 execution with fixed `NoProfile` /
+  `NonInteractive` arguments, protected temporary scripts, Job Object
+  supervision, exact digests, cleanup, and sanitized auditing.
 - Added single-use execution approvals bound to canonical command digests,
   sanitized SQLite auditing outside the workspace, output redaction, and local
   Python/CLI approval administration.

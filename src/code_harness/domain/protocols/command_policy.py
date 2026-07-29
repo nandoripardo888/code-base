@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import Literal, Protocol
 
 from code_harness.domain.models.execution import (
@@ -7,6 +8,7 @@ from code_harness.domain.models.execution import (
     PowerShellAstAnalysis,
     ProcessRunOutcome,
 )
+from code_harness.domain.protocols.execution_runtime import ExecutionTaskControl
 
 
 class ProcessRunner(Protocol):
@@ -14,10 +16,38 @@ class ProcessRunner(Protocol):
         """Run one already-authorized structured process."""
         ...
 
+    def run_controlled(
+        self,
+        command: NormalizedProcessCommand,
+        *,
+        control: ExecutionTaskControl,
+        on_started: Callable[[], None],
+    ) -> ProcessRunOutcome: ...
+
+
+class PowerShellRunner(Protocol):
+    def run(self, command: NormalizedPowerShellCommand) -> ProcessRunOutcome:
+        """Run one already-authorized PowerShell script."""
+        ...
+
+    def run_controlled(
+        self,
+        command: NormalizedPowerShellCommand,
+        *,
+        control: ExecutionTaskControl,
+        on_started: Callable[[], None],
+    ) -> ProcessRunOutcome: ...
+
 
 class ProcessExecutableResolver(Protocol):
     def resolve(self, executable: str, *, cwd: str) -> str:
         """Resolve a bare executable using the same sanitized rules as the runner."""
+        ...
+
+
+class PowerShellExecutableResolver(Protocol):
+    def resolve(self, executable: str) -> str:
+        """Resolve the configured PowerShell 7 executable to an absolute path."""
         ...
 
 

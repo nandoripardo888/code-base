@@ -379,7 +379,7 @@ def test_doctor_reports_execution_audit_store(tmp_path: Path) -> None:
     checks = {item.name: item for item in provider.run().checks}
 
     assert checks["execution_audit_store"].status.value == "pass"
-    assert "schema=1/1" in checks["execution_audit_store"].message
+    assert "schema=3/3" in checks["execution_audit_store"].message
 
 
 def test_denial_cooldown_and_approval_admin_guards(tmp_path: Path) -> None:

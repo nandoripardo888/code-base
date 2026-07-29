@@ -555,6 +555,7 @@ def test_policy_process_and_powershell_branches(tmp_path: Path) -> None:
 def test_inspect_powershell_tool_timeout_and_elevated(tmp_path: Path) -> None:
     from code_harness.application.execution import InspectPowerShellTool
     from code_harness.infrastructure.execution.analysis import PowerShellAstAnalyzer
+    from code_harness.infrastructure.execution.runners import PowerShell7ExecutableResolver
     from code_harness.infrastructure.filesystem import PathGuard
 
     config = _config(tmp_path, default_timeout_seconds=5.0, max_timeout_seconds=10.0)
@@ -562,6 +563,7 @@ def test_inspect_powershell_tool_timeout_and_elevated(tmp_path: Path) -> None:
         paths=PathGuard(tmp_path),
         policy=DeterministicPolicyEngine(config),
         analyzer=PowerShellAstAnalyzer(),
+        executable_resolver=PowerShell7ExecutableResolver(),
         config=config,
     )
     try:
@@ -579,6 +581,7 @@ def test_inspect_powershell_tool_timeout_and_elevated(tmp_path: Path) -> None:
             _config(tmp_path, elevated_session=True, allow_elevated=False)
         ),
         analyzer=PowerShellAstAnalyzer(),
+        executable_resolver=PowerShell7ExecutableResolver(),
         config=_config(tmp_path, elevated_session=True, allow_elevated=False),
     )
     with pytest.raises(ExecutionElevatedSessionError):

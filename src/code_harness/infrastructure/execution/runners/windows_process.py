@@ -10,11 +10,13 @@ import subprocess
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from ctypes import wintypes
 from pathlib import Path
 
 from code_harness.domain.errors import ProcessStartError
 from code_harness.domain.models.execution import ProcessRunOutcome
+from code_harness.domain.protocols.execution_runtime import ExecutionTaskControl
 from code_harness.infrastructure.execution.windows.job_object import JobObject
 
 _CREATE_SUSPENDED = 0x00000004
@@ -94,7 +96,12 @@ class _OutputCollector:
             os.close(fd)
 
     def result(
-        self, *, exit_code: int | None, timed_out: bool, elapsed_ms: int
+        self,
+        *,
+        exit_code: int | None,
+        timed_out: bool,
+        cancelled: bool,
+        elapsed_ms: int,
     ) -> ProcessRunOutcome:
         return ProcessRunOutcome(
             exit_code=exit_code,
@@ -105,6 +112,7 @@ class _OutputCollector:
             stdout_truncated=self._truncated["stdout"],
             stderr_truncated=self._truncated["stderr"],
             timed_out=timed_out,
+            cancelled=cancelled,
             elapsed_ms=elapsed_ms,
             stdout_sha256=self._hashes["stdout"].hexdigest(),
             stderr_sha256=self._hashes["stderr"].hexdigest(),
@@ -157,6 +165,8 @@ def run_windows_process(
     max_output_bytes: int,
     execution_home: Path,
     max_processes: int,
+    control: ExecutionTaskControl | None = None,
+    on_started: Callable[[], None] | None = None,
 ) -> ProcessRunOutcome:
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateProcessW.argtypes = (
@@ -195,6 +205,19 @@ def run_windows_process(
         )
     execution_home.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
+    if control is not None and control.cancellation_requested:
+        return ProcessRunOutcome(
+            exit_code=None,
+            stdout="",
+            stderr="",
+            stdout_bytes=0,
+            stderr_bytes=0,
+            stdout_truncated=False,
+            stderr_truncated=False,
+            timed_out=False,
+            cancelled=True,
+            elapsed_ms=0,
+        )
     with (
         tempfile.TemporaryDirectory(prefix="e1-", dir=execution_home) as temp_name,
         JobObject(max_processes=max_processes) as job,
@@ -236,6 +259,8 @@ def run_windows_process(
                 )
             job.assign(int(process.hProcess))
             assigned = True
+            if control is not None:
+                control.register_terminator(job.terminate)
             kernel32.CloseHandle(stdout_write)
             stdout_write = 0
             kernel32.CloseHandle(stderr_write)
@@ -251,22 +276,32 @@ def run_windows_process(
             stderr_read = 0
             for reader in readers:
                 reader.start()
-            kernel32.ResumeThread(process.hThread)
+            cancelled_before_resume = control is not None and control.cancellation_requested
+            if not cancelled_before_resume:
+                kernel32.ResumeThread(process.hThread)
+                if on_started is not None:
+                    on_started()
             wait_ms = max(1, int(timeout_seconds * 1000))
             timed_out = kernel32.WaitForSingleObject(process.hProcess, wait_ms) == _WAIT_TIMEOUT
-            if timed_out:
+            cancelled = control is not None and control.cancellation_requested
+            if timed_out and not cancelled:
                 job.terminate()
+                kernel32.WaitForSingleObject(process.hProcess, 5_000)
+            elif cancelled:
                 kernel32.WaitForSingleObject(process.hProcess, 5_000)
             code = wintypes.DWORD()
             kernel32.GetExitCodeProcess(process.hProcess, ctypes.byref(code))
             for reader in readers:
                 reader.join(timeout=5)
             return collector.result(
-                exit_code=None if timed_out else int(code.value),
-                timed_out=timed_out,
+                exit_code=None if timed_out or cancelled else int(code.value),
+                timed_out=timed_out and not cancelled,
+                cancelled=cancelled,
                 elapsed_ms=int((time.monotonic() - started) * 1000),
             )
         finally:
+            if control is not None:
+                control.clear_terminator()
             if process.hProcess and not assigned:
                 kernel32.TerminateProcess(process.hProcess, 1)
             for handle in (

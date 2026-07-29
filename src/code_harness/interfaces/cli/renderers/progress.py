@@ -23,10 +23,14 @@ class IndexProgressPrinter:
         self._active_line = False
 
     def __call__(self, event: IndexProgressEvent) -> None:
-        if event.phase in (
-            IndexProgressPhase.ANALYZING,
-            IndexProgressPhase.COMMITTING,
-        ) and event.total > 0:
+        if (
+            event.phase
+            in (
+                IndexProgressPhase.ANALYZING,
+                IndexProgressPhase.COMMITTING,
+            )
+            and event.total > 0
+        ):
             message = event.message or (
                 "Analyzing" if event.phase is IndexProgressPhase.ANALYZING else "Writing index"
             )

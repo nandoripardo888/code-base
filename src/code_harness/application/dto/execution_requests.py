@@ -96,11 +96,69 @@ class InspectPowerShellRequest:
 
 @dataclass(frozen=True, slots=True)
 class RunProcessRequest(InspectProcessRequest):
-    """A synchronous structured process request."""
+    """A structured process request, synchronous by default."""
 
     approval_id: str | None = None
+    approval_session_id: str | None = None
+    wait: bool = True
 
     def __post_init__(self) -> None:
         InspectProcessRequest.__post_init__(self)
         if self.approval_id is not None and not self.approval_id.strip():
             raise ValueError("approval_id must not be empty")
+        if self.approval_session_id is not None:
+            if self.approval_id is None:
+                raise ValueError("approval_session_id requires approval_id")
+            if not self.approval_session_id.strip():
+                raise ValueError("approval_session_id must not be empty")
+            if len(self.approval_session_id) > 128:
+                raise ValueError("approval_session_id must not exceed 128 characters")
+        if not isinstance(self.wait, bool):
+            raise ValueError("wait must be a boolean")
+
+
+@dataclass(frozen=True, slots=True)
+class RunPowerShellRequest(InspectPowerShellRequest):
+    """A PowerShell 7 execution request, synchronous by default."""
+
+    approval_id: str | None = None
+    approval_session_id: str | None = None
+    wait: bool = True
+
+    def __post_init__(self) -> None:
+        InspectPowerShellRequest.__post_init__(self)
+        if self.approval_id is not None and not self.approval_id.strip():
+            raise ValueError("approval_id must not be empty")
+        if self.approval_session_id is not None:
+            if self.approval_id is None:
+                raise ValueError("approval_session_id requires approval_id")
+            if not self.approval_session_id.strip():
+                raise ValueError("approval_session_id must not be empty")
+            if len(self.approval_session_id) > 128:
+                raise ValueError("approval_session_id must not exceed 128 characters")
+        if not isinstance(self.wait, bool):
+            raise ValueError("wait must be a boolean")
+
+
+@dataclass(frozen=True, slots=True)
+class GetExecutionRequest:
+    execution_id: str
+    include_output: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.execution_id or not self.execution_id.strip():
+            raise ValueError("execution_id must not be empty")
+        if not isinstance(self.include_output, bool):
+            raise ValueError("include_output must be a boolean")
+
+
+@dataclass(frozen=True, slots=True)
+class TerminateExecutionRequest:
+    execution_id: str
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.execution_id or not self.execution_id.strip():
+            raise ValueError("execution_id must not be empty")
+        if self.reason is not None and len(self.reason) > 4_000:
+            raise ValueError("reason must not exceed 4000 characters")

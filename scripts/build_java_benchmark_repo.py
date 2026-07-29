@@ -11,9 +11,7 @@ def _java_source(
     calls_per_file: int = 0,
 ) -> str:
     name = f"BenchFile{index:05d}"
-    calls = "".join(
-        f"        helper{call_index % 10}();\n" for call_index in range(calls_per_file)
-    )
+    calls = "".join(f"        helper{call_index % 10}();\n" for call_index in range(calls_per_file))
     helpers = "".join(
         f"    private void helper{helper_index}() {{ }}\n" for helper_index in range(10)
     )

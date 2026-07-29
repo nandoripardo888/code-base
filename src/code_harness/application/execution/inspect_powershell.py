@@ -10,6 +10,7 @@ from code_harness.domain.models.tool_result import ToolResult, normalize_warning
 from code_harness.domain.protocols.command_policy import (
     CommandPolicy,
     PowerShellAnalyzer,
+    PowerShellExecutableResolver,
     WorkspacePathResolver,
 )
 
@@ -21,11 +22,13 @@ class InspectPowerShellTool:
         paths: WorkspacePathResolver,
         policy: CommandPolicy,
         analyzer: PowerShellAnalyzer,
+        executable_resolver: PowerShellExecutableResolver,
         config: ExecutionRuntimeConfig,
     ) -> None:
         self._paths = paths
         self._policy = policy
         self._analyzer = analyzer
+        self._executable_resolver = executable_resolver
         self._config = config
 
     def execute(self, request: InspectPowerShellRequest) -> ToolResult[CommandInspection]:
@@ -53,6 +56,9 @@ class InspectPowerShellTool:
                 if request.max_output_bytes is not None
                 else self._config.max_output_bytes
             )
+            resolved_executable = self._executable_resolver.resolve(
+                self._config.powershell_executable
+            )
             command = NormalizedPowerShellCommand(
                 script=request.script,
                 cwd=absolute_cwd,
@@ -60,6 +66,7 @@ class InspectPowerShellTool:
                 max_output_bytes=max_output,
                 requested_capabilities=request.requested_capabilities,
                 reason=request.reason,
+                resolved_executable=resolved_executable,
             )
             analysis = self._analyzer.analyze(request.script, timeout_seconds=timeout)
             return self._policy.inspect_powershell(command, analysis)

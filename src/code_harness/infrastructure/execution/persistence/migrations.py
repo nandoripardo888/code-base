@@ -5,11 +5,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from code_harness.domain.errors import ExecutionStoreUnavailableError
-from code_harness.infrastructure.execution.persistence.schema import MIGRATION_1
+from code_harness.infrastructure.execution.persistence.schema import (
+    MIGRATION_1,
+    MIGRATION_2,
+    MIGRATION_3,
+)
 from code_harness.infrastructure.persistence.connection import connect_database
 
 MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (1, "execution_approval_and_audit", MIGRATION_1),
+    (2, "execution_async_lifecycle", MIGRATION_2),
+    (3, "execution_mcp_session_binding", MIGRATION_3),
 )
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 

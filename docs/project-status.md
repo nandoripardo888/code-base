@@ -1,6 +1,6 @@
 # Status do projeto
 
-Última atualização: **25 de julho de 2026**.
+Última atualização: **26 de julho de 2026**.
 
 Este documento é a fotografia operacional do `code-harness`. O
 [plano de implementação](../plano-implementacao.md) continua sendo a referência
@@ -9,12 +9,15 @@ foi verificado no repositório.
 
 ## Resumo executivo
 
-Além das fases de retrieval, a capacidade opcional de execução concluiu E0, E1 e
-a **E2 — aprovação e auditoria** em 25 de julho de 2026. Ela continua desabilitada
-por padrão; no Windows executa a allowlist determinística de leitura ou comandos
-aprovados para um único uso, sob Job Object e sem shell. Aprovações são vinculadas
-ao digest exato e auditadas com redaction em banco externo ao workspace.
-PowerShell livre, execução MCP e operações assíncronas ainda não existem.
+Além das fases de retrieval, a capacidade opcional de execução concluiu E0–E5,
+incluindo **PowerShell livre supervisionado, assíncrono e cancelável**, em 26 de
+julho de 2026. Ela
+continua desabilitada por padrão; no Windows executa a allowlist determinística
+de leitura ou comandos/scripts aprovados para um único uso, sob Job Object.
+Aprovações são vinculadas ao digest exato e auditadas com redaction em banco
+externo ao workspace. A execução MCP é separadamente opt-in, não expõe
+administração de aprovações e só usa elicitação em canal local interativo
+explicitamente confiado. Supervisão persistente ainda não existe.
 
 O projeto concluiu localmente as **Fases 0, 1, 2, 3, 4, 5 e 6**. O produto oferece
 pela CLI, pela API Python e pelo adaptador MCP opcional busca lexical direta,
@@ -124,6 +127,18 @@ critérios de saída estejam satisfeitos.
 - inspeção determinística separada de processos e PowerShell, sem executar o
   script analisado;
 - `run_process` estruturado, sem shell, supervisionado por Job Object no Windows;
+- `run_powershell` com gate próprio, PowerShell 7, aprovação obrigatória,
+  argumentos fixos `NoProfile`/`NonInteractive` e modo síncrono por default;
+- `wait=false`, polling e cancelamento idempotente na API Python enquanto o
+  mesmo runtime permanece vivo;
+- concorrência não bloqueante por projeto, com slot de file lock adquirido antes
+  de consumir aprovação e default de uma execução;
+- estados `starting`, `running` e `cancelled`, recovery de registros
+  interrompidos e shutdown que cancela árvores ativas;
+- LRU em memória para os 100 resultados redigidos mais recentes, sem persistir
+  stdout/stderr;
+- script temporário fora do workspace, protegido por DACL do usuário atual e
+  `SYSTEM`, removido após sucesso, falha ou timeout;
 - allowlist de leitura e hard-deny para shells, wrappers e Git destrutivo;
 - aprovações locais com TTL, digest canônico, vínculo ao projeto e consumo único;
 - consumo da aprovação e criação da execução na mesma transação SQLite;
@@ -169,6 +184,12 @@ critérios de saída estejam satisfeitos.
 - serializers compartilhados com a CLI (`to_primitive` / envelopes de erro);
 - tools iniciais da seção 10.3 do plano; `index_project` opcional via
   `CODE_HARNESS_MCP_EXPOSE_INDEX`;
+- execução, polling e cancelamento opcionais via
+  `CODE_HARNESS_MCP_EXPOSE_EXECUTION`; PowerShell possui gate adicional;
+- elicitação por formulário negociada por capability e restrita ao trust mode
+  `local_interactive`, com fallback para aprovação local, vínculo persistente à
+  sessão confirmadora e resumo escapado/redigido;
+- nenhuma tool ou argumento MCP administra ou concede aprovação;
 - SDK restrito a `interfaces/mcp`, verificado por teste arquitetural;
 - import lazy do adaptador na CLI para o core continuar sem o extra.
 
@@ -197,6 +218,40 @@ Validação incremental de E0–E2 executada em 25 de julho de 2026:
   exigirem sessão Windows não administradora;
 - cobertura total: 85,01%, acima do mínimo de 85%;
 - os 54 arquivos envolvidos em E0–E2 passaram em `ruff format --check`.
+
+Validação incremental de E3 executada em 26 de julho de 2026:
+
+- `ruff check .`: passou;
+- `ruff format --check` nos 26 arquivos Python alterados: passou;
+- `mypy`: passou em 159 arquivos-fonte;
+- `pytest --cov`: 314 passaram e 3 integrações opt-in foram puladas;
+- cobertura total: 85,01%, atendendo o mínimo de 85%;
+- integração E3 opt-in em Windows não elevado com PowerShell 7.6.4: 2 passaram,
+  cobrindo DACL, aprovação, stdout/stderr, timeout e cleanup.
+
+Validação incremental de E4 executada em 26 de julho de 2026:
+
+- `ruff check .`: passou, e os arquivos Python de execução alterados passaram no
+  format check;
+- mypy estrito: passou nos 164 módulos-fonte no `.venv` do projeto;
+- suíte direcionada E0–E4: 64 passaram, com 85% de cobertura nos módulos de
+  application/bootstrap/infrastructure de execução selecionados;
+- suíte local completa: 323 passaram, 4 integrações opt-in foram puladas e a
+  cobertura total permaneceu em 85%;
+- integração E4 real de cancelamento foi adicionada ao runner Windows não
+  administrador e permanece opt-in, sem resultado local afirmado nesta sessão.
+
+Validação incremental de E5 executada em 26 de julho de 2026:
+
+- `ruff check .`, `ruff format --check .` e mypy estrito passaram;
+- suíte local completa: 340 passaram e 4 integrações Windows opt-in foram
+  puladas;
+- cobertura global arredondada: 85%; cobertura isolada do adaptador MCP de
+  execução: 86,91%;
+- transporte MCP real em memória negociou elicitação e confirmou com sucesso
+  `run_process` e `run_powershell`;
+- migration v3 vincula aprovações de elicitação à sessão e o consumo por sessão
+  diferente falha de forma tipada.
 
 A workflow de CI está configurada para Ubuntu e Windows. Esta fotografia não
 afirma o estado de uma execução remota específica; registra apenas a validação

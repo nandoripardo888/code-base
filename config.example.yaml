@@ -49,6 +49,11 @@ context:
 mcp:
   expose_index_commands: false
   expose_execution: false
+  expose_powershell: false
+  execution_elicitation_enabled: false
+  # Explicit operator trust decision; disabled or local_interactive.
+  execution_elicitation_trust_mode: disabled
+  execution_elicitation_timeout_seconds: 120
   # Machine output: CODE_HARNESS_RESPONSE_DETAIL=compact (default).
   # Normal projections cap serialized data at 30000 characters.
   # Truncated responses report structured result/snippet/budget reason codes.
@@ -57,13 +62,17 @@ mcp:
 execution:
   enabled: false
   backend: host_supervised
-  # AST inspection executable: CODE_HARNESS_POWERSHELL=pwsh
+  # Free PowerShell execution requires CODE_HARNESS_EXECUTION_POWERSHELL=1.
+  powershell_enabled: false
+  # AST inspection and execution executable: CODE_HARNESS_POWERSHELL=pwsh
   powershell_executable: pwsh
   require_approval: true
   default_timeout_seconds: 60
   max_timeout_seconds: 1800
   max_output_bytes: 200000
   max_processes: 32
+  # Non-blocking per-project limit: CODE_HARNESS_EXECUTION_MAX_CONCURRENT=1
+  max_concurrent: 1
   approval_ttl_seconds: 600
   allow_elevated: false
   # State directory outside the project workspace:

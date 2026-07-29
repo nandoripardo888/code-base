@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -191,12 +192,30 @@ class SQLiteExecutionStore:
         *,
         state: ApprovalState,
         reason: str | None = None,
+        decision_source: str = "local_admin",
+        session_id: str | None = None,
     ) -> ExecutionApproval:
         if state not in {ApprovalState.APPROVED, ApprovalState.DENIED}:
             raise ExecutionApprovalInvalidError(
                 "Approval decisions must be approved or denied.",
                 approval_id=approval_id,
                 state=state.value,
+            )
+        if decision_source not in {"local_admin", "mcp_elicitation"}:
+            raise ExecutionApprovalInvalidError(
+                "Approval decision source is invalid.",
+                approval_id=approval_id,
+                decision_source=decision_source,
+            )
+        if decision_source == "mcp_elicitation" and not session_id:
+            raise ExecutionApprovalInvalidError(
+                "MCP elicitation approval requires a session binding.",
+                approval_id=approval_id,
+            )
+        if decision_source != "mcp_elicitation" and session_id is not None:
+            raise ExecutionApprovalInvalidError(
+                "Only MCP elicitation approvals may be session-bound.",
+                approval_id=approval_id,
             )
         now_text = self._clock().isoformat()
         try:
@@ -214,6 +233,36 @@ class SQLiteExecutionStore:
                     raise ExecutionApprovalNotFoundError(approval_id)
                 current = ApprovalState(str(row["state"]))
                 if current is state:
+                    if current is ApprovalState.APPROVED and decision_source == "mcp_elicitation":
+                        connection.execute(
+                            """
+                            UPDATE approval_requests
+                            SET decided_at = ?, decision_reason = ?,
+                                decision_source = ?, session_id = ?
+                            WHERE approval_id = ? AND state = 'approved'
+                            """,
+                            (
+                                now_text,
+                                reason,
+                                decision_source,
+                                session_id,
+                                approval_id,
+                            ),
+                        )
+                        self._event(
+                            connection,
+                            project_id=project_id,
+                            approval_id=approval_id,
+                            event_type="approval_reconfirmed",
+                            occurred_at=now_text,
+                            details={"decision_source": decision_source},
+                        )
+                        rebound = connection.execute(
+                            "SELECT * FROM approval_requests WHERE approval_id = ?",
+                            (approval_id,),
+                        ).fetchone()
+                        assert rebound is not None
+                        return self._approval_from_row(rebound)
                     return self._approval_from_row(row)
                 if current is ApprovalState.EXPIRED:
                     raise ExecutionApprovalExpiredError(approval_id)
@@ -228,10 +277,18 @@ class SQLiteExecutionStore:
                 connection.execute(
                     """
                     UPDATE approval_requests
-                    SET state = ?, decided_at = ?, decision_reason = ?
+                    SET state = ?, decided_at = ?, decision_reason = ?,
+                        decision_source = ?, session_id = ?
                     WHERE approval_id = ? AND state = 'pending'
                     """,
-                    (state.value, now_text, reason, approval_id),
+                    (
+                        state.value,
+                        now_text,
+                        reason,
+                        decision_source,
+                        session_id,
+                        approval_id,
+                    ),
                 )
                 self._event(
                     connection,
@@ -239,7 +296,10 @@ class SQLiteExecutionStore:
                     approval_id=approval_id,
                     event_type=f"approval_{state.value}",
                     occurred_at=now_text,
-                    details={"reason": reason} if reason else {},
+                    details={
+                        "decision_source": decision_source,
+                        **({"reason": reason} if reason else {}),
+                    },
                 )
                 updated = connection.execute(
                     "SELECT * FROM approval_requests WHERE approval_id = ?",
@@ -312,6 +372,150 @@ class SQLiteExecutionStore:
         except (OSError, sqlite3.DatabaseError) as error:
             raise ExecutionStoreUnavailableError() from error
 
+    def mark_running(self, execution_id: str, *, started_at: str) -> None:
+        try:
+            with connect_database(self.path) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                cursor = connection.execute(
+                    """
+                    UPDATE executions
+                    SET state = ?, started_at = ?
+                    WHERE execution_id = ? AND state = ?
+                    """,
+                    (
+                        ExecutionState.RUNNING.value,
+                        started_at,
+                        execution_id,
+                        ExecutionState.STARTING.value,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise ExecutionStoreUnavailableError(
+                        "Execution could not transition from starting to running."
+                    )
+                row = connection.execute(
+                    "SELECT project_id FROM executions WHERE execution_id = ?",
+                    (execution_id,),
+                ).fetchone()
+                assert row is not None
+                self._event(
+                    connection,
+                    project_id=str(row["project_id"]),
+                    execution_id=execution_id,
+                    event_type="execution_running",
+                    occurred_at=started_at,
+                )
+        except ExecutionStoreUnavailableError:
+            raise
+        except (OSError, sqlite3.DatabaseError) as error:
+            raise ExecutionStoreUnavailableError() from error
+
+    def record_cancellation_requested(
+        self,
+        execution_id: str,
+        *,
+        requested_at: str,
+        reason: str | None,
+    ) -> bool:
+        try:
+            with connect_database(self.path) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                cursor = connection.execute(
+                    """
+                    UPDATE executions
+                    SET cancellation_requested_at = ?
+                    WHERE execution_id = ? AND state IN (?, ?)
+                    """,
+                    (
+                        requested_at,
+                        execution_id,
+                        ExecutionState.STARTING.value,
+                        ExecutionState.RUNNING.value,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    return False
+                row = connection.execute(
+                    "SELECT project_id FROM executions WHERE execution_id = ?",
+                    (execution_id,),
+                ).fetchone()
+                assert row is not None
+                self._event(
+                    connection,
+                    project_id=str(row["project_id"]),
+                    execution_id=execution_id,
+                    event_type="execution_cancellation_requested",
+                    occurred_at=requested_at,
+                    details={"reason": reason} if reason else {},
+                )
+                return True
+        except (OSError, sqlite3.DatabaseError) as error:
+            raise ExecutionStoreUnavailableError() from error
+
+    def list_active_slots(self, project_id: str) -> tuple[tuple[str, int | None], ...]:
+        try:
+            with connect_database(self.path) as connection:
+                rows = connection.execute(
+                    """
+                    SELECT execution_id, slot_index
+                    FROM executions
+                    WHERE project_id = ? AND state IN (?, ?)
+                    ORDER BY created_at
+                    """,
+                    (
+                        project_id,
+                        ExecutionState.STARTING.value,
+                        ExecutionState.RUNNING.value,
+                    ),
+                ).fetchall()
+                return tuple(
+                    (
+                        str(row["execution_id"]),
+                        int(row["slot_index"]) if row["slot_index"] is not None else None,
+                    )
+                    for row in rows
+                )
+        except (OSError, sqlite3.DatabaseError) as error:
+            raise ExecutionStoreUnavailableError() from error
+
+    def recover_interrupted(self, execution_id: str, *, finished_at: str) -> bool:
+        try:
+            with connect_database(self.path) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                cursor = connection.execute(
+                    """
+                    UPDATE executions
+                    SET state = ?, finished_at = ?, error_code = ?, error_message = ?
+                    WHERE execution_id = ? AND state IN (?, ?)
+                    """,
+                    (
+                        ExecutionState.FAILED.value,
+                        finished_at,
+                        "execution_interrupted",
+                        "The supervising runtime ended before execution completed.",
+                        execution_id,
+                        ExecutionState.STARTING.value,
+                        ExecutionState.RUNNING.value,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    return False
+                row = connection.execute(
+                    "SELECT project_id FROM executions WHERE execution_id = ?",
+                    (execution_id,),
+                ).fetchone()
+                assert row is not None
+                self._event(
+                    connection,
+                    project_id=str(row["project_id"]),
+                    execution_id=execution_id,
+                    event_type="execution_interrupted",
+                    occurred_at=finished_at,
+                )
+                return True
+        except (OSError, sqlite3.DatabaseError) as error:
+            raise ExecutionStoreUnavailableError() from error
+
     def finish_execution(
         self,
         execution_id: str,
@@ -340,7 +544,7 @@ class SQLiteExecutionStore:
                         stdout_sha256 = ?, stderr_sha256 = ?,
                         stdout_truncated = ?, stderr_truncated = ?,
                         error_code = ?, error_message = ?
-                    WHERE execution_id = ?
+                    WHERE execution_id = ? AND state IN (?, ?)
                     """,
                     (
                         state.value,
@@ -356,6 +560,8 @@ class SQLiteExecutionStore:
                         error_code,
                         error_message,
                         execution_id,
+                        ExecutionState.STARTING.value,
+                        ExecutionState.RUNNING.value,
                     ),
                 )
                 if cursor.rowcount != 1:
@@ -414,6 +620,20 @@ class SQLiteExecutionStore:
                 "Approval digest does not match the inspected command.",
                 approval_id=approval_id,
             )
+        decision_source = (
+            str(row["decision_source"]) if row["decision_source"] is not None else "local_admin"
+        )
+        if decision_source == "mcp_elicitation":
+            bound_session = str(row["session_id"]) if row["session_id"] is not None else ""
+            requested_session = start.approval_session_id or ""
+            if not bound_session or not secrets.compare_digest(
+                bound_session,
+                requested_session,
+            ):
+                raise ExecutionApprovalInvalidError(
+                    "MCP approval is bound to a different client session.",
+                    approval_id=approval_id,
+                )
         cursor = connection.execute(
             """
             UPDATE approval_requests
@@ -446,8 +666,8 @@ class SQLiteExecutionStore:
                 execution_id, project_id, digest, approval_id, state,
                 command_kind, command_summary, backend, backend_guarantees_json,
                 policy_decision, policy_name, policy_version, ruleset_hash,
-                created_at, started_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, started_at, slot_index
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 start.execution_id,
@@ -465,6 +685,7 @@ class SQLiteExecutionStore:
                 start.ruleset_hash,
                 start.created_at,
                 start.created_at if start.state is ExecutionState.STARTING else None,
+                start.slot_index,
             ),
         )
         rows = (
@@ -562,4 +783,8 @@ class SQLiteExecutionStore:
             decision_reason=(
                 str(row["decision_reason"]) if row["decision_reason"] is not None else None
             ),
+            decision_source=(
+                str(row["decision_source"]) if row["decision_source"] is not None else None
+            ),
+            session_id=str(row["session_id"]) if row["session_id"] is not None else None,
         )

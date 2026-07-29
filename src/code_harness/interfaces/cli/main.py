@@ -79,6 +79,7 @@ def _exit_code(error: CodeHarnessError) -> int:
         ErrorCode.PROJECT_NOT_FOUND,
         ErrorCode.FILE_NOT_FOUND,
         ErrorCode.EXECUTION_APPROVAL_NOT_FOUND,
+        ErrorCode.EXECUTION_NOT_FOUND,
     ):
         return 3
     if error.code in (
@@ -90,6 +91,7 @@ def _exit_code(error: CodeHarnessError) -> int:
         ErrorCode.EMBEDDING_UNAVAILABLE,
         ErrorCode.EXECUTION_DISABLED,
         ErrorCode.EXECUTION_NOT_SUPPORTED,
+        ErrorCode.POWERSHELL_EXECUTION_DISABLED,
     ):
         return 4
     if error.code in (

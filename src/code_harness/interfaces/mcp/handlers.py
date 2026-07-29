@@ -491,3 +491,10 @@ def register_handlers(
                 return container.index_project.execute(request)
 
             return _execute(operation, response_detail)
+
+    if settings.execution_enabled and settings.mcp_expose_execution:
+        from code_harness.interfaces.mcp.execution_handlers import (
+            register_execution_handlers,
+        )
+
+        register_execution_handlers(server, container, settings)

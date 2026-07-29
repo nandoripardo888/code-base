@@ -354,6 +354,29 @@ class ExecutionElevatedSessionError(CodeHarnessError):
         )
 
 
+class ExecutionNotFoundError(CodeHarnessError):
+    def __init__(self, execution_id: str) -> None:
+        super().__init__(
+            ErrorCode.EXECUTION_NOT_FOUND,
+            "Execution was not found in the active runtime.",
+            details={"execution_id": execution_id},
+            capability="execution",
+            remediation="Use an execution ID returned by this running code-harness instance.",
+        )
+
+
+class ExecutionConcurrencyLimitError(CodeHarnessError):
+    def __init__(self, limit: int) -> None:
+        super().__init__(
+            ErrorCode.EXECUTION_CONCURRENCY_LIMIT,
+            "The project execution concurrency limit is already occupied.",
+            details={"limit": limit},
+            capability="execution",
+            recoverable=True,
+            remediation="Wait for an active execution to finish or be cancelled, then retry.",
+        )
+
+
 class InvalidExecutionRequestError(CodeHarnessError):
     def __init__(self, message: str, **details: Any) -> None:
         super().__init__(
@@ -374,6 +397,19 @@ class ProcessStartError(CodeHarnessError):
         )
 
 
+class PowerShellExecutionDisabledError(CodeHarnessError):
+    def __init__(self) -> None:
+        super().__init__(
+            ErrorCode.POWERSHELL_EXECUTION_DISABLED,
+            "PowerShell execution is disabled.",
+            capability="execution",
+            remediation=(
+                "Set CODE_HARNESS_EXECUTION_POWERSHELL=1 after reviewing "
+                "the PowerShell execution trust boundary."
+            ),
+        )
+
+
 class PowerShellUnavailableError(CodeHarnessError):
     def __init__(self, executable: str, *, reason: str | None = None) -> None:
         details = {"executable": executable}
@@ -381,7 +417,7 @@ class PowerShellUnavailableError(CodeHarnessError):
             details["reason"] = reason
         super().__init__(
             ErrorCode.POWERSHELL_UNAVAILABLE,
-            "PowerShell 7 or later is unavailable for command inspection.",
+            "PowerShell 7 or later is unavailable for inspection or execution.",
             details=details,
             capability="execution",
             remediation="Install PowerShell 7 and configure CODE_HARNESS_POWERSHELL if needed.",

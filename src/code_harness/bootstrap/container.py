@@ -7,6 +7,20 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from code_harness.application.indexing import IndexCoordinator
+from code_harness.application.review import (
+    ApplyReviewFixTool,
+    BuildReviewContextTool,
+    CreateReviewCommitTool,
+    FindChangeImpactsTool,
+    GetChangedSymbolsTool,
+    GetChangeSetTool,
+    ListChangedFilesTool,
+    PublishReviewTool,
+    ReadDiffTool,
+    SuggestValidationPlanTool,
+    ValidateChangeSetTool,
+)
+from code_harness.application.review.review_action_authorizer import ReviewActionAuthorizer
 from code_harness.application.tools import (
     BuildContextTool,
     DoctorTool,
@@ -47,12 +61,14 @@ from code_harness.infrastructure.filesystem import (
     LocalSourceReader,
     PathGuard,
 )
+from code_harness.infrastructure.git import LocalGitChangeProvider
 from code_harness.infrastructure.parsers import NativeParserSupervisor, StructuralAnalyzerRegistry
 from code_harness.infrastructure.persistence import SQLiteRepositoryStore
 from code_harness.infrastructure.persistence.fts_searcher import IndexedTextSearcher
 from code_harness.infrastructure.ripgrep import RipgrepSearcher
 
 if TYPE_CHECKING:
+    from code_harness.bootstrap.changes import ChangeSessionContainer
     from code_harness.bootstrap.execution import ExecutionContainer
 
 
@@ -79,7 +95,19 @@ class ApplicationContainer:
     build_context: BuildContextTool
     get_repository_map: GetRepositoryMapTool
     prepare_semantic_model: PrepareSemanticModelTool
+    get_change_set: GetChangeSetTool
+    list_changed_files: ListChangedFilesTool
+    read_diff: ReadDiffTool
+    get_changed_symbols: GetChangedSymbolsTool
+    find_change_impacts: FindChangeImpactsTool
+    build_review_context: BuildReviewContextTool
+    suggest_validation_plan: SuggestValidationPlanTool
+    validate_change_set: ValidateChangeSetTool | None = None
+    apply_review_fix: ApplyReviewFixTool | None = None
+    publish_review: PublishReviewTool | None = None
+    create_review_commit: CreateReviewCommitTool | None = None
     execution: ExecutionContainer | None = None
+    changes: ChangeSessionContainer | None = None
     _analyzer: StructuralAnalyzer | None = field(default=None, repr=False, compare=False)
     _embedding_provider: EmbeddingProvider | None = field(default=None, repr=False, compare=False)
     _shutdown_done: list[bool] = field(default_factory=lambda: [False], repr=False, compare=False)
@@ -210,6 +238,99 @@ def build_container(settings: Settings) -> ApplicationContainer:
         project=project,
         store=store,
     )
+    change_provider = LocalGitChangeProvider(settings.root, repository_id=project.project_id)
+    get_change_set_tool = GetChangeSetTool(change_provider)
+    list_changed_files_tool = ListChangedFilesTool(change_provider)
+    read_diff_tool = ReadDiffTool(change_provider)
+    get_changed_symbols_tool = GetChangedSymbolsTool(
+        project=project,
+        store=store,
+        provider=change_provider,
+    )
+    find_change_impacts_tool = FindChangeImpactsTool(
+        changed_symbols=get_changed_symbols_tool,
+        find_references=find_references_tool,
+        search_files=search_files_tool,
+    )
+    build_review_context_tool = BuildReviewContextTool(
+        reader=index_reader,
+        read_diff=read_diff_tool,
+        changed_symbols=get_changed_symbols_tool,
+        find_impacts=find_change_impacts_tool,
+    )
+    suggest_validation_plan_tool = SuggestValidationPlanTool(
+        catalog=catalog,
+        list_changed_files=list_changed_files_tool,
+        find_impacts=find_change_impacts_tool,
+    )
+    execution = _build_execution_container(settings, project, guard)
+    changes = _build_change_session_container(settings, project)
+    validate_change_set_tool: ValidateChangeSetTool | None = None
+    apply_review_fix_tool: ApplyReviewFixTool | None = None
+    publish_review_tool: PublishReviewTool | None = None
+    create_review_commit_tool: CreateReviewCommitTool | None = None
+    if settings.review_actions_enabled:
+        from code_harness.infrastructure.git.git_review_committer import GitReviewCommitter
+        from code_harness.infrastructure.git.isolated_worktree import IsolatedGitWorktreeFactory
+        from code_harness.infrastructure.git.unified_patch_applier import UnifiedPatchApplier
+        from code_harness.infrastructure.git.workspace_snapshot import (
+            GitWorkspaceSnapshotProvider,
+        )
+        from code_harness.infrastructure.review.file_review_publisher import FileReviewPublisher
+
+        snapshots = GitWorkspaceSnapshotProvider(settings.root)
+        authorizer = None
+        run_process = None
+        if execution is not None:
+            authorizer = ReviewActionAuthorizer(
+                project_id=project.project_id,
+                store=execution.approval_store,
+                require_approval=settings.execution_require_approval,
+                approval_ttl_seconds=settings.execution_approval_ttl_seconds,
+                backend=settings.execution_backend,
+            )
+            run_process = execution.run_process
+        validate_change_set_tool = ValidateChangeSetTool(
+            provider=change_provider,
+            snapshots=snapshots,
+            run_process=run_process,
+            project_root=settings.root,
+            worktree_factory=IsolatedGitWorktreeFactory(settings.root),
+            enabled=True,
+            default_use_worktree=settings.review_use_worktree,
+        )
+        apply_review_fix_tool = ApplyReviewFixTool(
+            provider=change_provider,
+            applier=UnifiedPatchApplier(
+                settings.root,
+                change_provider=change_provider,
+                snapshot_provider=snapshots,
+            ),
+            authorizer=authorizer,
+            enabled=True,
+            allowed=settings.review_allow_apply,
+            project_id=project.project_id,
+        )
+        publish_dir = settings.review_publish_dir or (
+            settings.execution_project_home() / "review_publications"
+        )
+        publish_review_tool = PublishReviewTool(
+            provider=change_provider,
+            publisher=FileReviewPublisher(publish_dir) if settings.review_allow_publish else None,
+            authorizer=authorizer,
+            enabled=True,
+            allowed=settings.review_allow_publish,
+            project_id=project.project_id,
+        )
+        create_review_commit_tool = CreateReviewCommitTool(
+            provider=change_provider,
+            snapshots=snapshots,
+            committer=GitReviewCommitter(settings.root) if settings.review_allow_commit else None,
+            authorizer=authorizer,
+            enabled=True,
+            allowed=settings.review_allow_commit,
+            project_id=project.project_id,
+        )
     container = ApplicationContainer(
         project=project,
         store=store,
@@ -248,7 +369,19 @@ def build_container(settings: Settings) -> ApplicationContainer:
             embedding_provider,
             settings.embedding_cache_path,
         ),
-        execution=_build_execution_container(settings, project, guard),
+        get_change_set=get_change_set_tool,
+        list_changed_files=list_changed_files_tool,
+        read_diff=read_diff_tool,
+        get_changed_symbols=get_changed_symbols_tool,
+        find_change_impacts=find_change_impacts_tool,
+        build_review_context=build_review_context_tool,
+        suggest_validation_plan=suggest_validation_plan_tool,
+        validate_change_set=validate_change_set_tool,
+        apply_review_fix=apply_review_fix_tool,
+        publish_review=publish_review_tool,
+        create_review_commit=create_review_commit_tool,
+        execution=execution,
+        changes=changes,
         _analyzer=analyzer,
         _embedding_provider=embedding_provider,
     )
@@ -266,6 +399,15 @@ def _build_execution_container(
     from code_harness.bootstrap.execution import build_execution_container
 
     return build_execution_container(settings, project, guard)
+
+
+def _build_change_session_container(
+    settings: Settings,
+    project: Project,
+) -> ChangeSessionContainer:
+    from code_harness.bootstrap.changes import build_change_session_container
+
+    return build_change_session_container(settings, project)
 
 
 @asynccontextmanager

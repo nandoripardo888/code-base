@@ -122,9 +122,30 @@ def test_settings_reads_mcp_execution_confirmation_gates(
     settings = Settings.for_root(tmp_path)
 
     assert settings.mcp_expose_powershell
+    assert settings.mcp_execution_approval_channel.value == "mcp_elicitation"
     assert settings.mcp_execution_elicitation_enabled
     assert settings.mcp_execution_elicitation_trust_mode == "local_interactive"
     assert settings.mcp_execution_elicitation_timeout_seconds == 45
+
+
+def test_settings_prefers_approval_channel_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CODE_HARNESS_EXECUTION", "1")
+    monkeypatch.setenv("CODE_HARNESS_MCP_EXPOSE_EXECUTION", "1")
+    monkeypatch.setenv("CODE_HARNESS_MCP_EXECUTION_APPROVAL_CHANNEL", "host_loopback")
+    monkeypatch.setenv("CODE_HARNESS_MCP_EXECUTION_ELICITATION", "1")
+    monkeypatch.setenv(
+        "CODE_HARNESS_MCP_EXECUTION_ELICITATION_TRUST_MODE",
+        "local_interactive",
+    )
+
+    settings = Settings.for_root(tmp_path)
+
+    assert settings.mcp_execution_approval_channel.value == "host_loopback"
+    assert not settings.mcp_execution_elicitation_enabled
+    assert settings.mcp_execution_elicitation_trust_mode == "disabled"
 
 
 def test_settings_rejects_mcp_execution_gate_inconsistencies(tmp_path: Path) -> None:

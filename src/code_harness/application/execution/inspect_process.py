@@ -68,6 +68,7 @@ class InspectProcessTool:
                 requested_capabilities=request.requested_capabilities,
                 reason=request.reason,
                 resolved_executable=resolved_executable,
+                digest_context=request.digest_context,
             )
             return self._policy.inspect_process(command)
 

@@ -61,6 +61,9 @@ class CapabilityState(StrEnum):
 class CommandKind(StrEnum):
     PROCESS = "process"
     POWERSHELL = "powershell"
+    APPLY_PATCH = "apply_patch"
+    PUBLISH_REVIEW = "publish_review"
+    CREATE_COMMIT = "create_commit"
 
 
 class PolicyDecision(StrEnum):
@@ -101,6 +104,84 @@ class ApprovalState(StrEnum):
     DENIED = "denied"
     CONSUMED = "consumed"
     EXPIRED = "expired"
+
+
+class ApprovalChannel(StrEnum):
+    DISABLED = "disabled"
+    MCP_ELICITATION = "mcp_elicitation"
+    HOST_LOOPBACK = "host_loopback"
+
+
+class ApprovalDecisionSource(StrEnum):
+    LOCAL_ADMIN = "local_admin"
+    MCP_ELICITATION = "mcp_elicitation"
+    HOST_LOOPBACK = "host_loopback"
+
+
+class ApprovalBinding(StrEnum):
+    NONE = "none"
+    MCP_SESSION = "mcp_session"
+    HOST_INSTANCE = "host_instance"
+
+
+class HumanDecisionOutcome(StrEnum):
+    APPROVED = "approved"
+    DENIED = "denied"
+    CANCELLED = "cancelled"
+    TIMED_OUT = "timed_out"
+    UNAVAILABLE = "unavailable"
+
+
+class ChangeSessionStatus(StrEnum):
+    PREPARING = "preparing"
+    READY = "ready"
+    AGENT_WORKING = "agent_working"
+    REVIEW_PENDING = "review_pending"
+    APPLYING = "applying"
+    APPLIED = "applied"
+    REJECTED = "rejected"
+    CONFLICT = "conflict"
+    STALE = "stale"
+    FAILED = "failed"
+    EXPIRED = "expired"
+    CLEANING = "cleaning"
+    CLEANED = "cleaned"
+
+
+class ChangeSegmentKind(StrEnum):
+    GIT_WORKTREE = "git_worktree"
+    WORKSPACE_MIRROR = "workspace_mirror"
+
+
+class WorkspaceTopologyKind(StrEnum):
+    SINGLE_GIT = "single_git"
+    NON_GIT = "non_git"
+    COMPOSITE = "composite"
+
+
+class ChangeIsolationMode(StrEnum):
+    AUTO = "auto"
+    ISOLATED = "isolated"
+    IN_PLACE = "in_place"
+
+
+class ChangeSourceKind(StrEnum):
+    WORKING_TREE = "working_tree"
+    STAGED = "staged"
+    COMMIT = "commit"
+    COMMIT_RANGE = "commit_range"
+    BRANCH_COMPARE = "branch_compare"
+    PULL_REQUEST = "pull_request"
+    PATCH_FILE = "patch_file"
+
+
+class FileChangeKind(StrEnum):
+    ADDED = "added"
+    MODIFIED = "modified"
+    DELETED = "deleted"
+    RENAMED = "renamed"
+    COPIED = "copied"
+    BINARY = "binary"
 
 
 class ExecutionState(StrEnum):
@@ -152,3 +233,21 @@ class ErrorCode(StrEnum):
     POWERSHELL_PARSE_FAILED = "powershell_parse_failed"
     POWERSHELL_ANALYSIS_FAILED = "powershell_analysis_failed"
     PROCESS_START_FAILED = "process_start_failed"
+    CHANGE_SET_NOT_FOUND = "change_set_not_found"
+    INVALID_CHANGE_REQUEST = "invalid_change_request"
+    GIT_UNAVAILABLE = "git_unavailable"
+    GIT_COMMAND_FAILED = "git_command_failed"
+    REVIEW_ACTIONS_DISABLED = "review_actions_disabled"
+    REVIEW_ACTION_NOT_ALLOWED = "review_action_not_allowed"
+    WORKSPACE_SNAPSHOT_MISMATCH = "workspace_snapshot_mismatch"
+    REVIEW_PATCH_APPLY_FAILED = "review_patch_apply_failed"
+    CHANGE_SESSION_NOT_FOUND = "change_session_not_found"
+    CHANGE_SESSION_INVALID_STATE = "change_session_invalid_state"
+    CHANGE_SESSION_UNSUPPORTED_TOPOLOGY = "change_session_unsupported_topology"
+    CHANGE_SESSION_WORKSPACE_DIRTY = "change_session_workspace_dirty"
+    CHANGE_SESSION_STALE = "change_session_stale"
+    CHANGE_SESSION_CONFLICT = "change_session_conflict"
+    CHANGE_SESSION_DIGEST_MISMATCH = "change_session_digest_mismatch"
+    CHANGE_SESSION_LOCK_HELD = "change_session_lock_held"
+    CHANGE_SESSION_PATH_REJECTED = "change_session_path_rejected"
+    CHANGE_SESSION_STORE_UNAVAILABLE = "change_session_store_unavailable"

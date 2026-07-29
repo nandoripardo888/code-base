@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from code_harness.application.approvals import (
+    ExecutionApprovalPresenter,
+    InteractiveApprovalService,
+)
 from code_harness.application.execution import (
     ApprovalAdminTool,
     DeterministicPolicyEngine,
@@ -17,12 +21,15 @@ from code_harness.application.execution import (
     TerminateExecutionTool,
 )
 from code_harness.bootstrap.settings import Settings
+from code_harness.domain.enums import ApprovalChannel
 from code_harness.domain.models.execution import BackendGuarantees, ExecutionRuntimeConfig
 from code_harness.domain.models.project import Project
 from code_harness.domain.protocols.command_policy import (
     SensitiveValueRedactor,
     WorkspacePathResolver,
 )
+from code_harness.domain.protocols.execution_store import ApprovalStore
+from code_harness.domain.protocols.human_decision_channel import HumanDecisionChannel
 
 if TYPE_CHECKING:
     from code_harness.domain.protocols.execution_runtime import ExecutionRegistry
@@ -39,10 +46,15 @@ class ExecutionContainer:
     get_execution: GetExecutionTool
     terminate_execution: TerminateExecutionTool
     approvals: ApprovalAdminTool
+    interactive_approvals: InteractiveApprovalService
     redactor: SensitiveValueRedactor
+    approval_channel: HumanDecisionChannel | None
+    approval_store: ApprovalStore
     _registry: ExecutionRegistry
 
     def shutdown(self) -> None:
+        if self.approval_channel is not None:
+            self.approval_channel.shutdown()
         self._registry.shutdown()
 
 
@@ -113,6 +125,12 @@ def build_execution_container(
         allow_elevated=config.allow_elevated,
     )
 
+    approvals = ApprovalAdminTool(
+        project_id=project.project_id,
+        store=store,
+        redact=redactor,
+    )
+    approval_channel = _build_approval_channel(settings)
     return ExecutionContainer(
         inspect_process=inspect_process,
         inspect_powershell=inspect_powershell,
@@ -147,13 +165,27 @@ def build_execution_container(
             store=store,
             redactor=redactor,
         ),
-        approvals=ApprovalAdminTool(
+        approvals=approvals,
+        interactive_approvals=InteractiveApprovalService(
             project_id=project.project_id,
-            store=store,
-            redact=redactor,
+            approvals=approvals,
+            presenter=ExecutionApprovalPresenter(redact=redactor.redact),
         ),
         redactor=redactor,
+        approval_channel=approval_channel,
+        approval_store=store,
         _registry=registry,
+    )
+
+
+def _build_approval_channel(settings: Settings) -> HumanDecisionChannel | None:
+    if settings.mcp_execution_approval_channel is not ApprovalChannel.HOST_LOOPBACK:
+        return None
+    from code_harness.infrastructure.interaction import HostLoopbackDecisionChannel
+
+    return HostLoopbackDecisionChannel(
+        port=settings.host_loopback_port,
+        open_browser=settings.host_loopback_open_browser,
     )
 
 

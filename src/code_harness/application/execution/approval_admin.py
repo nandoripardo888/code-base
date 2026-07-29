@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 from code_harness.application.tools._timing import timed
-from code_harness.domain.enums import ApprovalState
+from code_harness.domain.enums import ApprovalDecisionSource, ApprovalState
 from code_harness.domain.errors import InvalidExecutionRequestError
 from code_harness.domain.models.execution import ExecutionApproval
 from code_harness.domain.models.tool_result import ToolResult
 from code_harness.domain.protocols.command_policy import SensitiveValueRedactor
 from code_harness.domain.protocols.execution_store import ApprovalStore
+
+_VALID_DECISION_SOURCES = {item.value for item in ApprovalDecisionSource}
+_BOUND_SOURCES = {
+    ApprovalDecisionSource.MCP_ELICITATION.value: "MCP elicitation decisions require a session_id",
+    ApprovalDecisionSource.HOST_LOOPBACK.value: (
+        "Host loopback decisions require a service instance id"
+    ),
+}
 
 
 class ApprovalAdminTool:
@@ -46,12 +54,28 @@ class ApprovalAdminTool:
         )
         return ToolResult(approval, elapsed_ms)
 
+    def find_reusable(
+        self,
+        *,
+        digest: str,
+        allowed_sources: tuple[str, ...],
+    ) -> ExecutionApproval | None:
+        if not digest.strip():
+            raise InvalidExecutionRequestError("digest must not be empty")
+        if not allowed_sources:
+            raise InvalidExecutionRequestError("allowed_sources must not be empty")
+        return self._store.find_reusable_approval(
+            self._project_id,
+            digest=digest,
+            allowed_sources=allowed_sources,
+        )
+
     def approve(
         self,
         approval_id: str,
         *,
         reason: str | None = None,
-        decision_source: str = "local_admin",
+        decision_source: str = ApprovalDecisionSource.LOCAL_ADMIN.value,
         session_id: str | None = None,
     ) -> ToolResult[ExecutionApproval]:
         return self._decide(
@@ -67,7 +91,7 @@ class ApprovalAdminTool:
         approval_id: str,
         *,
         reason: str | None = None,
-        decision_source: str = "local_admin",
+        decision_source: str = ApprovalDecisionSource.LOCAL_ADMIN.value,
         session_id: str | None = None,
     ) -> ToolResult[ExecutionApproval]:
         return self._decide(
@@ -91,18 +115,18 @@ class ApprovalAdminTool:
             raise InvalidExecutionRequestError("approval_id must not be empty")
         if reason is not None and len(reason) > 4_000:
             raise InvalidExecutionRequestError("reason must not exceed 4000 characters")
-        if decision_source not in {"local_admin", "mcp_elicitation"}:
+        if decision_source not in _VALID_DECISION_SOURCES:
             raise InvalidExecutionRequestError(
-                "decision_source must be local_admin or mcp_elicitation"
+                "decision_source must be one of: " + ", ".join(sorted(_VALID_DECISION_SOURCES))
             )
-        if decision_source == "mcp_elicitation":
+        if decision_source in _BOUND_SOURCES:
             if session_id is None or not session_id.strip():
-                raise InvalidExecutionRequestError("MCP elicitation decisions require a session_id")
+                raise InvalidExecutionRequestError(_BOUND_SOURCES[decision_source])
             if len(session_id) > 128:
                 raise InvalidExecutionRequestError("session_id must not exceed 128 characters")
         elif session_id is not None:
             raise InvalidExecutionRequestError(
-                "session_id is only valid for MCP elicitation decisions"
+                "session_id is only valid for bound approval decisions"
             )
         approval, elapsed_ms = timed(
             lambda: self._store.decide_approval(

@@ -444,5 +444,200 @@ class PowerShellAnalysisError(CodeHarnessError):
         )
 
 
+class ChangeSetNotFoundError(CodeHarnessError):
+    def __init__(self, change_set_id: str) -> None:
+        super().__init__(
+            ErrorCode.CHANGE_SET_NOT_FOUND,
+            "Change set was not found.",
+            details={"change_set_id": change_set_id},
+            capability="review",
+            remediation="Create a fresh change set with get_change_set.",
+        )
+
+
+class InvalidChangeRequestError(CodeHarnessError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__(
+            ErrorCode.INVALID_CHANGE_REQUEST,
+            message,
+            details=details,
+            capability="review",
+        )
+
+
+class GitUnavailableError(CodeHarnessError):
+    def __init__(self, message: str = "Git is unavailable on this host.") -> None:
+        super().__init__(
+            ErrorCode.GIT_UNAVAILABLE,
+            message,
+            capability="review",
+            remediation="Install Git and ensure it is available on PATH.",
+            recoverable=True,
+        )
+
+
+class GitCommandFailedError(CodeHarnessError):
+    def __init__(self, message: str, *, stderr: str | None = None) -> None:
+        super().__init__(
+            ErrorCode.GIT_COMMAND_FAILED,
+            message,
+            details={"stderr": stderr} if stderr else None,
+            capability="review",
+            recoverable=True,
+        )
+
+
+class ReviewActionsDisabledError(CodeHarnessError):
+    def __init__(self, message: str = "Review actions are disabled.") -> None:
+        super().__init__(
+            ErrorCode.REVIEW_ACTIONS_DISABLED,
+            message,
+            capability="review",
+            remediation=(
+                "Enable CODE_HARNESS_REVIEW_ACTIONS and the specific action flag before use."
+            ),
+        )
+
+
+class ReviewActionNotAllowedError(CodeHarnessError):
+    def __init__(self, action: str) -> None:
+        super().__init__(
+            ErrorCode.REVIEW_ACTION_NOT_ALLOWED,
+            f"Review action {action!r} is not allowed by configuration.",
+            details={"action": action},
+            capability="review",
+            remediation=f"Enable the configuration flag that allows {action}.",
+        )
+
+
+class WorkspaceSnapshotMismatchError(CodeHarnessError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__(
+            ErrorCode.WORKSPACE_SNAPSHOT_MISMATCH,
+            message,
+            details=details,
+            capability="review",
+            remediation="Recapture the change set and request a fresh approval.",
+        )
+
+
+class ReviewPatchApplyFailedError(CodeHarnessError):
+    def __init__(self, message: str, *, stderr: str | None = None) -> None:
+        super().__init__(
+            ErrorCode.REVIEW_PATCH_APPLY_FAILED,
+            message,
+            details={"stderr": stderr} if stderr else None,
+            capability="review",
+            recoverable=True,
+        )
+
+
+class ChangeSessionNotFoundError(CodeHarnessError):
+    def __init__(self, session_id: str) -> None:
+        super().__init__(
+            ErrorCode.CHANGE_SESSION_NOT_FOUND,
+            "Change session was not found.",
+            details={"session_id": session_id},
+            capability="change_session",
+        )
+
+
+class ChangeSessionInvalidStateError(CodeHarnessError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__(
+            ErrorCode.CHANGE_SESSION_INVALID_STATE,
+            message,
+            details=details,
+            capability="change_session",
+        )
+
+
+class ChangeSessionUnsupportedTopologyError(CodeHarnessError):
+    def __init__(self, topology_kind: str) -> None:
+        super().__init__(
+            ErrorCode.CHANGE_SESSION_UNSUPPORTED_TOPOLOGY,
+            (
+                f"Change session topology {topology_kind!r} is not supported "
+                "in this release (single_git only)."
+            ),
+            details={"topology_kind": topology_kind},
+            capability="change_session",
+        )
+
+
+class ChangeSessionWorkspaceDirtyError(CodeHarnessError):
+    def __init__(self, message: str = "Workspace working tree is dirty.", **details: Any) -> None:
+        super().__init__(
+            ErrorCode.CHANGE_SESSION_WORKSPACE_DIRTY,
+            message,
+            details=details,
+            capability="change_session",
+            remediation="Commit or stash local changes before starting an isolated session.",
+        )
+
+
+class ChangeSessionStaleError(CodeHarnessError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__(
+            ErrorCode.CHANGE_SESSION_STALE,
+            message,
+            details=details,
+            capability="change_session",
+            remediation="Create a new change session from the current workspace state.",
+        )
+
+
+class ChangeSessionConflictError(CodeHarnessError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__(
+            ErrorCode.CHANGE_SESSION_CONFLICT,
+            message,
+            details=details,
+            capability="change_session",
+            recoverable=True,
+        )
+
+
+class ChangeSessionDigestMismatchError(CodeHarnessError):
+    def __init__(self, session_id: str) -> None:
+        super().__init__(
+            ErrorCode.CHANGE_SESSION_DIGEST_MISMATCH,
+            "Candidate digest does not match the prepared change session.",
+            details={"session_id": session_id},
+            capability="change_session",
+            remediation="Re-prepare the session and approve the new digest.",
+        )
+
+
+class ChangeSessionLockHeldError(CodeHarnessError):
+    def __init__(self, lock_key: str) -> None:
+        super().__init__(
+            ErrorCode.CHANGE_SESSION_LOCK_HELD,
+            "Another change session already holds the write lock.",
+            details={"lock_key": lock_key},
+            capability="change_session",
+            recoverable=True,
+        )
+
+
+class ChangeSessionPathRejectedError(CodeHarnessError):
+    def __init__(self, path: str, reason: str) -> None:
+        super().__init__(
+            ErrorCode.CHANGE_SESSION_PATH_REJECTED,
+            f"Path rejected for change-session operation: {reason}",
+            details={"path": path, "reason": reason},
+            capability="change_session",
+        )
+
+
+class ChangeSessionStoreUnavailableError(CodeHarnessError):
+    def __init__(self, message: str = "Change session store is unavailable.") -> None:
+        super().__init__(
+            ErrorCode.CHANGE_SESSION_STORE_UNAVAILABLE,
+            message,
+            capability="change_session",
+        )
+
+
 def is_recoverable_error(error: BaseException) -> bool:
     return isinstance(error, CodeHarnessError) and error.recoverable

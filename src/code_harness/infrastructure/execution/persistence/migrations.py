@@ -9,6 +9,7 @@ from code_harness.infrastructure.execution.persistence.schema import (
     MIGRATION_1,
     MIGRATION_2,
     MIGRATION_3,
+    MIGRATION_4,
 )
 from code_harness.infrastructure.persistence.connection import connect_database
 
@@ -16,6 +17,7 @@ MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (1, "execution_approval_and_audit", MIGRATION_1),
     (2, "execution_async_lifecycle", MIGRATION_2),
     (3, "execution_mcp_session_binding", MIGRATION_3),
+    (4, "execution_reusable_approval_digest", MIGRATION_4),
 )
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 

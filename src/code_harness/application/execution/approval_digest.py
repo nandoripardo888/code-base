@@ -26,8 +26,10 @@ def compute_approval_digest(
     policy_version: str,
     policy_name: str,
     ruleset_hash: str = "",
+    digest_context: tuple[tuple[str, str], ...] = (),
 ) -> ApprovalDigest:
-    payload = {
+    ordered_context = {key: value for key, value in sorted(digest_context, key=lambda item: item[0])}
+    payload: dict[str, object] = {
         "project_id": project_id,
         "command_kind": kind.value,
         "executable": executable,
@@ -41,7 +43,9 @@ def compute_approval_digest(
         "policy_name": policy_name,
         "policy_version": policy_version,
         "ruleset_hash": ruleset_hash,
-        "canonical_version": 1,
+        "canonical_version": 2 if ordered_context else 1,
     }
+    if ordered_context:
+        payload["digest_context"] = ordered_context
     canonical = json.dumps(payload, separators=(",", ":"), sort_keys=True)
     return ApprovalDigest(value=sha256(canonical.encode("utf-8")).hexdigest())

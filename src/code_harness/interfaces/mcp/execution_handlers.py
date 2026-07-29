@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import threading
 import weakref
@@ -11,9 +9,7 @@ from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
-from mcp import types
 from mcp.server.fastmcp import Context, FastMCP
-from pydantic import BaseModel, Field
 
 from code_harness.application.dto.execution_requests import (
     GetExecutionRequest,
@@ -26,29 +22,20 @@ from code_harness.application.dto.execution_requests import (
 from code_harness.bootstrap.container import ApplicationContainer
 from code_harness.bootstrap.execution import ExecutionContainer
 from code_harness.bootstrap.settings import Settings
-from code_harness.domain.enums import ApprovalState, ExecutionCapability
+from code_harness.domain.enums import ApprovalChannel, ExecutionCapability
 from code_harness.domain.errors import (
     CodeHarnessError,
-    ExecutionApprovalDeniedError,
-    ExecutionApprovalRequiredError,
     InternalToolError,
     InvalidExecutionRequestError,
 )
-from code_harness.domain.models.execution import CommandInspection, ExecutionApproval
+from code_harness.domain.models.execution import CommandInspection
 from code_harness.domain.models.tool_result import ToolResult
+from code_harness.interfaces.mcp.mcp_elicitation_channel import McpElicitationDecisionChannel
 from code_harness.interfaces.serialization import serialize_error, serialize_tool_result
 
 _LOGGER = logging.getLogger(__name__)
-_CONFIRMATION_LOCKS: dict[str, threading.Lock] = {}
-_CONFIRMATION_LOCKS_GUARD = threading.Lock()
 _SESSION_IDS: weakref.WeakKeyDictionary[Any, str] = weakref.WeakKeyDictionary()
 _SESSION_IDS_GUARD = threading.Lock()
-
-
-class ExecutionConfirmation(BaseModel):
-    """Primitive-only form returned by an interactive MCP client."""
-
-    decision: str = Field(description="Approve this exact one-time execution, or decline it.")
 
 
 def _execution(container: ApplicationContainer) -> ExecutionContainer:
@@ -75,55 +62,10 @@ def _can_elicit(
     context: Context[Any, Any, Any],
     settings: Settings,
 ) -> bool:
-    if not settings.mcp_execution_elicitation_enabled:
+    if settings.mcp_execution_approval_channel is not ApprovalChannel.MCP_ELICITATION:
         return False
-    if settings.mcp_execution_elicitation_trust_mode != "local_interactive":
-        return False
-    required = types.ClientCapabilities(
-        elicitation=types.ElicitationCapability(form=types.FormElicitationCapability())
-    )
-    return bool(context.session.check_client_capability(required))
-
-
-def _capabilities(values: list[str] | None) -> tuple[ExecutionCapability, ...]:
-    return tuple(ExecutionCapability(item) for item in (values or ()))
-
-
-def _approved_for_digest(
-    container: ApplicationContainer,
-    digest: str | None,
-) -> ExecutionApproval | None:
-    if digest is None:
-        return None
-    approvals = (
-        _execution(container)
-        .approvals.list(
-            state=ApprovalState.APPROVED,
-            limit=200,
-        )
-        .data
-    )
-    return next(
-        (
-            item
-            for item in approvals
-            if item.digest == digest and item.decision_source != "mcp_elicitation"
-        ),
-        None,
-    )
-
-
-def _claim_confirmation(approval_id: str) -> threading.Lock | None:
-    with _CONFIRMATION_LOCKS_GUARD:
-        lock = _CONFIRMATION_LOCKS.setdefault(approval_id, threading.Lock())
-        return lock if lock.acquire(blocking=False) else None
-
-
-def _release_confirmation(approval_id: str, lock: threading.Lock) -> None:
-    lock.release()
-    with _CONFIRMATION_LOCKS_GUARD:
-        if not lock.locked():
-            _CONFIRMATION_LOCKS.pop(approval_id, None)
+    channel = McpElicitationDecisionChannel(context)
+    return channel.supports_client()
 
 
 def _session_id(context: Context[Any, Any, Any]) -> str:
@@ -136,43 +78,20 @@ def _session_id(context: Context[Any, Any, Any]) -> str:
         return value
 
 
-def _confirmation_message(
-    inspection: CommandInspection,
+def _select_channel(
     *,
-    project_id: str,
-    redact: Callable[[str | None], str | None],
-) -> str:
-    def safe(value: str) -> str:
-        return json.dumps(redact(value) or "", ensure_ascii=True)
-
-    command = (
-        json.dumps(
-            [
-                redact(inspection.executable) or "",
-                *(redact(argument) or "" for argument in inspection.args),
-            ],
-            ensure_ascii=True,
-        )
-        if inspection.executable
-        else safe(f"PowerShell script sha256:{inspection.script_hash}")
-    )
-    capabilities = ", ".join(item.value for item in inspection.required_capabilities) or "none"
-    risks = "; ".join(f"{item.severity.value}: {item.message}" for item in inspection.risks)
-    digest = inspection.approval_digest.value if inspection.approval_digest else ""
-    return (
-        "Confirm a one-time supervised execution.\n"
-        f"Project: {safe(project_id)}\n"
-        f"Command: {command}\n"
-        f"Working directory: {safe(inspection.cwd)}\n"
-        f"Backend: {safe(inspection.backend)}\n"
-        f"Capabilities: {safe(capabilities)}\n"
-        f"Limits: timeout={inspection.timeout_seconds}s, "
-        f"output={inspection.max_output_bytes} bytes\n"
-        f"Risks: {safe(risks or 'none reported')}\n"
-        f"Policy: {safe(f'{inspection.policy_name}/{inspection.policy_version}')} "
-        f"ruleset={safe(inspection.ruleset_hash)}\n"
-        f"Canonical digest: {safe(digest)}"
-    )
+    context: Context[Any, Any, Any],
+    container: ApplicationContainer,
+    settings: Settings,
+) -> tuple[Any, str | None]:
+    execution = _execution(container)
+    match settings.mcp_execution_approval_channel:
+        case ApprovalChannel.MCP_ELICITATION if _can_elicit(context, settings):
+            return McpElicitationDecisionChannel(context), _session_id(context)
+        case ApprovalChannel.HOST_LOOPBACK if execution.approval_channel is not None:
+            return execution.approval_channel, settings.service_instance_id
+        case _:
+            return None, None
 
 
 async def _run_with_optional_elicitation(
@@ -183,74 +102,21 @@ async def _run_with_optional_elicitation(
     inspection: CommandInspection,
     run: Callable[[str | None, str | None], ToolResult[Any]],
 ) -> dict[str, Any]:
-    approved = _approved_for_digest(
-        container,
-        inspection.approval_digest.value if inspection.approval_digest else None,
+    execution = _execution(container)
+    channel, session_id = _select_channel(
+        context=context,
+        container=container,
+        settings=settings,
     )
     try:
-        return serialize_tool_result(run(approved.approval_id if approved else None, None))
-    except ExecutionApprovalRequiredError as required:
-        if not _can_elicit(context, settings):
-            return serialize_error(required)
-        approval_id = required.details.get("approval_id")
-        if not isinstance(approval_id, str):
-            return serialize_error(required)
-        confirmation_lock = _claim_confirmation(approval_id)
-        if confirmation_lock is None:
-            required.details["elicitation_action"] = "already_in_progress"
-            return serialize_error(required)
-        try:
-            try:
-                response = await asyncio.wait_for(
-                    context.elicit(
-                        _confirmation_message(
-                            inspection,
-                            project_id=settings.project.project_id,
-                            redact=_execution(container).redactor.redact,
-                        ),
-                        ExecutionConfirmation,
-                    ),
-                    timeout=settings.mcp_execution_elicitation_timeout_seconds,
-                )
-            except (TimeoutError, asyncio.CancelledError):
-                required.details["elicitation_action"] = "timeout"
-                return serialize_error(required)
-            except Exception:
-                _LOGGER.info("MCP execution elicitation became unavailable.", exc_info=True)
-                required.details["elicitation_action"] = "unavailable"
-                return serialize_error(required)
-
-            session_id = _session_id(context)
-            action = response.action
-            if action == "accept":
-                decision = getattr(getattr(response, "data", None), "decision", None)
-                if decision == "approve":
-                    _execution(container).approvals.approve(
-                        approval_id,
-                        reason=f"mcp_elicitation session={session_id}",
-                        decision_source="mcp_elicitation",
-                        session_id=session_id,
-                    )
-                    return serialize_tool_result(run(approval_id, session_id))
-                _execution(container).approvals.deny(
-                    approval_id,
-                    reason=f"mcp_elicitation_declined session={session_id}",
-                    decision_source="mcp_elicitation",
-                    session_id=session_id,
-                )
-                return serialize_error(ExecutionApprovalDeniedError(approval_id))
-            if action == "decline":
-                _execution(container).approvals.deny(
-                    approval_id,
-                    reason=f"mcp_elicitation_declined session={session_id}",
-                    decision_source="mcp_elicitation",
-                    session_id=session_id,
-                )
-                return serialize_error(ExecutionApprovalDeniedError(approval_id))
-            required.details["elicitation_action"] = "cancel"
-            return serialize_error(required)
-        finally:
-            _release_confirmation(approval_id, confirmation_lock)
+        result = await execution.interactive_approvals.run_with_optional_approval(
+            channel=channel,
+            inspection=inspection,
+            run=run,
+            timeout_seconds=settings.mcp_execution_elicitation_timeout_seconds,
+            decision_session_id=session_id,
+        )
+        return serialize_tool_result(result)
     except CodeHarnessError as error:
         return serialize_error(error)
     except ValueError as error:
@@ -455,3 +321,7 @@ def register_execution_handlers(
                 )
             ),
         )
+
+
+def _capabilities(values: list[str] | None) -> tuple[ExecutionCapability, ...]:
+    return tuple(ExecutionCapability(item) for item in (values or ()))

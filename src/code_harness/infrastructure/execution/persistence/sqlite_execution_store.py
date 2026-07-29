@@ -10,6 +10,7 @@ from typing import Any
 from uuid import uuid4
 
 from code_harness.domain.enums import (
+    ApprovalDecisionSource,
     ApprovalState,
     CommandKind,
     ExecutionCapability,
@@ -192,7 +193,7 @@ class SQLiteExecutionStore:
         *,
         state: ApprovalState,
         reason: str | None = None,
-        decision_source: str = "local_admin",
+        decision_source: str = ApprovalDecisionSource.LOCAL_ADMIN.value,
         session_id: str | None = None,
     ) -> ExecutionApproval:
         if state not in {ApprovalState.APPROVED, ApprovalState.DENIED}:
@@ -201,20 +202,31 @@ class SQLiteExecutionStore:
                 approval_id=approval_id,
                 state=state.value,
             )
-        if decision_source not in {"local_admin", "mcp_elicitation"}:
+        valid_sources = {item.value for item in ApprovalDecisionSource}
+        if decision_source not in valid_sources:
             raise ExecutionApprovalInvalidError(
                 "Approval decision source is invalid.",
                 approval_id=approval_id,
                 decision_source=decision_source,
             )
-        if decision_source == "mcp_elicitation" and not session_id:
+        if decision_source in {
+            ApprovalDecisionSource.MCP_ELICITATION.value,
+            ApprovalDecisionSource.HOST_LOOPBACK.value,
+        } and not session_id:
             raise ExecutionApprovalInvalidError(
-                "MCP elicitation approval requires a session binding.",
+                "Bound approval decisions require a session or instance id.",
                 approval_id=approval_id,
             )
-        if decision_source != "mcp_elicitation" and session_id is not None:
+        if (
+            decision_source
+            not in {
+                ApprovalDecisionSource.MCP_ELICITATION.value,
+                ApprovalDecisionSource.HOST_LOOPBACK.value,
+            }
+            and session_id is not None
+        ):
             raise ExecutionApprovalInvalidError(
-                "Only MCP elicitation approvals may be session-bound.",
+                "Only bound approval sources may carry a session or instance id.",
                 approval_id=approval_id,
             )
         now_text = self._clock().isoformat()
@@ -233,7 +245,10 @@ class SQLiteExecutionStore:
                     raise ExecutionApprovalNotFoundError(approval_id)
                 current = ApprovalState(str(row["state"]))
                 if current is state:
-                    if current is ApprovalState.APPROVED and decision_source == "mcp_elicitation":
+                    if current is ApprovalState.APPROVED and decision_source in {
+                        ApprovalDecisionSource.MCP_ELICITATION.value,
+                        ApprovalDecisionSource.HOST_LOOPBACK.value,
+                    }:
                         connection.execute(
                             """
                             UPDATE approval_requests
@@ -309,6 +324,89 @@ class SQLiteExecutionStore:
                 return self._approval_from_row(updated)
         except (
             ExecutionApprovalConsumedError,
+            ExecutionApprovalExpiredError,
+            ExecutionApprovalInvalidError,
+            ExecutionApprovalNotFoundError,
+        ):
+            raise
+        except (OSError, sqlite3.DatabaseError) as error:
+            raise ExecutionStoreUnavailableError() from error
+
+    def find_reusable_approval(
+        self,
+        project_id: str,
+        *,
+        digest: str,
+        allowed_sources: tuple[str, ...],
+    ) -> ExecutionApproval | None:
+        if not allowed_sources:
+            return None
+        now_text = self._clock().isoformat()
+        placeholders = ", ".join("?" for _ in allowed_sources)
+        try:
+            with connect_database(self.path) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                self._expire_due(connection, project_id, now_text)
+                row = connection.execute(
+                    f"""
+                    SELECT * FROM approval_requests
+                    WHERE project_id = ?
+                      AND digest = ?
+                      AND state = ?
+                      AND expires_at > ?
+                      AND COALESCE(decision_source, 'local_admin') IN ({placeholders})
+                    ORDER BY decided_at DESC
+                    LIMIT 1
+                    """,
+                    (
+                        project_id,
+                        digest,
+                        ApprovalState.APPROVED.value,
+                        now_text,
+                        *allowed_sources,
+                    ),
+                ).fetchone()
+                if row is None:
+                    return None
+                return self._approval_from_row(row)
+        except (OSError, sqlite3.DatabaseError) as error:
+            raise ExecutionStoreUnavailableError() from error
+
+    def consume_approval(
+        self,
+        project_id: str,
+        approval_id: str,
+        *,
+        digest: str,
+        session_id: str | None = None,
+        consumed_at: str | None = None,
+        details: dict[str, object] | None = None,
+    ) -> ExecutionApproval:
+        timestamp = consumed_at or self._clock().isoformat()
+        try:
+            with connect_database(self.path) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                self._consume_approval_core(
+                    connection,
+                    project_id=project_id,
+                    approval_id=approval_id,
+                    digest=digest,
+                    session_id=session_id,
+                    consumed_at=timestamp,
+                    details=details or {},
+                )
+                row = connection.execute(
+                    """
+                    SELECT * FROM approval_requests
+                    WHERE project_id = ? AND approval_id = ?
+                    """,
+                    (project_id, approval_id),
+                ).fetchone()
+                assert row is not None
+                return self._approval_from_row(row)
+        except (
+            ExecutionApprovalConsumedError,
+            ExecutionApprovalDeniedError,
             ExecutionApprovalExpiredError,
             ExecutionApprovalInvalidError,
             ExecutionApprovalNotFoundError,
@@ -592,13 +690,34 @@ class SQLiteExecutionStore:
         start: ExecutionAuditStart,
         approval_id: str,
     ) -> None:
-        self._expire_due(connection, start.project_id, start.created_at)
+        self._consume_approval_core(
+            connection,
+            project_id=start.project_id,
+            approval_id=approval_id,
+            digest=start.digest or "",
+            session_id=start.approval_session_id,
+            consumed_at=start.created_at,
+            details={"execution_id": start.execution_id},
+        )
+
+    def _consume_approval_core(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        project_id: str,
+        approval_id: str,
+        digest: str,
+        session_id: str | None,
+        consumed_at: str,
+        details: dict[str, object],
+    ) -> None:
+        self._expire_due(connection, project_id, consumed_at)
         row = connection.execute(
             """
             SELECT * FROM approval_requests
             WHERE project_id = ? AND approval_id = ?
             """,
-            (start.project_id, approval_id),
+            (project_id, approval_id),
         ).fetchone()
         if row is None:
             raise ExecutionApprovalNotFoundError(approval_id)
@@ -615,23 +734,33 @@ class SQLiteExecutionStore:
                 approval_id=approval_id,
                 state=state.value,
             )
-        if str(row["digest"]) != (start.digest or ""):
+        if str(row["digest"]) != digest:
             raise ExecutionApprovalInvalidError(
                 "Approval digest does not match the inspected command.",
                 approval_id=approval_id,
             )
         decision_source = (
-            str(row["decision_source"]) if row["decision_source"] is not None else "local_admin"
+            str(row["decision_source"])
+            if row["decision_source"] is not None
+            else ApprovalDecisionSource.LOCAL_ADMIN.value
         )
-        if decision_source == "mcp_elicitation":
+        if decision_source in {
+            ApprovalDecisionSource.MCP_ELICITATION.value,
+            ApprovalDecisionSource.HOST_LOOPBACK.value,
+        }:
             bound_session = str(row["session_id"]) if row["session_id"] is not None else ""
-            requested_session = start.approval_session_id or ""
+            requested_session = session_id or ""
             if not bound_session or not secrets.compare_digest(
                 bound_session,
                 requested_session,
             ):
+                message = (
+                    "MCP approval is bound to a different client session."
+                    if decision_source == ApprovalDecisionSource.MCP_ELICITATION.value
+                    else "Host loopback approval is bound to a different service instance."
+                )
                 raise ExecutionApprovalInvalidError(
-                    "MCP approval is bound to a different client session.",
+                    message,
                     approval_id=approval_id,
                 )
         cursor = connection.execute(
@@ -640,17 +769,17 @@ class SQLiteExecutionStore:
             SET state = 'consumed', consumed_at = ?
             WHERE approval_id = ? AND state = 'approved'
             """,
-            (start.created_at, approval_id),
+            (consumed_at, approval_id),
         )
         if cursor.rowcount != 1:
             raise ExecutionApprovalConsumedError(approval_id)
         self._event(
             connection,
-            project_id=start.project_id,
+            project_id=project_id,
             approval_id=approval_id,
             event_type="approval_consumed",
-            occurred_at=start.created_at,
-            details={"execution_id": start.execution_id},
+            occurred_at=consumed_at,
+            details=details,
         )
 
     @staticmethod

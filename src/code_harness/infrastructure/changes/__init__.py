@@ -1,0 +1,1 @@
+"""Isolated change-session infrastructure."""

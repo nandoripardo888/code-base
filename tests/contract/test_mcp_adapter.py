@@ -39,6 +39,13 @@ EXPECTED_TOOLS = {
     "build_context",
     "get_repository_map",
     "get_index_status",
+    "get_change_set",
+    "list_changed_files",
+    "read_diff",
+    "get_changed_symbols",
+    "find_change_impacts",
+    "build_review_context",
+    "suggest_validation_plan",
 }
 
 

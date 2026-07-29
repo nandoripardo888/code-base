@@ -158,6 +158,7 @@ class DeterministicPolicyEngine:
                 dynamic_features=tuple(dynamic),
                 protected_path_matches=protected,
                 digest_capabilities=tuple(required),
+                digest_context=command.digest_context,
             )
 
         autoallow_key = (name.removesuffix(".exe"), args)
@@ -186,6 +187,7 @@ class DeterministicPolicyEngine:
                 dynamic_features=tuple(dynamic),
                 protected_path_matches=protected,
                 digest_capabilities=required_caps,
+                digest_context=command.digest_context,
             )
 
         resolved_suffix = PureWindowsPath(command.resolved_executable or "").suffix.casefold()
@@ -232,6 +234,7 @@ class DeterministicPolicyEngine:
                 dynamic_features=("shell_wrapper",),
                 protected_path_matches=protected,
                 digest_capabilities=_unique_capabilities(tuple(required)),
+                digest_context=command.digest_context,
             )
 
         inferred, infer_reasons, infer_risks = _infer_process_capabilities(name, args)
@@ -340,6 +343,7 @@ class DeterministicPolicyEngine:
             dynamic_features=tuple(dynamic),
             protected_path_matches=protected,
             digest_capabilities=required_caps,
+            digest_context=command.digest_context,
         )
 
     def inspect_powershell(
@@ -487,6 +491,7 @@ class DeterministicPolicyEngine:
         dynamic_features: tuple[str, ...] = (),
         protected_path_matches: tuple[str, ...] = (),
         warnings: tuple[str, ...] = (),
+        digest_context: tuple[tuple[str, str], ...] = (),
     ) -> CommandInspection:
         approval_required = decision in {
             PolicyDecision.APPROVAL_REQUIRED,
@@ -508,6 +513,7 @@ class DeterministicPolicyEngine:
                 policy_version=self._config.policy_version,
                 policy_name=self._config.policy_name,
                 ruleset_hash=RULESET_HASH,
+                digest_context=digest_context,
             )
         return CommandInspection(
             kind=kind,

@@ -41,6 +41,25 @@ class ApprovalStore(Protocol):
         session_id: str | None = None,
     ) -> ExecutionApproval: ...
 
+    def find_reusable_approval(
+        self,
+        project_id: str,
+        *,
+        digest: str,
+        allowed_sources: tuple[str, ...],
+    ) -> ExecutionApproval | None: ...
+
+    def consume_approval(
+        self,
+        project_id: str,
+        approval_id: str,
+        *,
+        digest: str,
+        session_id: str | None = None,
+        consumed_at: str | None = None,
+        details: dict[str, object] | None = None,
+    ) -> ExecutionApproval: ...
+
 
 class ExecutionStore(Protocol):
     def initialize(self) -> None: ...

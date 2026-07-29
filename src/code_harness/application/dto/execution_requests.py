@@ -32,6 +32,7 @@ class InspectProcessRequest:
     max_output_bytes: int | None = None
     requested_capabilities: tuple[ExecutionCapability, ...] = ()
     reason: str | None = None
+    digest_context: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         stripped = self.executable.strip()
@@ -63,6 +64,22 @@ class InspectProcessRequest:
         )
         if self.reason is not None and len(self.reason) > 4_000:
             raise ValueError("reason must not exceed 4000 characters")
+        normalized_context: list[tuple[str, str]] = []
+        for index, item in enumerate(self.digest_context):
+            if (
+                not isinstance(item, tuple)
+                or len(item) != 2
+                or not isinstance(item[0], str)
+                or not isinstance(item[1], str)
+            ):
+                raise ValueError(f"digest_context[{index}] must be a (str, str) pair")
+            key = item[0].strip()
+            if not key:
+                raise ValueError(f"digest_context[{index}] key must not be empty")
+            if len(key) > 128 or len(item[1]) > 16_384:
+                raise ValueError(f"digest_context[{index}] exceeds size limits")
+            normalized_context.append((key, item[1]))
+        object.__setattr__(self, "digest_context", tuple(normalized_context))
 
 
 @dataclass(frozen=True, slots=True)

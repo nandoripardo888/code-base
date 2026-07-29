@@ -11,12 +11,17 @@ from mcp import types
 from mcp.server.fastmcp import FastMCP
 from mcp.shared.memory import create_connected_server_and_client_session
 
+from code_harness.application.approvals import (
+    ExecutionApprovalPresenter,
+    InteractiveApprovalService,
+)
 from code_harness.application.dto.execution_requests import (
     RunPowerShellRequest,
     RunProcessRequest,
 )
 from code_harness.bootstrap.settings import Settings
 from code_harness.domain.enums import (
+    ApprovalChannel,
     ApprovalState,
     CommandKind,
     ExecutionCapability,
@@ -36,9 +41,7 @@ from code_harness.infrastructure.execution.persistence.schema import (
     MIGRATION_2,
 )
 from code_harness.interfaces.mcp.execution_handlers import (
-    _approved_for_digest,
     _can_elicit,
-    _confirmation_message,
     _execute,
     _execution,
     _run_with_optional_elicitation,
@@ -92,9 +95,24 @@ class _FakeContext:
 @dataclass
 class _FakeApprovals:
     decisions: list[tuple[str, str, str | None, str, str | None]]
+    reusable: Any | None = None
 
     def list(self, **_kwargs: object) -> ToolResult[tuple[Any, ...]]:
         return ToolResult((), 0)
+
+    def find_reusable(
+        self,
+        *,
+        digest: str,
+        allowed_sources: tuple[str, ...],
+    ) -> Any | None:
+        if self.reusable is None:
+            return None
+        if self.reusable.digest != digest:
+            return None
+        if self.reusable.decision_source not in allowed_sources:
+            return None
+        return self.reusable
 
     def approve(
         self,
@@ -130,6 +148,7 @@ def _settings(tmp_path: Path, **changes: Any) -> Settings:
         "index_path": tmp_path / "index.db",
         "execution_enabled": True,
         "mcp_expose_execution": True,
+        "mcp_execution_approval_channel": ApprovalChannel.MCP_ELICITATION,
         "mcp_execution_elicitation_enabled": True,
         "mcp_execution_elicitation_trust_mode": "local_interactive",
         "mcp_execution_elicitation_timeout_seconds": 1,
@@ -140,6 +159,7 @@ def _settings(tmp_path: Path, **changes: Any) -> Settings:
 
 def _inspection() -> SimpleNamespace:
     return SimpleNamespace(
+        kind=CommandKind.PROCESS,
         executable="git",
         args=("status", "--short"),
         required_capabilities=(ExecutionCapability.WORKSPACE_READ,),
@@ -157,10 +177,17 @@ def _inspection() -> SimpleNamespace:
 
 
 def _container(approvals: _FakeApprovals) -> SimpleNamespace:
+    redactor = _FakeRedactor()
     return SimpleNamespace(
         execution=SimpleNamespace(
             approvals=approvals,
-            redactor=_FakeRedactor(),
+            redactor=redactor,
+            approval_channel=None,
+            interactive_approvals=InteractiveApprovalService(
+                project_id="project-1",
+                approvals=cast(Any, approvals),
+                presenter=ExecutionApprovalPresenter(redact=redactor.redact),
+            ),
         )
     )
 
@@ -191,13 +218,7 @@ def test_elicitation_requires_feature_capability_and_trusted_local_mode(tmp_path
         cast(Any, _FakeContext()),
         _settings(
             tmp_path,
-            mcp_execution_elicitation_enabled=False,
-        ),
-    )
-    assert not _can_elicit(
-        cast(Any, _FakeContext()),
-        _settings(
-            tmp_path,
+            mcp_execution_approval_channel=ApprovalChannel.DISABLED,
             mcp_execution_elicitation_enabled=False,
             mcp_execution_elicitation_trust_mode="disabled",
         ),
@@ -224,13 +245,6 @@ def test_execution_adapter_maps_errors_and_missing_components() -> None:
 
     with pytest.raises(InvalidExecutionRequestError, match="unavailable"):
         _execution(cast(Any, SimpleNamespace(execution=None)))
-    assert (
-        _approved_for_digest(
-            cast(Any, _container(_FakeApprovals([]))),
-            None,
-        )
-        is None
-    )
 
 
 def test_internal_session_binding_fields_are_validated() -> None:
@@ -398,10 +412,9 @@ def test_confirmation_message_escapes_controls_and_redacts_secrets(
         "--token=secret-value\nRisks: none\u202e",
     )
 
-    message = _confirmation_message(
+    message = ExecutionApprovalPresenter(redact=_FakeRedactor().redact).format_message(
         cast(Any, inspection),
         project_id="project\nCanonical digest: forged",
-        redact=_FakeRedactor().redact,
     )
 
     assert "secret-value" not in message
@@ -566,6 +579,12 @@ def test_real_mcp_transport_negotiates_and_executes_confirmed_tools(
         terminate_execution=UnusedTool(),
         approvals=approvals,
         redactor=_FakeRedactor(),
+        approval_channel=None,
+        interactive_approvals=InteractiveApprovalService(
+            project_id="project-1",
+            approvals=cast(Any, approvals),
+            presenter=ExecutionApprovalPresenter(redact=_FakeRedactor().redact),
+        ),
     )
     container = SimpleNamespace(execution=execution)
     settings = _settings(

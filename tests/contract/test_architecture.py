@@ -120,6 +120,39 @@ def test_execution_approval_is_not_exposed_by_mcp() -> None:
     assert "execution approvals" not in source
 
 
+def test_human_decision_channel_protocol_lives_in_domain() -> None:
+    protocol = Path("src/code_harness/domain/protocols/human_decision_channel.py")
+    models = Path("src/code_harness/domain/models/human_decision.py")
+    assert protocol.is_file()
+    assert models.is_file()
+    assert "HumanDecisionChannel" in protocol.read_text(encoding="utf-8")
+    assert "HumanDecisionRequest" in models.read_text(encoding="utf-8")
+
+
+def test_interactive_approval_orchestration_lives_in_application() -> None:
+    service = Path(
+        "src/code_harness/application/approvals/interactive_approval_service.py"
+    ).read_text(encoding="utf-8")
+    handler = Path("src/code_harness/interfaces/mcp/execution_handlers.py").read_text(
+        encoding="utf-8"
+    )
+    assert "class InteractiveApprovalService" in service
+    assert "run_with_optional_approval" in service
+    assert "approvals.approve(" not in handler
+    assert "approvals.deny(" not in handler
+    assert "InteractiveApprovalService" not in Path(
+        "src/code_harness/interfaces/mcp/mcp_elicitation_channel.py"
+    ).read_text(encoding="utf-8")
+
+
+def test_mcp_elicitation_channel_is_the_only_mcp_decision_adapter() -> None:
+    channel = Path("src/code_harness/interfaces/mcp/mcp_elicitation_channel.py")
+    assert channel.is_file()
+    for source in Path("src/code_harness/application").rglob("*.py"):
+        imported = _all_imports(source)
+        assert not any(name == "mcp" or name.startswith("mcp.") for name in imported), source
+
+
 def test_index_schema_does_not_contain_execution_tables() -> None:
     source = Path("src/code_harness/infrastructure/persistence/schema.py").read_text(
         encoding="utf-8"

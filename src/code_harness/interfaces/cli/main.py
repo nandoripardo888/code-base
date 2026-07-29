@@ -30,6 +30,7 @@ from code_harness.bootstrap.settings import Settings
 from code_harness.bootstrap.tls import configure_application_tls
 from code_harness.domain.enums import ErrorCode, IndexMode
 from code_harness.domain.errors import CodeHarnessError, InternalToolError, InvalidQueryError
+from code_harness.interfaces.cli.change_commands import changes_app
 from code_harness.interfaces.cli.execution_commands import execution_app
 from code_harness.interfaces.cli.renderers import OutputFormat, render_error, render_value
 from code_harness.interfaces.cli.renderers.progress import IndexProgressPrinter
@@ -52,6 +53,7 @@ app.add_typer(search_app, name="search")
 app.add_typer(models_app, name="models")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(execution_app, name="execution")
+app.add_typer(changes_app, name="changes")
 _LOGGER = logging.getLogger(__name__)
 
 

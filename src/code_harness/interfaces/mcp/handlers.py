@@ -26,6 +26,19 @@ from code_harness.application.dto.requests import (
     SearchTextRequest,
     SemanticSearchRequest,
 )
+from code_harness.application.dto.review_requests import (
+    ApplyReviewFixRequest,
+    BuildReviewContextRequest,
+    CreateReviewCommitRequest,
+    FindChangeImpactsRequest,
+    GetChangedSymbolsRequest,
+    GetChangeSetRequest,
+    ListChangedFilesRequest,
+    PublishReviewRequest,
+    ReadDiffRequest,
+    SuggestValidationPlanRequest,
+    ValidateChangeSetRequest,
+)
 from code_harness.bootstrap.container import ApplicationContainer
 from code_harness.bootstrap.settings import Settings
 from code_harness.domain.enums import IndexMode
@@ -464,6 +477,270 @@ def register_handlers(
         """Return index state and statistics for the active project."""
         return _execute(container.get_index_status.execute, response_detail)
 
+    @server.tool()
+    def get_change_set(
+        source: str = "working_tree",
+        base: str | None = "HEAD",
+        include_untracked: bool = True,
+        response_detail: ResponseDetailParameter = None,
+    ) -> dict[str, Any]:
+        """Capture a read-only snapshot of repository changes."""
+
+        def operation() -> ToolResult[Any]:
+            return container.get_change_set.execute(
+                GetChangeSetRequest(
+                    source=source,
+                    base=base,
+                    include_untracked=include_untracked,
+                )
+            )
+
+        return _execute(operation, response_detail)
+
+    @server.tool()
+    def list_changed_files(
+        change_set_id: str,
+        response_detail: ResponseDetailParameter = None,
+    ) -> dict[str, Any]:
+        """List files contained in a previously captured change set."""
+
+        def operation() -> ToolResult[Any]:
+            return container.list_changed_files.execute(
+                ListChangedFilesRequest(change_set_id=change_set_id)
+            )
+
+        return _execute(operation, response_detail)
+
+    @server.tool()
+    def read_diff(
+        change_set_id: str,
+        path: str | None = None,
+        response_detail: ResponseDetailParameter = None,
+    ) -> dict[str, Any]:
+        """Return structured hunks for a change set."""
+
+        def operation() -> ToolResult[Any]:
+            return container.read_diff.execute(
+                ReadDiffRequest(change_set_id=change_set_id, path=path)
+            )
+
+        return _execute(operation, response_detail)
+
+    @server.tool()
+    def get_changed_symbols(
+        change_set_id: str,
+        path: str | None = None,
+        max_symbols: int = 200,
+        response_detail: ResponseDetailParameter = None,
+    ) -> dict[str, Any]:
+        """Map change-set hunks to indexed symbols when available."""
+
+        def operation() -> ToolResult[Any]:
+            return container.get_changed_symbols.execute(
+                GetChangedSymbolsRequest(
+                    change_set_id=change_set_id,
+                    path=path,
+                    max_symbols=max_symbols,
+                )
+            )
+
+        return _execute(operation, response_detail)
+
+    @server.tool()
+    def find_change_impacts(
+        change_set_id: str,
+        path: str | None = None,
+        max_symbols: int = 50,
+        max_references_per_symbol: int = 30,
+        max_tests_per_symbol: int = 10,
+        include_config: bool = True,
+        response_detail: ResponseDetailParameter = None,
+    ) -> dict[str, Any]:
+        """Find callers, references, related tests and config for changed symbols."""
+
+        def operation() -> ToolResult[Any]:
+            return container.find_change_impacts.execute(
+                FindChangeImpactsRequest(
+                    change_set_id=change_set_id,
+                    path=path,
+                    max_symbols=max_symbols,
+                    max_references_per_symbol=max_references_per_symbol,
+                    max_tests_per_symbol=max_tests_per_symbol,
+                    include_config=include_config,
+                )
+            )
+
+        return _execute(operation, response_detail)
+
+    @server.tool()
+    def build_review_context(
+        change_set_id: str,
+        path: str | None = None,
+        max_tokens: int = 12_000,
+        reserved_tokens: int = 2_000,
+        max_files: int = 15,
+        max_snippets: int = 25,
+        response_detail: ResponseDetailParameter = None,
+    ) -> dict[str, Any]:
+        """Build a diff-first review context bundle under a token budget."""
+
+        def operation() -> ToolResult[Any]:
+            return container.build_review_context.execute(
+                BuildReviewContextRequest(
+                    change_set_id=change_set_id,
+                    path=path,
+                    max_tokens=max_tokens,
+                    reserved_tokens=reserved_tokens,
+                    max_files=max_files,
+                    max_snippets=max_snippets,
+                )
+            )
+
+        return _execute(operation, response_detail)
+
+    @server.tool()
+    def suggest_validation_plan(
+        change_set_id: str,
+        path: str | None = None,
+        max_test_files: int = 20,
+        response_detail: ResponseDetailParameter = None,
+    ) -> dict[str, Any]:
+        """Suggest a deterministic validation plan for a change set."""
+
+        def operation() -> ToolResult[Any]:
+            return container.suggest_validation_plan.execute(
+                SuggestValidationPlanRequest(
+                    change_set_id=change_set_id,
+                    path=path,
+                    max_test_files=max_test_files,
+                )
+            )
+
+        return _execute(operation, response_detail)
+
+    if settings.mcp_expose_review_actions:
+
+        @server.tool()
+        def validate_change_set(
+            change_set_id: str,
+            executable: str,
+            args: list[str] | None = None,
+            cwd: str = ".",
+            timeout_seconds: float | None = None,
+            max_output_bytes: int | None = None,
+            requested_capabilities: list[str] | None = None,
+            reason: str | None = None,
+            approval_id: str | None = None,
+            wait: bool = True,
+            use_worktree: bool | None = None,
+            response_detail: ResponseDetailParameter = None,
+        ) -> dict[str, Any]:
+            """Run an approved validation command bound to a change-set snapshot."""
+
+            def operation() -> ToolResult[Any]:
+                assert container.validate_change_set is not None
+                return container.validate_change_set.execute(
+                    ValidateChangeSetRequest(
+                        change_set_id=change_set_id,
+                        executable=executable,
+                        args=tuple(args or ()),
+                        cwd=cwd,
+                        timeout_seconds=timeout_seconds,
+                        max_output_bytes=max_output_bytes,
+                        requested_capabilities=tuple(requested_capabilities or ()),
+                        reason=reason,
+                        approval_id=approval_id,
+                        wait=wait,
+                        use_worktree=use_worktree,
+                    )
+                )
+
+            return _execute(operation, response_detail)
+
+        @server.tool()
+        def apply_review_fix(
+            change_set_id: str,
+            patch_text: str,
+            expected_file_hashes: list[list[str]],
+            approval_id: str | None = None,
+            reason: str | None = None,
+            response_detail: ResponseDetailParameter = None,
+        ) -> dict[str, Any]:
+            """Apply an exact unified patch after snapshot hash checks."""
+
+            def operation() -> ToolResult[Any]:
+                assert container.apply_review_fix is not None
+                hashes = tuple((item[0], item[1]) for item in expected_file_hashes)
+                return container.apply_review_fix.execute(
+                    ApplyReviewFixRequest(
+                        change_set_id=change_set_id,
+                        patch_text=patch_text,
+                        expected_file_hashes=hashes,
+                        approval_id=approval_id,
+                        reason=reason,
+                    )
+                )
+
+            return _execute(operation, response_detail)
+
+        @server.tool()
+        def publish_review(
+            change_set_id: str,
+            title: str,
+            body: str = "",
+            comments: list[dict[str, Any]] | None = None,
+            approval_id: str | None = None,
+            response_detail: ResponseDetailParameter = None,
+        ) -> dict[str, Any]:
+            """Publish a local review artifact (opt-in file publisher)."""
+
+            def operation() -> ToolResult[Any]:
+                assert container.publish_review is not None
+                normalized = tuple(
+                    (
+                        str(item.get("path", "")),
+                        str(item.get("body", "")),
+                        item.get("start_line"),
+                        item.get("end_line"),
+                        str(item.get("side", "RIGHT")),
+                    )
+                    for item in (comments or [])
+                )
+                return container.publish_review.execute(
+                    PublishReviewRequest(
+                        change_set_id=change_set_id,
+                        title=title,
+                        body=body,
+                        comments=normalized,
+                        approval_id=approval_id,
+                    )
+                )
+
+            return _execute(operation, response_detail)
+
+        @server.tool()
+        def create_review_commit(
+            change_set_id: str,
+            message: str,
+            paths: list[str] | None = None,
+            approval_id: str | None = None,
+            response_detail: ResponseDetailParameter = None,
+        ) -> dict[str, Any]:
+            """Create a Git commit for reviewed changes (opt-in)."""
+
+            def operation() -> ToolResult[Any]:
+                assert container.create_review_commit is not None
+                return container.create_review_commit.execute(
+                    CreateReviewCommitRequest(
+                        change_set_id=change_set_id,
+                        message=message,
+                        paths=tuple(paths) if paths is not None else None,
+                        approval_id=approval_id,
+                    )
+                )
+
+            return _execute(operation, response_detail)
+
     if settings.mcp_expose_index_commands:
 
         @server.tool()
@@ -498,3 +775,8 @@ def register_handlers(
         )
 
         register_execution_handlers(server, container, settings)
+
+    if settings.mcp_expose_change_sessions:
+        from code_harness.interfaces.mcp.change_handlers import register_change_handlers
+
+        register_change_handlers(server, container, settings)

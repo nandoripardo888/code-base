@@ -28,10 +28,24 @@ from code_harness.application.dto.requests import (
     SearchTextRequest,
     SemanticSearchRequest,
 )
+from code_harness.application.dto.review_requests import (
+    ApplyReviewFixRequest,
+    BuildReviewContextRequest,
+    CreateReviewCommitRequest,
+    FindChangeImpactsRequest,
+    GetChangedSymbolsRequest,
+    GetChangeSetRequest,
+    ListChangedFilesRequest,
+    PublishReviewRequest,
+    ReadDiffRequest,
+    SuggestValidationPlanRequest,
+    ValidateChangeSetRequest,
+)
 from code_harness.bootstrap.container import ApplicationContainer, build_container
 from code_harness.bootstrap.settings import Settings
 from code_harness.domain.enums import ApprovalState, ExecutionCapability, IndexMode
-from code_harness.domain.errors import ExecutionDisabledError
+from code_harness.domain.errors import ExecutionDisabledError, ReviewActionsDisabledError
+from code_harness.domain.models.change_set import ChangedFile, ChangeDiff, ChangedSymbol, ChangeSet
 from code_harness.domain.models.code_chunk import SourceRead
 from code_harness.domain.models.context import ContextBundle
 from code_harness.domain.models.execution import (
@@ -45,6 +59,13 @@ from code_harness.domain.models.hybrid import HybridSearchHit
 from code_harness.domain.models.index_report import DoctorReport, IndexReport, IndexStatus
 from code_harness.domain.models.project import Project
 from code_harness.domain.models.repository_map import RepositoryMap
+from code_harness.domain.models.review import ChangeImpact, ReviewContextBundle, ValidationPlan
+from code_harness.domain.models.review_actions import (
+    PublishedReview,
+    ReviewCommitResult,
+    ReviewFixApplication,
+    ValidationRunResult,
+)
 from code_harness.domain.models.search_hit import SearchHit
 from code_harness.domain.models.semantic import SemanticPreparationReport
 from code_harness.domain.models.structural import StructuralSearchResult
@@ -259,6 +280,206 @@ class CodeHarness:
 
     def get_index_status(self) -> ToolResult[IndexStatus]:
         return self._container.get_index_status.execute()
+
+    def get_change_set(
+        self,
+        *,
+        source: str = "working_tree",
+        base: str | None = "HEAD",
+        include_untracked: bool = True,
+    ) -> ToolResult[ChangeSet]:
+        return self._container.get_change_set.execute(
+            GetChangeSetRequest(
+                source=source,
+                base=base,
+                include_untracked=include_untracked,
+            )
+        )
+
+    def list_changed_files(self, change_set_id: str) -> ToolResult[tuple[ChangedFile, ...]]:
+        return self._container.list_changed_files.execute(
+            ListChangedFilesRequest(change_set_id=change_set_id)
+        )
+
+    def read_diff(
+        self,
+        change_set_id: str,
+        *,
+        path: str | None = None,
+    ) -> ToolResult[ChangeDiff]:
+        return self._container.read_diff.execute(
+            ReadDiffRequest(change_set_id=change_set_id, path=path)
+        )
+
+    def get_changed_symbols(
+        self,
+        change_set_id: str,
+        *,
+        path: str | None = None,
+        max_symbols: int = 200,
+    ) -> ToolResult[tuple[ChangedSymbol, ...]]:
+        return self._container.get_changed_symbols.execute(
+            GetChangedSymbolsRequest(
+                change_set_id=change_set_id,
+                path=path,
+                max_symbols=max_symbols,
+            )
+        )
+
+    def find_change_impacts(
+        self,
+        change_set_id: str,
+        *,
+        path: str | None = None,
+        max_symbols: int = 50,
+        max_references_per_symbol: int = 30,
+        max_tests_per_symbol: int = 10,
+        include_config: bool = True,
+    ) -> ToolResult[tuple[ChangeImpact, ...]]:
+        return self._container.find_change_impacts.execute(
+            FindChangeImpactsRequest(
+                change_set_id=change_set_id,
+                path=path,
+                max_symbols=max_symbols,
+                max_references_per_symbol=max_references_per_symbol,
+                max_tests_per_symbol=max_tests_per_symbol,
+                include_config=include_config,
+            )
+        )
+
+    def build_review_context(
+        self,
+        change_set_id: str,
+        *,
+        path: str | None = None,
+        max_tokens: int = 12_000,
+        reserved_tokens: int = 2_000,
+        max_files: int = 15,
+        max_snippets: int = 25,
+    ) -> ToolResult[ReviewContextBundle]:
+        return self._container.build_review_context.execute(
+            BuildReviewContextRequest(
+                change_set_id=change_set_id,
+                path=path,
+                max_tokens=max_tokens,
+                reserved_tokens=reserved_tokens,
+                max_files=max_files,
+                max_snippets=max_snippets,
+            )
+        )
+
+    def suggest_validation_plan(
+        self,
+        change_set_id: str,
+        *,
+        path: str | None = None,
+        max_test_files: int = 20,
+    ) -> ToolResult[ValidationPlan]:
+        return self._container.suggest_validation_plan.execute(
+            SuggestValidationPlanRequest(
+                change_set_id=change_set_id,
+                path=path,
+                max_test_files=max_test_files,
+            )
+        )
+
+    def _review_actions(self) -> None:
+        if self._container.validate_change_set is None:
+            raise ReviewActionsDisabledError()
+
+    def validate_change_set(
+        self,
+        change_set_id: str,
+        executable: str,
+        args: tuple[str, ...] = (),
+        *,
+        cwd: str = ".",
+        timeout_seconds: float | None = None,
+        max_output_bytes: int | None = None,
+        requested_capabilities: tuple[str, ...] = (),
+        reason: str | None = None,
+        approval_id: str | None = None,
+        wait: bool = True,
+        use_worktree: bool | None = None,
+    ) -> ToolResult[ValidationRunResult]:
+        self._review_actions()
+        assert self._container.validate_change_set is not None
+        return self._container.validate_change_set.execute(
+            ValidateChangeSetRequest(
+                change_set_id=change_set_id,
+                executable=executable,
+                args=args,
+                cwd=cwd,
+                timeout_seconds=timeout_seconds,
+                max_output_bytes=max_output_bytes,
+                requested_capabilities=requested_capabilities,
+                reason=reason,
+                approval_id=approval_id,
+                wait=wait,
+                use_worktree=use_worktree,
+            )
+        )
+
+    def apply_review_fix(
+        self,
+        change_set_id: str,
+        patch_text: str,
+        expected_file_hashes: tuple[tuple[str, str], ...],
+        *,
+        approval_id: str | None = None,
+        reason: str | None = None,
+    ) -> ToolResult[ReviewFixApplication]:
+        self._review_actions()
+        assert self._container.apply_review_fix is not None
+        return self._container.apply_review_fix.execute(
+            ApplyReviewFixRequest(
+                change_set_id=change_set_id,
+                patch_text=patch_text,
+                expected_file_hashes=expected_file_hashes,
+                approval_id=approval_id,
+                reason=reason,
+            )
+        )
+
+    def publish_review(
+        self,
+        change_set_id: str,
+        title: str,
+        *,
+        body: str = "",
+        comments: tuple[tuple[str, str, int | None, int | None, str], ...] = (),
+        approval_id: str | None = None,
+    ) -> ToolResult[PublishedReview]:
+        self._review_actions()
+        assert self._container.publish_review is not None
+        return self._container.publish_review.execute(
+            PublishReviewRequest(
+                change_set_id=change_set_id,
+                title=title,
+                body=body,
+                comments=comments,
+                approval_id=approval_id,
+            )
+        )
+
+    def create_review_commit(
+        self,
+        change_set_id: str,
+        message: str,
+        *,
+        paths: tuple[str, ...] | None = None,
+        approval_id: str | None = None,
+    ) -> ToolResult[ReviewCommitResult]:
+        self._review_actions()
+        assert self._container.create_review_commit is not None
+        return self._container.create_review_commit.execute(
+            CreateReviewCommitRequest(
+                change_set_id=change_set_id,
+                message=message,
+                paths=paths,
+                approval_id=approval_id,
+            )
+        )
 
     def doctor(self, *, deep: bool = False) -> ToolResult[DoctorReport]:
         return self._container.doctor.execute(deep=deep)

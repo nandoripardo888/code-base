@@ -103,6 +103,7 @@ class NormalizedProcessCommand:
     requested_capabilities: tuple[ExecutionCapability, ...]
     reason: str | None
     resolved_executable: str | None = None
+    digest_context: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

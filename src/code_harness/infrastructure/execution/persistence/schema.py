@@ -127,3 +127,16 @@ MIGRATION_3: tuple[str, ...] = (
     WHERE decision_source IS NULL AND decided_at IS NOT NULL
     """,
 )
+
+
+MIGRATION_4: tuple[str, ...] = (
+    """
+    CREATE INDEX IF NOT EXISTS IX_APPROVAL_REUSABLE_DIGEST
+    ON approval_requests (
+        project_id,
+        digest,
+        state,
+        expires_at
+    )
+    """,
+)

@@ -1,4 +1,4 @@
-from code_harness.interfaces.cli.main import main
+from code_harness.cli import main
 
 if __name__ == "__main__":
     main()

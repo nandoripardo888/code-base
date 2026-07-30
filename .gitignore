@@ -10,3 +10,4 @@ htmlcov/
 build/
 dist/
 .code-harness/
+blackbox-patch-tests/

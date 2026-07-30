@@ -1,149 +1,213 @@
-# Tools
+# Tool reference
 
-The current application tools are independent from their interfaces.
+Most tools return plain text. `Shell` and `GetJobStatus` return structured JSON
+so exit codes, job ids, and environment metadata stay unambiguous. Failures come
+back as `code: message`, for example
+`path_outside_project: Path resolves outside the project root: '../etc'`.
 
-| Tool | Purpose | Index required |
-|---|---|---:|
-| `list_files` | List allowed source files with stable pagination | No |
-| `search_files` | Match names and relative paths with match evidence | No |
-| `search_text` | Validated FTS candidates plus exact Ripgrep fallback | No |
-| `search_regex` | Regular-expression search using Ripgrep only | No |
-| `read_file` | Read a guarded source file with truncation metadata | No |
-| `read_range` | Read an inclusive line interval with truncation metadata | No |
-| `index_project` | Run incremental, full, or verify indexing | Creates it |
-| `get_index_status` | Return schema, counts, index/service state, and capabilities | No |
-| `doctor` | Check runtime, project, Ripgrep, SQLite, cache, and optional deep inference | No |
-| `prepare_semantic_model` | Download, cache, load, and probe the embedding model | No |
-| `get_file_outline` | Return validated symbols for one file | Yes |
-| `find_symbol` | Find symbols by name or qualified name | Yes |
-| `find_definition` | Find exact symbol definitions | Yes |
-| `find_references` | Prefer structural references; Ripgrep is optional | No |
-| `semantic_search` | Rank validated chunks by semantic similarity | Yes |
-| `search_code` | Fuse lexical, structural, path, reference, and optional semantic evidence | No |
-| `build_context` | Select and expand validated snippets within an estimated token budget | No |
-| `get_repository_map` | Return a current file tree; symbols only in detailed mode | No |
+Paths may be relative to the project root or absolute, but must resolve inside
+it. Reported paths use forward slashes on every platform.
 
-Search and read limits are validated by request DTOs. Results use `ToolResult`
-with elapsed time, truncation state, warnings, optional index state, and
-optional strategy outcomes.
+## Shell
 
-Warnings may be plain strings or structured `ToolWarning` objects (`code`,
-`message`, `recoverable`, `capability`, `remediation`). Use
-`warning_message()` when consuming them.
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `command` | string | required |
+| `working_directory` | string | must be inside the project; default is the root |
+| `block_until_ms` | int | default `30000`, max `30000`; `0` backgrounds immediately |
+| `description` | string | optional label echoed in the response |
+| `shell` | string | `auto` (default), `powershell`, `cmd`, `bash`, or `sh` |
 
-## Contracts that matter for agents
+Finished within the window:
 
-### Pagination
+```json
+{
+  "status": "completed",
+  "job_id": null,
+  "pid": 18420,
+  "exit_code": 0,
+  "elapsed_ms": 1280,
+  "output": "BUILD SUCCESS",
+  "output_truncated": false,
+  "environment": {
+    "os": "Windows",
+    "shell": "powershell",
+    "shell_version": "7.5.2",
+    "cwd": "."
+  }
+}
+```
 
-`list_files` returns a `FileListingPage` with `items`, `next_cursor`,
-`total_count`, `page_size`, and `has_more`. Pass `cursor` / `page_size` for the
-next page. A stale cursor raises `cursor_stale`.
+Still running when the wait elapses:
 
-`get_repository_map` accepts `mode=summary|files|detailed` (default `summary`).
-Symbols are included only in `detailed`. Summary and files modes stay light.
+```json
+{
+  "status": "running",
+  "job_id": "job-123",
+  "pid": 18420,
+  "exit_code": null,
+  "elapsed_ms": 30000,
+  "last_output": "Compiling...",
+  "output_truncated": false,
+  "environment": {
+    "os": "Windows",
+    "shell": "powershell",
+    "shell_version": "7.5.2",
+    "cwd": "."
+  }
+}
+```
 
-### Compact structural responses
+While a command is running, `exit_code` is always `null`. Use `GetJobStatus`
+with the returned `job_id` to follow progress. Temporary log paths are never
+returned.
 
-`get_file_outline` and `find_symbol` default to `include_content=false` and
-`response_format=compact`. Symbol bodies are omitted (`content=None`,
-`content_included=false`). Request `include_content=true` or
-`response_format=full` when bodies are required.
+`auto` prefers `pwsh` → `powershell` → `cmd` on Windows, and `$SHELL` → `bash`
+→ `sh` elsewhere. `CODE_HARNESS_SHELL` overrides that selection. Clear shell
+mismatches (for example a Bash heredoc under PowerShell) fail with
+`shell_syntax_mismatch`.
 
-Symbols expose both `display_signature` (human-oriented) and
-`canonical_signature` (normalized, multiline-aware). Schema migration v5 and
-parser supervisor version 3 cover the signature fields.
+## GetJobStatus
 
-### Reads and truncation
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `job_id` | string | required; opaque id returned by `Shell` |
+| `wait_ms` | int | default `0`, max `30000`; how long the query may wait |
+| `tail_lines` | int | default `50`, max `500`; trailing lines of output |
 
-`read_file` and `read_range` return `SourceRead` with the snippet plus
-`TruncationInfo` (`truncated`, `reason`, `next_start_line`, character/line
-limits). Truncation prefers line boundaries. `include_line_numbers` controls
-prefixed line numbers in the returned text. Compact machine projections return
-either `content` or `lines`, never both; `response_detail=full` preserves the
-legacy rich representation.
+```json
+{
+  "job_id": "job-123",
+  "status": "completed",
+  "pid": 18420,
+  "exit_code": 0,
+  "elapsed_ms": 78000,
+  "last_output": "BUILD SUCCESS",
+  "output_truncated": false
+}
+```
 
-### Machine-readable response detail
+Allowed statuses: `running`, `completed`, `failed`, `unknown`. An unknown id
+returns `status: "unknown"` with `exit_code: null`. There is no cancel API in
+this version.
 
-MCP and CLI JSON/JSONL default to `response_detail=compact`. All MCP tools
-accept `minimal|compact|detailed|debug|full`; the CLI exposes the same values
-through the root `--response-detail` option. An explicit argument overrides
-`CODE_HARNESS_RESPONSE_DETAIL`, whose fallback is `compact`.
+## Grep
 
-The four normal profiles omit empty/internal metadata and keep projected
-`data` within 30,000 serialized characters. `debug` places timings, index state,
-strategies, and ranking evidence under diagnostics. `full` returns the rich
-legacy structure without the aggregate response budget. Typed errors and
-non-empty warnings are never hidden.
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `pattern` | string | required; ripgrep regex syntax |
+| `path` | string | file or directory to search; default is the root |
+| `glob` | string | filter such as `*.py` or `!*.min.js` |
+| `type` | string | ripgrep type name such as `py` or `rust` |
+| `output_mode` | string | `content` (default), `files_with_matches`, `count` |
+| `case_insensitive` | bool | default `false` |
+| `context_before` | int | lines before each match, content mode only |
+| `context_after` | int | lines after each match, content mode only |
+| `context_lines` | int | lines on both sides; overrides the two above |
+| `multiline` | bool | default `false`; lets the pattern span lines |
+| `head_limit` | int | maximum matches, or files in the other two modes |
+| `offset` | int | skip the first N results |
 
-Machine envelopes retain `truncated` for compatibility and add `truncation`
-when the cause is known. The structured block separates result, snippet,
-candidate, token, file, expansion, and response-budget limits. Duplicates
-removed while merging FTS, Ripgrep, or structural results are not truncation.
+Match lines use `path:line:text` and context lines use `path-line-text`, the
+same convention as ripgrep. With no matches the answer is `No matches found.`
 
-### References and regex
+Results are capped at 1,000 entries even without `head_limit`. When results are
+left over, a trailing line tells you the offset to continue from.
 
-`find_references` is structural-first. Ripgrep complements when available; if
-Ripgrep is missing or times out, validated structural references are still
-returned with structured warnings. Lexical hits are conservatively classified
-as `import`, `instantiation`, `type_use`, `call`, `configuration_textual`,
-`unknown_textual`, or `comment_textual` using the current full source file.
-Code references sort before configuration, and confirmed comments sort last.
-Comments may be excluded with `include_comments=false` (CLI:
-`--exclude-comments`); the search expands its candidate limit to backfill code.
+Hidden files are searched; `.git` and anything in `.gitignore` are not.
 
-`search_regex` requires Ripgrep. There is no Python regex fallback. Configure
-`CODE_HARNESS_RG` or ensure `rg` is on `PATH`. Doctor reports discovery details.
+## Glob
 
-### Index vs service health
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `glob_pattern` | string | required; `**/` is prepended when missing |
+| `target_directory` | string | must be inside the project; default is the root |
 
-`get_index_status` separates:
+```text
+Result of search in '.' (total 2 files):
+- src/util.py
+- src/hello.py
+```
 
-- `index_state` — persistence readiness (`ready`, `ready_with_warnings`, …);
-- `service_state` — runtime services such as embeddings;
-- `capabilities` — per-capability `CapabilityStatus` (`ready`, `degraded`,
-  `unavailable`, `disabled`, `unknown`).
+Sorted by modification time, newest first.
 
-Semantic probe failures are cached in-process until configuration changes or
-`doctor --deep` invalidates the cache.
+## Read
 
-### Hybrid search and context
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `path` | string | required |
+| `offset` | int | 1-indexed first line; negative counts from the end |
+| `limit` | int | how many lines to return |
 
-Structural tools return `StructuralSearchResult` objects containing the symbol
-or reference, optional current source content, and current hash. Semantic
-results reuse `SearchHit` with `match_type=semantic` and a raw cosine score.
-Hybrid results use `HybridSearchHit` with per-strategy `SearchEvidence`; scores
-are absolute combinations of evidence strength, query coverage, and resolved
-anchor scope. They are not normalized against the best result. Exact container
-symbols or file stems establish an anchor; target-bearing anchor results come
-first, followed by relevant global fallback. Diversity applies only to fallback
-results. Comments and path-only matches have explicit confidence caps.
+Text files come back as `     1|content`, with a trailing note giving the next
+offset when lines remain. An empty file answers `File is empty.` Files ending in
+`.jpg`, `.jpeg`, `.png`, `.gif`, or `.webp` are returned as MCP image content
+instead, so the model can look at them. Files are clipped at 2 MB.
 
-`search_code` may expand camelCase / snake_case terms for conceptual and mixed
-queries. Expansion is lexical only (no translation). Match evidence includes
-precise match types and character spans where available.
+Encoding is UTF-8 first (BOM-aware). If that fails, windows-1252 is used as a
+fixed fallback, so accented Brazilian Portuguese sources read correctly.
 
-Hybrid snippets default to `snippet_mode=match_window`, with limits of 40 lines
-and 6,000 characters per result. Oversized candidates choose the deterministic
-window covering the most query terms; if none occur, the declaration/start of
-the symbol is returned. `symbol` and `none` are also supported. `symbol`
-remains bounded unless its limits are explicitly increased.
+## Write
 
-`build_context` expands only known symbol parents and direct references. Its
-token count is a conservative local estimate (`ceil(UTF-8 bytes / 3)`), not a
-model-specific tokenizer result. Omission reasons are typed and mutually
-exclusive (`results_truncated`, `snippet_truncated`, `budget_exhausted`,
-`expansion_limited`). Query-oriented windows prefer ranges that contain the
-query terms. Enumeration-style questions consume non-overlapping anchor blocks
-of at most 40 lines and 6,000 characters before any relevant global fallback.
-When compact context is truncated it exposes `considered_results`,
-`selected_results`, and `omitted_results`, preserving their arithmetic invariant.
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `path` | string | required |
+| `contents` | string | the complete file contents |
 
-`get_repository_map` still returns the current file tree when the structural
-index is unavailable, with a warning and no symbol enrichment.
-Its path filter treats forward/backward slashes, `./`, repeated separators, and
-trailing separators equivalently.
+Missing parent directories are created. The whole file is replaced, and line
+endings are written exactly as given. New files are UTF-8; overwriting an
+existing file keeps its detected encoding (UTF-8 or windows-1252).
 
-Use `doctor(deep=True)` in Python or `doctor --deep` in the CLI for actual model
-loading and inference. Use `prepare_semantic_model()` or `models prepare` before
-the first semantic index so network and certificate problems are reported
-before repository processing starts.
+## StrReplace
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `path` | string | required |
+| `old_string` | string | must exist in the file |
+| `new_string` | string | must differ from `old_string` |
+| `replace_all` | bool | default `false` |
+| `ignore_line_endings` | bool | default `true`; matches LF and CRLF equivalently |
+| `expected_occurrences` | int | optional exact occurrence count |
+| `expected_sha256` | string | optional stale-file protection |
+| `dry_run` | bool | validate without writing |
+
+With `replace_all=false` the old string has to be unique. Matching is tolerant
+of LF/CRLF differences by default, while the file's encoding, BOM, and newline
+style are preserved. Writes use an atomic replacement.
+
+## ApplyPatch
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `patch` | string | required unified diff |
+| `dry_run` | bool | default `false`; run Git validation without real changes |
+| `expected_hashes` | object | optional map of path to expected SHA-256 |
+
+Git is required, but the project does not need a `.git` directory. The patch is
+applied first in a temporary UTF-8/LF workspace. Successful results are encoded
+back to the original format, committed to the real files, and recorded as
+byte-exact history. Binary patches, symlinks, submodules, copies, and renames are
+rejected in this version.
+
+## RollbackPatch
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `transaction_id` | string | required id returned by `ApplyPatch` |
+| `force` | bool | default `false`; overwrite later edits only when explicit |
+
+Restores the before snapshots. Without `force`, current files must still match
+the hashes produced by the original patch.
+
+History retention and orphan cleanup run internally during server startup; they
+are intentionally not exposed as MCP tools.
+
+## Delete
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `path` | string | required |
+
+Deletes one file. Missing files, directories, and paths outside the project all
+produce a `Could not delete ...` message rather than an error, so a redundant
+delete never breaks a run.

@@ -1,277 +1,153 @@
 # code-harness
 
-`code-harness` is a local-first Python library and CLI for retrieving verifiable
-context from source repositories. The current release combines safe filesystem
-access, direct lexical search, an incremental SQLite index, and isolated
-structural analysis. Semantic search is available as an optional local extra;
-deterministic hybrid ranking and budgeted context construction work with or
-without that extra. An optional MCP adapter exposes the same application tools
-over stdio.
+A local MCP server with a compact Cursor-like tool set. Ten tools, no index, no
+embeddings, no SQLite.
 
-## Current capabilities
+| Tool | Purpose |
+|------|---------|
+| `Shell` | Run a shell command; long ones return a `job_id` |
+| `GetJobStatus` | Follow a background shell job and its trailing output |
+| `Grep` | Regex search over file contents (ripgrep) |
+| `Glob` | Find files by glob pattern, newest first |
+| `Read` | Read a file as numbered lines, or an image |
+| `Write` | Create or overwrite a file atomically |
+| `StrReplace` | Guarded substitution, tolerant of LF/CRLF differences |
+| `ApplyPatch` | Apply a unified diff through Git in a temporary workspace |
+| `RollbackPatch` | Restore byte snapshots saved by `ApplyPatch` |
+| `Delete` | Delete a file |
 
-- discover text files while honoring safe defaults and `.gitignore`;
-- find files by name or path;
-- search literal text and regular expressions with Ripgrep;
-- read complete files or line ranges;
-- reject paths and symlinks that escape the project root;
-- return immutable, structured Python results with paths, lines, hashes, scores,
-  timings, and warnings;
-- expose the same application tools through Python and the CLI.
-- initialize and migrate a local SQLite index;
-- incrementally index only new, changed, or removed files;
-- use validated SQLite FTS candidates while preserving the Ripgrep fallback;
-- report index state and run local diagnostics.
-- honor Git's tracked/untracked view, nested `.gitignore` files, repository
-  excludes, and global excludes during discovery;
-- parse Java and Python with optional Tree-sitter grammars in an isolated worker;
-- extract PL/SQL packages, procedures, functions, triggers, and cursors;
-- persist symbols, references, and syntax-aware chunks incrementally;
-- query outlines, symbols, definitions, and structural/textual references;
-- return compact outlines/symbols by default, with display and canonical
-  signatures;
-- degrade `find_references` to structural results when Ripgrep is unavailable;
-- preserve lexical indexing when a parser times out, crashes, or is disabled.
-- generate optional local multilingual embeddings with FastEmbed;
-- cache embeddings by model, strategy, and content hash in SQLite;
-- report index vs service health and per-capability status;
-- search current, hash-validated chunks by cosine similarity.
-- classify exact, conceptual, and mixed queries without an LLM;
-- fuse lexical, structural, path, reference, and optional semantic evidence;
-- build current-file-validated context within a conservative token estimate;
-- paginate file listings and return read truncation metadata for agents;
-- return a structured repository tree (symbols in detailed mode);
-- expose the same application tools over optional MCP stdio via `mcp serve`;
-- optionally inspect proposed process/PowerShell commands and, on Windows, run
-  approved PowerShell 7 scripts or the small read-only process allowlist under
-  Job Object supervision;
-- request, review, and consume exact single-use execution approvals locally, with a
-  sanitized SQLite audit trail outside the project workspace
-  (`CODE_HARNESS_EXECUTION=1`; PowerShell additionally requires
-  `CODE_HARNESS_EXECUTION_POWERSHELL=1`; disabled by default).
-
-By default no repository code is executed and the analyzed repository is treated
-as read-only. Optional agent execution remains opt-in; E5 adds separately gated
-MCP inspection, execution, polling, cancellation, and interactive confirmation
-without exposing approval administration (see
-`docs/adr/0005-execution-trust-boundary.md`).
+Every path is confined to the project root, so the server cannot read or write
+outside the directory it was pointed at.
 
 ## Requirements
 
-- Python 3.12+
-- [Ripgrep](https://github.com/BurntSushi/ripgrep) available as `rg`
+- Python 3.12 or newer
+- [ripgrep](https://github.com/BurntSushi/ripgrep) on `PATH`, needed by `Grep`
+  and `Glob`
+- Git on `PATH`, needed by `ApplyPatch`; the target directory does **not** need
+  to contain a `.git` repository
 
-## Install and use
-
-```powershell
-git clone <repository-url>
-cd code-harness
-
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-python -m pip install -e .
-# Optional native Tree-sitter grammars:
-python -m pip install -e ".[parsers]"
-# Optional local semantic search (downloads the configured model on first use):
-python -m pip install -e ".[semantic]"
-# Optional MCP adapter:
-python -m pip install -e ".[mcp]"
-
-code-harness init "C:\projetos\sample_project"
-code-harness index --mode incremental
-code-harness status
-code-harness doctor
-code-harness files list
-code-harness files search "AgendaService"
-code-harness search text "AgendaService"
-code-harness search regex "public\s+void\s+setFilter"
-code-harness outline "src\AgendaService.java"
-code-harness search symbol "AgendaService"
-code-harness definition "montarAgendaConsultor"
-code-harness references "validarAgenda"
-code-harness search semantic "como a agenda distribui serviços"
-code-harness search hybrid "como AgendaService distribui serviços"
-code-harness context "como a agenda do consultor funciona?" --max-tokens 12000
-code-harness map
-code-harness read "src\AgendaService.java" --lines 100:180
-code-harness mcp serve
-```
-
-On a new Windows development machine, the assisted setup validates Python and
-Ripgrep, installs the tested semantic dependency set, downloads the model, and
-runs a real inference probe:
-
-```powershell
-.\scripts\setup.ps1 -Semantic -Parsers
-```
-
-On Linux, use `CODE_HARNESS_SETUP_SEMANTIC=1
-CODE_HARNESS_SETUP_PARSERS=1 sh ./scripts/setup.sh`.
-
-Linux activation uses `source .venv/bin/activate`. A project can also be selected
-without changing the active registration:
-
-```bash
-code-harness --project /work/repository search text "needle"
-CODE_HARNESS_PROJECT=/work/repository code-harness files list
-```
-
-Use `--output json`, `jsonl`, `text`, `table`, or `llm` before the subcommand.
-JSON and JSONL use compact projections by default. Select
-`--response-detail minimal|compact|detailed|debug|full` before the subcommand,
-or set `CODE_HARNESS_RESPONSE_DETAIL`. MCP tools expose the same
-`response_detail` override. The four normal profiles limit projected `data` to
-30,000 serialized characters; `full` preserves the rich legacy envelope.
-When data is omitted, machine responses keep the compatible `truncated` flag
-and add a `truncation` object that distinguishes result, snippet, candidate,
-token, file, expansion, and response-budget limits. Deduplicated results do not
-count as truncation.
-Hybrid compact results expose the terms actually present in each snippet and
-whether they belong to the resolved anchor or global fallback. Scores are
-absolute across calls; the first result is not forced to `1.0`.
-Use `python -m code_harness` interchangeably with `code-harness`.
-
-Semantic search is disabled by default. Enable it before indexing:
-
-```powershell
-$env:CODE_HARNESS_SEMANTIC="1"
-code-harness models prepare
-code-harness doctor --deep
-code-harness index --mode incremental
-code-harness search semantic "validação para encerrar uma OS"
-```
-
-Indexing never rewrites project files. Source encoding is detected during
-reading, while isolated parser/embedding workers use an encoding-neutral JSON
-protocol that is safe with legacy Windows console code pages. Optional parser
-or embedding failures are recorded as warnings without discarding the lexical
-index.
-
-Parser analysis version 5 adds Java imports, type uses, and instantiations as
-structural references. Run an incremental index after upgrading; the parser
-version change reprocesses supported structural files. Restart or reinstall the
-MCP adapter as needed and confirm the new `service_instance_id` from
-`get_index_status`. Deployments may set `CODE_HARNESS_BUILD_COMMIT` so the
-tested commit appears in status.
-
-The default model is
-`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`. Configure it
-with `CODE_HARNESS_EMBEDDING_MODEL`; batching and windowing use the corresponding
-`CODE_HARNESS_EMBEDDING_*` variables documented in `config.example.yaml`. Models
-are cached outside temporary storage; override the location with
-`CODE_HARNESS_MODEL_CACHE`. The CLI and embedding worker use the operating
-system trust store by default. Enterprise installations may set
-`CODE_HARNESS_CA_BUNDLE` to an explicit PEM bundle.
-
-### Optional supervised execution
-
-Execution is disabled by default. After reviewing the trust boundary:
-
-```powershell
-$env:CODE_HARNESS_EXECUTION = "1"
-
-# An approval-required command returns execution_approval_required with an ID.
-code-harness --project . execution run-process python -c "print('review')"
-code-harness --project . execution approvals show <approval-id>
-code-harness --project . execution approvals approve <approval-id> --reason "reviewed"
-code-harness --project . execution run-process --approval-id <approval-id> python -c "print('review')"
-
-# PowerShell has a separate opt-in and always requires exact local approval.
-$env:CODE_HARNESS_EXECUTION_POWERSHELL = "1"
-code-harness --project . execution run-powershell --script "Write-Output 'review'"
-code-harness --project . execution approvals approve <powershell-approval-id> --reason "reviewed"
-code-harness --project . execution run-powershell --approval-id <powershell-approval-id> --script "Write-Output 'review'"
-```
-
-Approvals expire after 600 seconds by default and are consumed once. Configure
-the TTL with `CODE_HARNESS_EXECUTION_APPROVAL_TTL_SECONDS`. Sanitized audit state
-is stored at `<CODE_HARNESS_EXECUTION_HOME>/<project_id>/execution.db`; full
-stdout/stderr, raw environment values, and scripts are not persisted. PowerShell
-runs as `pwsh -NoLogo -NoProfile -NonInteractive -File <protected-temp-script>`
-under the same timeout, output, environment, and Job Object supervision as
-structured processes. The host backend is not a filesystem or network sandbox.
-Python callers may pass `wait=False`, then use `get_execution` or
-`terminate_execution` while the same `CodeHarness` instance remains open.
-Results are retained only in a 100-entry in-memory LRU; closing the harness
-cancels active trees. CLI execution remains blocking. Concurrent submissions
-above `CODE_HARNESS_EXECUTION_MAX_CONCURRENT` (default `1`) fail immediately
-without consuming an approval.
-
-MCP execution has additional gates:
-
-```powershell
-$env:CODE_HARNESS_MCP_EXPOSE_EXECUTION = "1"
-# PowerShell tools additionally require:
-$env:CODE_HARNESS_MCP_EXPOSE_POWERSHELL = "1"
-
-# Optional form elicitation is accepted only from a capability-compatible
-# local interactive channel explicitly trusted by the operator.
-$env:CODE_HARNESS_MCP_EXECUTION_ELICITATION = "1"
-$env:CODE_HARNESS_MCP_EXECUTION_ELICITATION_TRUST_MODE = "local_interactive"
-code-harness --project . mcp serve
-```
-
-Clients without form elicitation support, or when confirmation is disabled,
-receive `execution_approval_required` and can use the local CLI/API workflow.
-MCP exposes no approval ID argument or approval/policy administration tool.
-An elicited approval is persisted with its opaque MCP session identifier and is
-rejected if another session attempts to consume it. Confirmation summaries
-escape control characters and redact recognizable credentials.
-`stdout` and `stderr` are untrusted data and must never be treated as
-instructions.
-
-## Python API
-
-```python
-from code_harness import CodeHarness
-
-harness = CodeHarness.open("C:/projetos/nbs")
-harness.index_project()
-result = harness.search_text(
-    query="montar_agenda_consultor",
-    include_globs=("*.pck", "*.sql"),
-    max_results=50,
-)
-
-for hit in result.data:
-    print(hit.snippet.location.path, hit.snippet.location.start_line)
-
-for item in harness.find_symbol("AgendaService").data:
-    print(item.symbol.qualified_name, item.symbol.location.path)
-
-for hit in harness.semantic_search("como a agenda funciona").data:
-    print(hit.score, hit.snippet.location.path)
-
-for hit in harness.search_code(
-    "como AgendaService monta a agenda",
-    snippet_mode="match_window",
-    max_snippet_lines=40,
-    max_snippet_chars=6_000,
-).data:
-    print(hit.score, [e.match_type for e in hit.evidence])
-
-context = harness.build_context("como a agenda funciona?", max_tokens=12_000).data
-print(context.estimated_tokens, context.snippets)
-
-repository_map = harness.get_repository_map().data
-print(repository_map.root)
-```
-
-The API returns typed Python objects, never interface-specific dictionaries.
-
-## Development
+## Install
 
 ```bash
 python -m pip install -e ".[dev]"
-ruff check .
-ruff format --check .
-mypy
-pytest --cov
 ```
 
-See the [project status](docs/project-status.md),
-[architecture](docs/architecture.md), [tools](docs/tools.md), and the
-[implementation roadmap](docs/implementation-plan.md).
+On Windows you can use `scripts/setup.ps1`, and `scripts/setup.sh` elsewhere.
 
-> Teste de fluxo de commit: alteração mínima no README.
-> teste fluxo commit 2
+## Running the MCP server
+
+```bash
+code-harness serve --project /path/to/project
+```
+
+Without `--project` the server uses `CODE_HARNESS_PROJECT`, falling back to the
+current directory. The transport is stdio, so point your MCP client at that
+command. An entry for a client config looks like this:
+
+```json
+{
+  "mcpServers": {
+    "code-harness": {
+      "command": "code-harness",
+      "args": ["serve", "--project", "/path/to/project"]
+    }
+  }
+}
+```
+
+## CLI
+
+Each tool has a CLI command, mainly for trying things out by hand:
+
+```bash
+code-harness grep "TODO" --glob "*.py"
+code-harness grep "class " --output-mode files_with_matches
+code-harness glob "**/*.ts"
+code-harness read src/main.py --offset 1 --limit 40
+code-harness write notes.txt "hello"
+code-harness str-replace notes.txt "hello" "hi" --expected-occurrences 1
+code-harness apply-patch change.patch --dry-run
+code-harness apply-patch change.patch
+code-harness rollback-patch 20260730T161500-a84f
+code-harness delete notes.txt
+code-harness shell "pytest -q" --block-until-ms 5000 --shell auto
+```
+
+## Patch application and rollback
+
+`ApplyPatch` accepts a standard unified diff. It:
+
+1. validates all paths against the project root;
+2. copies affected text files to a temporary workspace;
+3. converts the temporary copies to UTF-8/LF;
+4. runs `git apply --check` and then `git apply` there;
+5. restores each file's original encoding, BOM, and line-ending pattern;
+6. verifies that the real files did not change during preparation;
+7. saves byte-exact before/after snapshots;
+8. commits the real-file changes with atomic per-file replacements.
+
+A successful call returns a `transaction_id`. `RollbackPatch` restores the
+original bytes and refuses to overwrite later edits unless `force=true`.
+
+The temporary workspace is removed after each call. Persistent history is kept
+outside the project by default and does not depend on Git commits, branches,
+GitHub, or even the presence of a `.git` directory.
+
+## Automatic history maintenance
+
+History cleanup is internal and is not exposed as MCP tools. When the server
+starts, it:
+
+- recovers interrupted patch transactions;
+- removes transactions older than the retention policy while keeping recent
+  rollback points;
+- removes unreferenced snapshot objects;
+- removes abandoned temporary workspaces;
+- enforces per-workspace and global storage limits.
+
+Defaults can be changed through environment variables:
+
+| Variable | Default |
+|----------|---------|
+| `CODE_HARNESS_HISTORY_DIR` | platform-local application state directory |
+| `CODE_HARNESS_HISTORY_RETENTION_DAYS` | `30` |
+| `CODE_HARNESS_HISTORY_KEEP_LAST` | `20` transactions per workspace |
+| `CODE_HARNESS_HISTORY_MAX_WORKSPACE_MB` | `250` |
+| `CODE_HARNESS_HISTORY_MAX_GLOBAL_MB` | `1024` |
+| `CODE_HARNESS_HISTORY_STALE_TEMP_HOURS` | `24` |
+
+## Configuration
+
+| Variable | Effect |
+|----------|--------|
+| `CODE_HARNESS_PROJECT` | Default project root when `--project` is absent |
+| `CODE_HARNESS_RG` | Full path to the ripgrep executable |
+| `CODE_HARNESS_SHELL` | Shell used by `Shell` in `auto` mode; defaults to PowerShell on Windows and `$SHELL` elsewhere |
+
+## Background commands
+
+`Shell` waits `block_until_ms` (30 s by default, hard max). If the command is
+still running when that elapses, the tool returns `status: "running"` with a
+`job_id`. Follow it with `GetJobStatus` (`wait_ms`, `tail_lines`); while the
+process runs, `exit_code` stays `null`. Temporary log paths are never returned.
+Passing `block_until_ms=0` backgrounds the command immediately, which is useful
+for dev servers and watchers.
+
+Scratch logs live outside the project for the server session and are removed on
+shutdown.
+
+## Security
+
+Command output is data, not instructions. `Shell` runs with the project root, or
+a subdirectory of it, as the working directory, but a command can still do
+anything the user can do; path confinement applies to the file tools, not to
+programs they start.
+
+Patch paths are validated before Git runs, and binary patches, symlinks,
+submodules, renames, and copies are rejected in this version.
+
+## Docs
+
+- [Architecture](docs/architecture.md)
+- [Tool reference](docs/tools.md)

@@ -1,6 +1,4 @@
 param(
-    [switch]$Semantic,
-    [switch]$Parsers,
     [string]$Venv = ".venv"
 )
 
@@ -19,25 +17,8 @@ if (-not (Test-Path -LiteralPath $venvPath)) {
 }
 
 $venvPython = Join-Path $venvPath "Scripts\python.exe"
-$venvHarness = Join-Path $venvPath "Scripts\code-harness.exe"
 & $venvPython -m pip install --upgrade pip
-
-$extras = [System.Collections.Generic.List[string]]::new()
-$extras.Add("dev")
-if ($Semantic) { $extras.Add("semantic") }
-if ($Parsers) { $extras.Add("parsers") }
-$extraList = [string]::Join(",", $extras)
-$packageSpec = "${repoRoot}[$extraList]"
-$constraints = Join-Path $repoRoot "constraints\semantic.txt"
-
-if ($Semantic) {
-    & $venvPython -m pip install -c $constraints -e $packageSpec
-    $env:CODE_HARNESS_SEMANTIC = "1"
-    & $venvHarness --project $repoRoot models prepare
-    & $venvHarness --project $repoRoot doctor --deep
-} else {
-    & $venvPython -m pip install -e $packageSpec
-    & $venvHarness --project $repoRoot doctor
-}
+& $venvPython -m pip install -e "$repoRoot[dev]"
 
 Write-Output "Environment ready: $venvPath"
+Write-Output "Try: code-harness grep hello --project $repoRoot"

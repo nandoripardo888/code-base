@@ -1,4 +1,5 @@
-from code_harness.interfaces.python_api.harness import CodeHarness
+"""Cursor-like local tools exposed over MCP."""
+
 from code_harness.version import __version__
 
-__all__ = ["CodeHarness", "__version__"]
+__all__ = ["__version__"]

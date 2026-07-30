@@ -118,7 +118,7 @@ class Settings:
     host_loopback_open_browser: bool = True
     change_isolation: ChangeIsolationMode = ChangeIsolationMode.AUTO
     change_session_home: Path = field(default_factory=_default_change_session_home)
-    change_require_clean_git: bool = True
+    change_require_clean_git: bool = False
     change_conflict_retention_hours: int = 168
     change_abandoned_retention_hours: int = 24
     change_failed_preparation_retention_hours: int = 1
@@ -390,7 +390,7 @@ class Settings:
             change_session_home=_default_change_session_home().expanduser().resolve(strict=False),
             change_require_clean_git=os.environ.get(
                 "CODE_HARNESS_CHANGE_REQUIRE_CLEAN_GIT",
-                "1",
+                "0",
             ).casefold()
             not in {"0", "false", "off", "no"},
             change_conflict_retention_hours=int(

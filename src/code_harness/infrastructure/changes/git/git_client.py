@@ -74,6 +74,10 @@ class GitClient:
             )
         return result.stdout.strip()
 
+    def current_branch_or_empty(self) -> str:
+        result = self.run(("symbolic-ref", "--short", "HEAD"), check=False)
+        return result.stdout.strip() if result.returncode == 0 else ""
+
     def is_clean(self) -> bool:
         status = self.run(("status", "--porcelain")).stdout.strip()
         return status == ""
@@ -89,13 +93,13 @@ class GitClient:
             "rebase-merge",
             "rebase-apply",
         )
-        for name in markers:
-            if (git_dir / name).exists():
-                return True
-        return False
+        return any((git_dir / name).exists() for name in markers)
 
     def common_dir(self) -> str:
-        return str(Path(self.run(("rev-parse", "--git-common-dir")).stdout.strip()).resolve())
+        common = Path(self.run(("rev-parse", "--git-common-dir")).stdout.strip())
+        if not common.is_absolute():
+            common = self._root / common
+        return str(common.resolve(strict=False))
 
     def create_branch(self, name: str, start_point: str) -> None:
         self.run(("branch", name, start_point))
@@ -107,6 +111,10 @@ class GitClient:
     def worktree_add(self, path: Path, branch: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.run(("worktree", "add", str(path), branch))
+
+    def worktree_add_detached(self, path: Path, commit: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.run(("worktree", "add", "--detach", str(path), commit))
 
     def worktree_remove(self, path: Path, *, force: bool = True) -> None:
         args: tuple[str, ...] = ("worktree", "remove", str(path))
@@ -146,3 +154,122 @@ class GitClient:
     def branch_points_at(self, branch: str, commit: str) -> bool:
         result = self.run(("rev-parse", branch), check=False)
         return result.returncode == 0 and result.stdout.strip() == commit
+
+    def create_workspace_snapshot_commit(
+        self,
+        *,
+        index_path: Path,
+        message: str,
+    ) -> tuple[str, str]:
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        index_path.unlink(missing_ok=True)
+        env = {
+            "GIT_INDEX_FILE": str(index_path.resolve(strict=False)),
+            "GIT_AUTHOR_NAME": "code-harness",
+            "GIT_AUTHOR_EMAIL": "code-harness@local",
+            "GIT_COMMITTER_NAME": "code-harness",
+            "GIT_COMMITTER_EMAIL": "code-harness@local",
+        }
+        head = self.rev_parse("HEAD")
+        try:
+            self.run(("read-tree", head), env_extra=env)
+            self.run(("add", "-A"), env_extra=env)
+            tree = self.run(("write-tree",), env_extra=env).stdout.strip()
+            commit = self.run(
+                ("commit-tree", tree, "-p", head, "-m", message),
+                env_extra=env,
+            ).stdout.strip()
+            return commit, tree
+        finally:
+            index_path.unlink(missing_ok=True)
+
+    def create_candidate_commit(
+        self,
+        *,
+        cwd: Path,
+        baseline_commit: str,
+        index_path: Path,
+        message: str,
+    ) -> tuple[str, str]:
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        index_path.unlink(missing_ok=True)
+        env = {
+            "GIT_INDEX_FILE": str(index_path.resolve(strict=False)),
+            "GIT_AUTHOR_NAME": "code-harness",
+            "GIT_AUTHOR_EMAIL": "code-harness@local",
+            "GIT_COMMITTER_NAME": "code-harness",
+            "GIT_COMMITTER_EMAIL": "code-harness@local",
+        }
+        try:
+            self.run(("read-tree", baseline_commit), cwd=cwd, env_extra=env)
+            self.run(("add", "-A"), cwd=cwd, env_extra=env)
+            tree = self.run(("write-tree",), cwd=cwd, env_extra=env).stdout.strip()
+            commit = self.run(
+                ("commit-tree", tree, "-p", baseline_commit, "-m", message),
+                cwd=cwd,
+                env_extra=env,
+            ).stdout.strip()
+            return commit, tree
+        finally:
+            index_path.unlink(missing_ok=True)
+
+    def show_bytes(self, commit: str, path: str) -> bytes | None:
+        git = shutil.which("git")
+        if git is None:
+            raise GitUnavailableError()
+        completed = subprocess.run(
+            (git, "-C", str(self._root), "show", f"{commit}:{path}"),
+            check=False,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            timeout=self._timeout,
+        )
+        if completed.returncode != 0:
+            return None
+        return completed.stdout
+
+    def show_filtered_bytes(self, commit: str, path: str) -> bytes | None:
+        spec = f"{commit}:{path}"
+        exists = self.run(("cat-file", "-e", spec), check=False)
+        if exists.returncode != 0:
+            return None
+        git = shutil.which("git")
+        if git is None:
+            raise GitUnavailableError()
+        try:
+            completed = subprocess.run(
+                (
+                    git,
+                    "-C",
+                    str(self._root),
+                    "cat-file",
+                    "--filters",
+                    f"--path={path}",
+                    spec,
+                ),
+                check=False,
+                capture_output=True,
+                stdin=subprocess.DEVNULL,
+                timeout=self._timeout,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise GitCommandFailedError(
+                f"Git command failed: cat-file --filters --path={path} {spec}"
+            ) from error
+        if completed.returncode != 0:
+            stderr = completed.stderr.decode("utf-8", errors="replace").strip()
+            raise GitCommandFailedError(
+                f"Git command failed: cat-file --filters --path={path} {spec}",
+                stderr=stderr or None,
+            )
+        return completed.stdout
+
+    def mode_at(self, commit: str, path: str) -> int | None:
+        result = self.run(("ls-tree", commit, "--", path), check=False)
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        raw_mode = result.stdout.split(maxsplit=1)[0]
+        try:
+            return int(raw_mode, 8)
+        except ValueError:
+            return None

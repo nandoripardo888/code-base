@@ -21,6 +21,9 @@ from code_harness.infrastructure.changes.cleanup.retention import (
 )
 from code_harness.infrastructure.changes.combined_integrator import CombinedChangeIntegrator
 from code_harness.infrastructure.changes.git.git_integrator import GitChangeIntegrator
+from code_harness.infrastructure.changes.git.workspace_patch_integrator import (
+    GitWorkspacePatchIntegrator,
+)
 from code_harness.infrastructure.changes.git.worktree_manager import (
     GitBranchReaderAdapter,
     LocalGitWorktreeManager,
@@ -32,6 +35,7 @@ from code_harness.infrastructure.changes.mirror.mirror_integrator import MirrorC
 from code_harness.infrastructure.changes.mirror.workspace_mirror_manager import (
     WorkspaceMirrorManager,
 )
+from code_harness.infrastructure.changes.patch_engine import CodexPatchEngine
 from code_harness.infrastructure.changes.persistence.content_addressed_blob_store import (
     ContentAddressedBlobStore,
 )
@@ -55,6 +59,7 @@ class ChangeSessionContainer:
     retention: ChangeSessionRetentionCleaner
     recovery: ChangeSessionRecovery
     approval_presenter: ChangeSessionApprovalPresenter
+    patch_engine: CodexPatchEngine
 
 
 def build_change_session_container(
@@ -75,6 +80,7 @@ def build_change_session_container(
     worktrees = LocalGitWorktreeManager(
         require_clean=settings.change_require_clean_git,
         sessions_home=sessions_home,
+        blob_store=blob_store,
     )
     mirrors = WorkspaceMirrorManager(blob_store=blob_store, sessions_home=sessions_home)
     locks = FileSessionLockManager(settings.change_locks_home())
@@ -86,8 +92,13 @@ def build_change_session_container(
     )
     integrator = CombinedChangeIntegrator(
         git=GitChangeIntegrator(),
+        workspace_patch=GitWorkspacePatchIntegrator(
+            blob_store=blob_store,
+            sessions_home=sessions_home,
+        ),
         mirror=MirrorChangeIntegrator(blob_store=blob_store, sessions_home=sessions_home),
     )
+    patch_engine = CodexPatchEngine(store=store, blob_store=blob_store, locks=locks)
     topology = FilesystemTopologyResolver()
     create_session = CreateChangeSessionTool(
         workspace_id=project.project_id,
@@ -113,7 +124,12 @@ def build_change_session_container(
         integrator=integrator,
     )
     reject_session = RejectChangeSessionTool(store=store, cleaner=cleaner)
-    inspect_session = InspectChangeSessionTool(store=store)
+    inspect_session = InspectChangeSessionTool(
+        store=store,
+        sessions_home=sessions_home,
+        worktrees=worktrees,
+        mirrors=mirrors,
+    )
     retention = ChangeSessionRetentionCleaner(
         store=store,
         cleaner=cleaner,
@@ -141,4 +157,5 @@ def build_change_session_container(
         retention=retention,
         recovery=recovery,
         approval_presenter=ChangeSessionApprovalPresenter(),
+        patch_engine=patch_engine,
     )

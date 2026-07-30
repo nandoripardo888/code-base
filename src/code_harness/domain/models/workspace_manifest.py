@@ -23,6 +23,9 @@ class ProposedFileChange:
     proposed_sha256: str | None
     base_blob_id: str | None
     proposed_blob_id: str | None
+    old_path: str | None = None
+    base_mode: int | None = None
+    proposed_mode: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

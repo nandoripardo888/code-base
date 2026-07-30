@@ -5,11 +5,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from code_harness.domain.errors import ChangeSessionStoreUnavailableError
-from code_harness.infrastructure.changes.persistence.schema import MIGRATION_1
+from code_harness.infrastructure.changes.persistence.schema import (
+    MIGRATION_1,
+    MIGRATION_2,
+    MIGRATION_3,
+)
 from code_harness.infrastructure.persistence.connection import connect_database
 
 MIGRATIONS: tuple[tuple[int, str, tuple[str, ...]], ...] = (
     (1, "change_sessions_initial", MIGRATION_1),
+    (2, "change_session_checkpoints", MIGRATION_2),
+    (3, "change_session_diagnostics_and_diffs", MIGRATION_3),
 )
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 

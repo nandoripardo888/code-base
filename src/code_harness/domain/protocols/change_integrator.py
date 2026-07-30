@@ -13,6 +13,20 @@ class ChangeIntegrator(Protocol):
         """Cherry-pick candidate; return resulting HEAD sha. Raises on conflict."""
         ...
 
+    def preflight_workspace_patch(
+        self,
+        detail: GitChangeSegment,
+        proposed: tuple[ProposedFileChange, ...],
+    ) -> None: ...
+
+    def integrate_workspace_patch(
+        self,
+        detail: GitChangeSegment,
+        proposed: tuple[ProposedFileChange, ...],
+        *,
+        session_id: str,
+    ) -> None: ...
+
     def preflight_mirror(
         self,
         detail: MirrorChangeSegment,

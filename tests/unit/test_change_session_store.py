@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
 from code_harness.domain.enums import ChangeSegmentKind, ChangeSessionStatus, WorkspaceTopologyKind
 from code_harness.domain.models.change_segment import ChangeSessionSegment, GitChangeSegment
-from code_harness.domain.models.change_session import ChangeSession, ChangeSessionEvent
+from code_harness.domain.models.change_session import (
+    ChangeSegmentDiff,
+    ChangeSession,
+    ChangeSessionEvent,
+)
 from code_harness.infrastructure.changes.persistence.content_addressed_blob_store import (
     ContentAddressedBlobStore,
 )
+from code_harness.infrastructure.changes.persistence.schema import MIGRATION_1, MIGRATION_2
 from code_harness.infrastructure.changes.persistence.sqlite_change_session_store import (
     SqliteChangeSessionStore,
 )
@@ -82,3 +88,91 @@ def test_blob_store_put_refcount_and_gc(tmp_path: Path) -> None:
     store.release_owner("sess1")
     assert store.gc() == 1
     assert not (blobs / blob_id[:2] / blob_id).exists()
+
+
+def test_migration_v2_to_v3_preserves_sessions_and_cascades_diffs(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "change-sessions.db"
+    now = datetime.now(UTC).isoformat()
+    with sqlite3.connect(db) as connection:
+        for statement in (*MIGRATION_1, *MIGRATION_2):
+            connection.execute(statement)
+        connection.execute(
+            "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (1, "change_sessions_initial", now),
+        )
+        connection.execute(
+            "INSERT INTO schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (2, "change_session_checkpoints", now),
+        )
+        connection.execute(
+            """
+            INSERT INTO change_sessions(
+                session_id, workspace_id, workspace_root, topology_kind, status,
+                created_at, updated_at, expires_at, candidate_digest, approval_id,
+                warnings_json, git_details_json, mirror_details_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, '[]', '[]', '[]')
+            """,
+            (
+                "legacy",
+                "ws",
+                str(tmp_path),
+                WorkspaceTopologyKind.NON_GIT.value,
+                ChangeSessionStatus.READY.value,
+                now,
+                now,
+            ),
+        )
+        connection.execute("PRAGMA user_version = 2")
+        connection.commit()
+
+    store = SqliteChangeSessionStore(db)
+    store.initialize()
+
+    assert store.get_session("legacy").integration_failure is None
+    store.save_diff(
+        "legacy",
+        ChangeSegmentDiff(
+            segment_id="root",
+            relative_root=".",
+            unified_text="diff --git a/a.txt b/a.txt\n",
+            files=("a.txt",),
+            candidate_digest="digest",
+        ),
+        created_at=now,
+    )
+    assert store.get_diff("legacy", "root", "digest") is not None
+    store.save_diff(
+        "legacy",
+        ChangeSegmentDiff(
+            segment_id="root",
+            relative_root=".",
+            unified_text="replacement must not win",
+            files=("replacement.txt",),
+            candidate_digest="digest",
+        ),
+        created_at=now,
+    )
+    immutable = store.get_diff("legacy", "root", "digest")
+    assert immutable is not None
+    assert immutable.unified_text == "diff --git a/a.txt b/a.txt\n"
+    assert immutable.files == ("a.txt",)
+
+    with sqlite3.connect(db) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(change_sessions)").fetchall()
+        }
+        assert "integration_failure_json" in columns
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(
+            "DELETE FROM change_sessions WHERE session_id = ?",
+            ("legacy",),
+        )
+        connection.commit()
+        remaining = connection.execute(
+            "SELECT COUNT(*) FROM change_session_diffs WHERE session_id = ?",
+            ("legacy",),
+        ).fetchone()[0]
+    assert remaining == 0

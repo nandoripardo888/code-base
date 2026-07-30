@@ -108,6 +108,51 @@ class WorkspaceMirrorManager:
         base_manifest_digest: str,
         sessions_home: Path | None = None,
     ) -> MirrorPrepareResult:
+        return self._compare(
+            session_id=session_id,
+            segment_id=segment_id,
+            source_root=source_root,
+            mirror_root=mirror_root,
+            base_manifest_digest=base_manifest_digest,
+            sessions_home=sessions_home,
+            persist_blobs=True,
+            allow_empty=False,
+        )
+
+    def preview(
+        self,
+        *,
+        session_id: str,
+        segment_id: str,
+        source_root: Path,
+        mirror_root: Path,
+        base_manifest_digest: str,
+        sessions_home: Path | None = None,
+    ) -> tuple[str, tuple[str, ...]]:
+        result = self._compare(
+            session_id=session_id,
+            segment_id=segment_id,
+            source_root=source_root,
+            mirror_root=mirror_root,
+            base_manifest_digest=base_manifest_digest,
+            sessions_home=sessions_home,
+            persist_blobs=False,
+            allow_empty=True,
+        )
+        return result.unified_text, result.files
+
+    def _compare(
+        self,
+        *,
+        session_id: str,
+        segment_id: str,
+        source_root: Path,
+        mirror_root: Path,
+        base_manifest_digest: str,
+        sessions_home: Path | None,
+        persist_blobs: bool,
+        allow_empty: bool,
+    ) -> MirrorPrepareResult:
         mirror = Path(mirror_root).resolve(strict=False)
         home = sessions_home or self._sessions_home
         if home is not None:
@@ -154,10 +199,14 @@ class WorkspaceMirrorManager:
                     )
                 )
             elif cur.content_sha256 != base.content_sha256:
-                blob_id = self._blobs.put(
-                    (mirror / path).read_bytes(),
-                    ref_owner=session_id,
-                    ref_kind=f"proposed:{segment_id}:{path}",
+                blob_id = (
+                    self._blobs.put(
+                        (mirror / path).read_bytes(),
+                        ref_owner=session_id,
+                        ref_kind=f"proposed:{segment_id}:{path}",
+                    )
+                    if persist_blobs
+                    else None
                 )
                 proposed.append(
                     ProposedFileChange(
@@ -182,10 +231,14 @@ class WorkspaceMirrorManager:
         for path, cur in current_map.items():
             if path in base_entries:
                 continue
-            blob_id = self._blobs.put(
-                (mirror / path).read_bytes(),
-                ref_owner=session_id,
-                ref_kind=f"proposed:{segment_id}:{path}",
+            blob_id = (
+                self._blobs.put(
+                    (mirror / path).read_bytes(),
+                    ref_owner=session_id,
+                    ref_kind=f"proposed:{segment_id}:{path}",
+                )
+                if persist_blobs
+                else None
             )
             proposed.append(
                 ProposedFileChange(
@@ -206,7 +259,7 @@ class WorkspaceMirrorManager:
                     new_sha256=cur.content_sha256,
                 )
             )
-        if not proposed:
+        if not proposed and not allow_empty:
             raise ChangeSessionPathRejectedError(
                 str(mirror),
                 "No changes to prepare in the isolated mirror",

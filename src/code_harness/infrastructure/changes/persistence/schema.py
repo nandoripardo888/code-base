@@ -118,3 +118,69 @@ MIGRATION_1: tuple[str, ...] = (
     )
     """,
 )
+
+MIGRATION_2: tuple[str, ...] = (
+    "ALTER TABLE change_session_files ADD COLUMN old_path TEXT",
+    "ALTER TABLE change_session_files ADD COLUMN base_mode INTEGER",
+    "ALTER TABLE change_session_files ADD COLUMN proposed_mode INTEGER",
+    """
+    CREATE TABLE IF NOT EXISTS change_session_checkpoints (
+        checkpoint_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        segment_id TEXT NOT NULL,
+        parent_checkpoint_id TEXT,
+        sequence INTEGER NOT NULL,
+        state TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        patch_sha256 TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(session_id) REFERENCES change_sessions(session_id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_change_checkpoint_sequence
+    ON change_session_checkpoints(session_id, segment_id, sequence)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_change_checkpoint_parent
+    ON change_session_checkpoints(parent_checkpoint_id)
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS change_session_checkpoint_files (
+        checkpoint_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        before_sha256 TEXT,
+        after_sha256 TEXT,
+        before_blob_id TEXT,
+        after_blob_id TEXT,
+        before_mode INTEGER,
+        after_mode INTEGER,
+        old_path TEXT,
+        PRIMARY KEY(checkpoint_id, path),
+        FOREIGN KEY(checkpoint_id) REFERENCES change_session_checkpoints(checkpoint_id)
+            ON DELETE CASCADE
+    )
+    """,
+)
+
+MIGRATION_3: tuple[str, ...] = (
+    "ALTER TABLE change_sessions ADD COLUMN integration_failure_json TEXT",
+    """
+    CREATE TABLE IF NOT EXISTS change_session_diffs (
+        session_id TEXT NOT NULL,
+        segment_id TEXT NOT NULL,
+        candidate_digest TEXT NOT NULL,
+        relative_root TEXT NOT NULL,
+        unified_text TEXT NOT NULL,
+        files_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(session_id, segment_id, candidate_digest),
+        FOREIGN KEY(session_id) REFERENCES change_sessions(session_id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS ix_change_session_diffs_candidate
+    ON change_session_diffs(session_id, candidate_digest)
+    """,
+)

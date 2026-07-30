@@ -639,5 +639,69 @@ class ChangeSessionStoreUnavailableError(CodeHarnessError):
         )
 
 
+class ChangePatchInvalidError(CodeHarnessError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__(
+            ErrorCode.CHANGE_PATCH_INVALID,
+            message,
+            details=details,
+            capability="change_session",
+            recoverable=True,
+        )
+
+
+class ChangePatchContextMismatchError(CodeHarnessError):
+    def __init__(self, path: str, message: str = "Patch context does not match the file.") -> None:
+        super().__init__(
+            ErrorCode.CHANGE_PATCH_CONTEXT_MISMATCH,
+            message,
+            details={"path": path},
+            capability="change_session",
+            recoverable=True,
+        )
+
+
+class ChangePatchBinaryUnsupportedError(CodeHarnessError):
+    def __init__(self, path: str) -> None:
+        super().__init__(
+            ErrorCode.CHANGE_PATCH_BINARY_UNSUPPORTED,
+            "Text patch cannot update a binary file.",
+            details={"path": path},
+            capability="change_session",
+        )
+
+
+class ChangeCheckpointNotFoundError(CodeHarnessError):
+    def __init__(self, checkpoint_id: str) -> None:
+        super().__init__(
+            ErrorCode.CHANGE_CHECKPOINT_NOT_FOUND,
+            "Change checkpoint was not found.",
+            details={"checkpoint_id": checkpoint_id},
+            capability="change_session",
+        )
+
+
+class ChangeCheckpointStaleError(CodeHarnessError):
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__(
+            ErrorCode.CHANGE_CHECKPOINT_STALE,
+            message,
+            details=details,
+            capability="change_session",
+            recoverable=True,
+        )
+
+
+class ChangeCheckpointUnavailableError(CodeHarnessError):
+    def __init__(self, operation: str, **details: Any) -> None:
+        super().__init__(
+            ErrorCode.CHANGE_CHECKPOINT_UNAVAILABLE,
+            f"No checkpoint is available for {operation}.",
+            details={"operation": operation, **details},
+            capability="change_session",
+            recoverable=True,
+        )
+
+
 def is_recoverable_error(error: BaseException) -> bool:
     return isinstance(error, CodeHarnessError) and error.recoverable

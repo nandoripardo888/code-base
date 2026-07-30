@@ -3,8 +3,13 @@ from __future__ import annotations
 from typing import Protocol
 
 from code_harness.domain.enums import ChangeSessionStatus
+from code_harness.domain.models.change_checkpoint import ChangeCheckpoint
 from code_harness.domain.models.change_segment import ChangeSessionSegment, GitChangeSegment
-from code_harness.domain.models.change_session import ChangeSession, ChangeSessionEvent
+from code_harness.domain.models.change_session import (
+    ChangeSegmentDiff,
+    ChangeSession,
+    ChangeSessionEvent,
+)
 from code_harness.domain.models.workspace_manifest import ProposedFileChange
 
 
@@ -34,6 +39,7 @@ class ChangeSessionStore(Protocol):
         candidate_digest: str | None = None,
         approval_id: str | None = None,
         warnings: tuple[str, ...] | None = None,
+        clear_integration_failure: bool = False,
     ) -> ChangeSession: ...
 
     def replace_segments(
@@ -61,6 +67,39 @@ class ChangeSessionStore(Protocol):
         session_id: str,
         segment_id: str | None = None,
     ) -> tuple[ProposedFileChange, ...]: ...
+
+    def save_diff(
+        self,
+        session_id: str,
+        diff: ChangeSegmentDiff,
+        *,
+        created_at: str,
+    ) -> None: ...
+
+    def get_diff(
+        self,
+        session_id: str,
+        segment_id: str,
+        candidate_digest: str,
+    ) -> ChangeSegmentDiff | None: ...
+
+    def save_checkpoint(self, checkpoint: ChangeCheckpoint) -> None: ...
+
+    def get_checkpoint(self, checkpoint_id: str) -> ChangeCheckpoint: ...
+
+    def list_checkpoints(
+        self,
+        session_id: str,
+        segment_id: str,
+    ) -> tuple[ChangeCheckpoint, ...]: ...
+
+    def get_active_checkpoint(
+        self,
+        session_id: str,
+        segment_id: str,
+    ) -> ChangeCheckpoint | None: ...
+
+    def set_checkpoint_states(self, states: dict[str, str]) -> None: ...
 
     def record_approval(
         self,

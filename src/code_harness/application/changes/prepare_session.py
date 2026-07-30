@@ -9,6 +9,7 @@ from code_harness.domain.enums import ChangeSegmentKind, ChangeSessionStatus
 from code_harness.domain.errors import ChangeSessionInvalidStateError, GitCommandFailedError
 from code_harness.domain.models.change_segment import ChangeSessionSegment, GitChangeSegment
 from code_harness.domain.models.change_session import (
+    ChangeSegmentDiff,
     ChangeSession,
     ChangeSessionDiff,
     ChangeSessionEvent,
@@ -94,11 +95,12 @@ class PrepareChangeSessionTool:
         segment_digests: list[str] = []
         all_files: list[str] = []
         unified_parts: list[str] = []
+        prepared_diffs: list[ChangeSegmentDiff] = []
         prepared_segment_id = targets[0].segment_id
 
         for target in targets:
             if target.kind is ChangeSegmentKind.GIT_WORKTREE:
-                detail = next(
+                git_detail = next(
                     (
                         item
                         for item in session.git_details
@@ -106,14 +108,14 @@ class PrepareChangeSessionTool:
                     ),
                     None,
                 )
-                if detail is None:
+                if git_detail is None:
                     raise ChangeSessionInvalidStateError(
                         "Missing git detail for segment.",
                         segment_id=target.segment_id,
                     )
                 try:
                     commit, diff_text, files = self._worktrees.prepare_candidate_commit(
-                        worktree_path=Path(detail.worktree_path),
+                        worktree_path=Path(git_detail.worktree_path),
                         message=message,
                         allowed_paths=allowed_paths,
                     )
@@ -124,30 +126,61 @@ class PrepareChangeSessionTool:
                 digest = compute_candidate_digest(
                     session_id=session.session_id,
                     segment_id=target.segment_id,
-                    repository_root=detail.repository_root,
-                    base_sha=detail.base_sha,
-                    target_branch=detail.target_branch,
-                    temporary_branch=detail.temporary_branch,
+                    repository_root=git_detail.repository_root,
+                    base_sha=git_detail.base_sha,
+                    target_branch=git_detail.target_branch,
+                    temporary_branch=git_detail.temporary_branch,
                     candidate_commit=commit,
                     files=files,
                     diff_text=diff_text,
                 )
                 updated_detail = GitChangeSegment(
-                    repository_root=detail.repository_root,
-                    git_common_dir=detail.git_common_dir,
-                    target_branch=detail.target_branch,
-                    base_sha=detail.base_sha,
-                    temporary_branch=detail.temporary_branch,
-                    worktree_path=detail.worktree_path,
+                    repository_root=git_detail.repository_root,
+                    git_common_dir=git_detail.git_common_dir,
+                    target_branch=git_detail.target_branch,
+                    base_sha=git_detail.base_sha,
+                    temporary_branch=git_detail.temporary_branch,
+                    worktree_path=git_detail.worktree_path,
                     candidate_commit=commit,
+                    integration_strategy=git_detail.integration_strategy,
+                    source_head_sha=git_detail.source_head_sha,
+                    baseline_commit=git_detail.baseline_commit,
+                    baseline_tree=git_detail.baseline_tree,
+                    timings_ms=git_detail.timings_ms,
                 )
+                if git_detail.integration_strategy == "workspace_patch_v2":
+                    proposed = self._worktrees.build_proposed_changes(
+                        session_id=session.session_id,
+                        worktree_path=Path(git_detail.worktree_path),
+                        base_commit=git_detail.baseline_commit or git_detail.base_sha,
+                        candidate_commit=commit,
+                        files=files,
+                    )
+                    self._store.save_proposed_files(
+                        session.session_id,
+                        target.segment_id,
+                        proposed,
+                    )
                 new_git = [
-                    updated_detail if item.worktree_path == detail.worktree_path else item
+                    updated_detail if item.worktree_path == git_detail.worktree_path else item
                     for item in new_git
                 ]
                 segment_digests.append(digest)
                 all_files.extend(files)
                 unified_parts.append(diff_text)
+                segment_diff = ChangeSegmentDiff(
+                    segment_id=target.segment_id,
+                    relative_root=target.relative_root,
+                    unified_text=diff_text,
+                    files=files,
+                    candidate_digest=digest,
+                )
+                self._store.save_diff(
+                    session.session_id,
+                    segment_diff,
+                    created_at=datetime.now(UTC).isoformat(),
+                )
+                prepared_diffs.append(segment_diff)
                 prepared_segment_id = target.segment_id
                 updated_segments = [
                     ChangeSessionSegment(
@@ -163,7 +196,9 @@ class PrepareChangeSessionTool:
                         ),
                         base_digest=item.base_digest,
                         candidate_digest=(
-                            digest if item.segment_id == target.segment_id else item.candidate_digest
+                            digest
+                            if item.segment_id == target.segment_id
+                            else item.candidate_digest
                         ),
                     )
                     for item in updated_segments
@@ -172,7 +207,7 @@ class PrepareChangeSessionTool:
 
             if self._mirrors is None:
                 raise ChangeSessionInvalidStateError("Mirror support is not configured.")
-            detail = next(
+            mirror_detail = next(
                 (
                     item
                     for item in session.mirror_details
@@ -180,7 +215,7 @@ class PrepareChangeSessionTool:
                 ),
                 None,
             )
-            if detail is None:
+            if mirror_detail is None:
                 raise ChangeSessionInvalidStateError(
                     "Missing mirror detail for segment.",
                     segment_id=target.segment_id,
@@ -188,9 +223,9 @@ class PrepareChangeSessionTool:
             result = self._mirrors.prepare(
                 session_id=session.session_id,
                 segment_id=target.segment_id,
-                source_root=Path(detail.source_root),
-                mirror_root=Path(detail.mirror_root),
-                base_manifest_digest=detail.base_manifest_digest,
+                source_root=Path(mirror_detail.source_root),
+                mirror_root=Path(mirror_detail.mirror_root),
+                base_manifest_digest=mirror_detail.base_manifest_digest,
                 sessions_home=self._sessions_home,
             )
             assert isinstance(result, MirrorPrepareResult)
@@ -200,12 +235,25 @@ class PrepareChangeSessionTool:
                 result.proposed_changes,
             )
             new_mirrors = [
-                result.detail if item.mirror_root == detail.mirror_root else item
+                result.detail if item.mirror_root == mirror_detail.mirror_root else item
                 for item in new_mirrors
             ]
             segment_digests.append(result.candidate_digest)
             all_files.extend(result.files)
             unified_parts.append(result.unified_text)
+            segment_diff = ChangeSegmentDiff(
+                segment_id=target.segment_id,
+                relative_root=target.relative_root,
+                unified_text=result.unified_text,
+                files=result.files,
+                candidate_digest=result.candidate_digest,
+            )
+            self._store.save_diff(
+                session.session_id,
+                segment_diff,
+                created_at=datetime.now(UTC).isoformat(),
+            )
+            prepared_diffs.append(segment_diff)
             prepared_segment_id = target.segment_id
             updated_segments = [
                 ChangeSessionSegment(
@@ -255,6 +303,7 @@ class PrepareChangeSessionTool:
             warnings=session.warnings,
             git_details=tuple(new_git),
             mirror_details=tuple(new_mirrors),
+            integration_failure=None,
         )
         self._store.save_session(prepared)
         self._store.append_event(
@@ -272,8 +321,10 @@ class PrepareChangeSessionTool:
         diff = ChangeSessionDiff(
             session_id=session_id,
             candidate_digest=session_digest,
-            segment_id=prepared_segment_id,
+            segment_id=(prepared_diffs[0].segment_id if len(prepared_diffs) == 1 else "composite"),
             unified_text="\n".join(unified_parts),
             files=tuple(dict.fromkeys(all_files)),
+            state="prepared",
+            segments=tuple(prepared_diffs),
         )
         return prepared, diff

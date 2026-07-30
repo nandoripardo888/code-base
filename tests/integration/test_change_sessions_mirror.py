@@ -42,8 +42,10 @@ def test_mirror_create_and_accept(mirror_env) -> None:
     prepared, diff = container.prepare_session.run(session.session_id)
     assert prepared.status is ChangeSessionStatus.REVIEW_PENDING
     assert prepared.candidate_digest
-    assert "src/app.py" in diff.files or "src\\app.py" in diff.files or any(
-        item.endswith("app.py") for item in diff.files
+    assert (
+        "src/app.py" in diff.files
+        or "src\\app.py" in diff.files
+        or any(item.endswith("app.py") for item in diff.files)
     )
     accepted = container.accept_session.run(
         session.session_id,
@@ -79,3 +81,29 @@ def test_mirror_stale_when_original_changes(mirror_env) -> None:
     )
     assert result.status is ChangeSessionStatus.STALE
     assert (workspace / "README.md").read_text(encoding="utf-8") == "from user\n"
+
+
+def test_mirror_draft_diff_does_not_prepare_or_persist_candidate(mirror_env) -> None:
+    _workspace, _settings, container, _home = mirror_env
+    session = container.create_session.run()
+    mirror = Path(session.segments[0].isolation_root)
+    (mirror / "src" / "app.py").write_text("print('draft')\n", encoding="utf-8")
+    (mirror / "README.md").unlink()
+    (mirror / "new.txt").write_text("new\n", encoding="utf-8")
+
+    diff = container.inspect_session.get_diff(session.session_id)
+
+    assert diff.state == "draft"
+    assert diff.candidate_digest is None
+    assert set(diff.files) == {"README.md", "new.txt", "src/app.py"}
+    assert diff.segments[0].segment_id == session.segments[0].segment_id
+    persisted = container.inspect_session.get(session.session_id)
+    assert persisted.status is ChangeSessionStatus.READY
+    assert persisted.candidate_digest is None
+    assert (
+        container.store.list_proposed_files(
+            session.session_id,
+            session.segments[0].segment_id,
+        )
+        == ()
+    )

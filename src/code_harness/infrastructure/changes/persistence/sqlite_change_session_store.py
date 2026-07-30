@@ -10,13 +10,24 @@ from code_harness.domain.enums import (
     FileChangeKind,
     WorkspaceTopologyKind,
 )
-from code_harness.domain.errors import ChangeSessionNotFoundError, ChangeSessionStoreUnavailableError
+from code_harness.domain.errors import (
+    ChangeCheckpointNotFoundError,
+    ChangeSessionNotFoundError,
+    ChangeSessionStoreUnavailableError,
+)
+from code_harness.domain.models.change_checkpoint import ChangeCheckpoint, ChangeCheckpointFile
 from code_harness.domain.models.change_segment import (
     ChangeSessionSegment,
     GitChangeSegment,
     MirrorChangeSegment,
 )
-from code_harness.domain.models.change_session import ChangeSession, ChangeSessionEvent
+from code_harness.domain.models.change_session import (
+    ChangeSegmentDiff,
+    ChangeSession,
+    ChangeSessionEvent,
+    IntegrationConflict,
+    IntegrationFailure,
+)
 from code_harness.domain.models.change_set import ChangedFile
 from code_harness.domain.models.workspace_manifest import ProposedFileChange
 from code_harness.infrastructure.changes.persistence.migrations import (
@@ -50,8 +61,9 @@ class SqliteChangeSessionStore:
                     INSERT INTO change_sessions(
                         session_id, workspace_id, workspace_root, topology_kind, status,
                         created_at, updated_at, expires_at, candidate_digest, approval_id,
-                        warnings_json, git_details_json, mirror_details_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        warnings_json, git_details_json, mirror_details_json,
+                        integration_failure_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(session_id) DO UPDATE SET
                         workspace_id=excluded.workspace_id,
                         workspace_root=excluded.workspace_root,
@@ -63,7 +75,8 @@ class SqliteChangeSessionStore:
                         approval_id=excluded.approval_id,
                         warnings_json=excluded.warnings_json,
                         git_details_json=excluded.git_details_json,
-                        mirror_details_json=excluded.mirror_details_json
+                        mirror_details_json=excluded.mirror_details_json,
+                        integration_failure_json=excluded.integration_failure_json
                     """,
                     (
                         session.session_id,
@@ -79,6 +92,7 @@ class SqliteChangeSessionStore:
                         json.dumps(list(session.warnings)),
                         _dump_git_details(session.git_details),
                         _dump_mirror_details(session.mirror_details),
+                        _dump_integration_failure(session.integration_failure),
                     ),
                 )
                 connection.execute(
@@ -191,6 +205,7 @@ class SqliteChangeSessionStore:
         candidate_digest: str | None = None,
         approval_id: str | None = None,
         warnings: tuple[str, ...] | None = None,
+        clear_integration_failure: bool = False,
     ) -> ChangeSession:
         session = self.get_session(session_id)
         updated = ChangeSession(
@@ -210,6 +225,9 @@ class SqliteChangeSessionStore:
             warnings=warnings if warnings is not None else session.warnings,
             git_details=session.git_details,
             mirror_details=session.mirror_details,
+            integration_failure=(
+                None if clear_integration_failure else session.integration_failure
+            ),
         )
         self.save_session(updated)
         return updated
@@ -238,6 +256,7 @@ class SqliteChangeSessionStore:
             warnings=session.warnings,
             git_details=git_details,
             mirror_details=session.mirror_details,
+            integration_failure=session.integration_failure,
         )
         self.save_session(updated)
         return updated
@@ -307,8 +326,9 @@ class SqliteChangeSessionStore:
                         """
                         INSERT INTO change_session_files(
                             session_id, segment_id, path, operation,
-                            base_sha256, proposed_sha256, base_blob_id, proposed_blob_id
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            base_sha256, proposed_sha256, base_blob_id, proposed_blob_id,
+                            old_path, base_mode, proposed_mode
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             session_id,
@@ -319,6 +339,9 @@ class SqliteChangeSessionStore:
                             change.proposed_sha256,
                             change.base_blob_id,
                             change.proposed_blob_id,
+                            change.old_path,
+                            change.base_mode,
+                            change.proposed_mode,
                         ),
                     )
         except (OSError, sqlite3.DatabaseError) as error:
@@ -358,9 +381,199 @@ class SqliteChangeSessionStore:
                         proposed_sha256=row["proposed_sha256"],
                         base_blob_id=row["base_blob_id"],
                         proposed_blob_id=row["proposed_blob_id"],
+                        old_path=row["old_path"],
+                        base_mode=row["base_mode"],
+                        proposed_mode=row["proposed_mode"],
                     )
                     for row in rows
                 )
+        except (OSError, sqlite3.DatabaseError) as error:
+            raise ChangeSessionStoreUnavailableError() from error
+
+    def save_diff(
+        self,
+        session_id: str,
+        diff: ChangeSegmentDiff,
+        *,
+        created_at: str,
+    ) -> None:
+        if diff.candidate_digest is None:
+            raise ValueError("Prepared segment diff requires candidate_digest.")
+        self.initialize()
+        try:
+            with connect_database(self._path) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO change_session_diffs(
+                        session_id, segment_id, candidate_digest, relative_root,
+                        unified_text, files_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(session_id, segment_id, candidate_digest) DO NOTHING
+                    """,
+                    (
+                        session_id,
+                        diff.segment_id,
+                        diff.candidate_digest,
+                        diff.relative_root,
+                        diff.unified_text,
+                        json.dumps(list(diff.files)),
+                        created_at,
+                    ),
+                )
+        except (OSError, sqlite3.DatabaseError) as error:
+            raise ChangeSessionStoreUnavailableError() from error
+
+    def get_diff(
+        self,
+        session_id: str,
+        segment_id: str,
+        candidate_digest: str,
+    ) -> ChangeSegmentDiff | None:
+        self.initialize()
+        try:
+            with connect_database(self._path) as connection:
+                row = connection.execute(
+                    """
+                    SELECT * FROM change_session_diffs
+                    WHERE session_id = ? AND segment_id = ? AND candidate_digest = ?
+                    """,
+                    (session_id, segment_id, candidate_digest),
+                ).fetchone()
+                if row is None:
+                    return None
+                return ChangeSegmentDiff(
+                    segment_id=row["segment_id"],
+                    relative_root=row["relative_root"],
+                    unified_text=row["unified_text"],
+                    files=tuple(json.loads(row["files_json"] or "[]")),
+                    candidate_digest=row["candidate_digest"],
+                )
+        except (OSError, sqlite3.DatabaseError) as error:
+            raise ChangeSessionStoreUnavailableError() from error
+
+    def save_checkpoint(self, checkpoint: ChangeCheckpoint) -> None:
+        self.initialize()
+        try:
+            with connect_database(self._path) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO change_session_checkpoints(
+                        checkpoint_id, session_id, segment_id, parent_checkpoint_id,
+                        sequence, state, kind, patch_sha256, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(checkpoint_id) DO UPDATE SET
+                        state=excluded.state,
+                        patch_sha256=excluded.patch_sha256
+                    """,
+                    (
+                        checkpoint.checkpoint_id,
+                        checkpoint.session_id,
+                        checkpoint.segment_id,
+                        checkpoint.parent_checkpoint_id,
+                        checkpoint.sequence,
+                        checkpoint.state,
+                        checkpoint.kind,
+                        checkpoint.patch_sha256,
+                        checkpoint.created_at,
+                    ),
+                )
+                connection.execute(
+                    "DELETE FROM change_session_checkpoint_files WHERE checkpoint_id = ?",
+                    (checkpoint.checkpoint_id,),
+                )
+                for file in checkpoint.files:
+                    connection.execute(
+                        """
+                        INSERT INTO change_session_checkpoint_files(
+                            checkpoint_id, path, operation, before_sha256, after_sha256,
+                            before_blob_id, after_blob_id, before_mode, after_mode, old_path
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            checkpoint.checkpoint_id,
+                            file.path,
+                            file.operation,
+                            file.before_sha256,
+                            file.after_sha256,
+                            file.before_blob_id,
+                            file.after_blob_id,
+                            file.before_mode,
+                            file.after_mode,
+                            file.old_path,
+                        ),
+                    )
+        except (OSError, sqlite3.DatabaseError) as error:
+            raise ChangeSessionStoreUnavailableError() from error
+
+    def get_checkpoint(self, checkpoint_id: str) -> ChangeCheckpoint:
+        self.initialize()
+        try:
+            with connect_database(self._path) as connection:
+                row = connection.execute(
+                    "SELECT * FROM change_session_checkpoints WHERE checkpoint_id = ?",
+                    (checkpoint_id,),
+                ).fetchone()
+                if row is None:
+                    raise ChangeCheckpointNotFoundError(checkpoint_id)
+                return self._hydrate_checkpoint(connection, row)
+        except ChangeCheckpointNotFoundError:
+            raise
+        except (OSError, sqlite3.DatabaseError) as error:
+            raise ChangeSessionStoreUnavailableError() from error
+
+    def list_checkpoints(
+        self,
+        session_id: str,
+        segment_id: str,
+    ) -> tuple[ChangeCheckpoint, ...]:
+        self.initialize()
+        try:
+            with connect_database(self._path) as connection:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM change_session_checkpoints
+                    WHERE session_id = ? AND segment_id = ?
+                    ORDER BY sequence ASC
+                    """,
+                    (session_id, segment_id),
+                ).fetchall()
+                return tuple(self._hydrate_checkpoint(connection, row) for row in rows)
+        except (OSError, sqlite3.DatabaseError) as error:
+            raise ChangeSessionStoreUnavailableError() from error
+
+    def get_active_checkpoint(
+        self,
+        session_id: str,
+        segment_id: str,
+    ) -> ChangeCheckpoint | None:
+        self.initialize()
+        try:
+            with connect_database(self._path) as connection:
+                row = connection.execute(
+                    """
+                    SELECT * FROM change_session_checkpoints
+                    WHERE session_id = ? AND segment_id = ? AND state = 'active'
+                    ORDER BY sequence DESC LIMIT 1
+                    """,
+                    (session_id, segment_id),
+                ).fetchone()
+                return self._hydrate_checkpoint(connection, row) if row is not None else None
+        except (OSError, sqlite3.DatabaseError) as error:
+            raise ChangeSessionStoreUnavailableError() from error
+
+    def set_checkpoint_states(self, states: dict[str, str]) -> None:
+        if not states:
+            return
+        self.initialize()
+        try:
+            with connect_database(self._path) as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                for checkpoint_id, state in states.items():
+                    connection.execute(
+                        "UPDATE change_session_checkpoints SET state = ? WHERE checkpoint_id = ?",
+                        (state, checkpoint_id),
+                    )
+                connection.commit()
         except (OSError, sqlite3.DatabaseError) as error:
             raise ChangeSessionStoreUnavailableError() from error
 
@@ -430,6 +643,45 @@ class SqliteChangeSessionStore:
         ).fetchall()
         return _row_to_session(row, segments)
 
+    def _hydrate_checkpoint(
+        self,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+    ) -> ChangeCheckpoint:
+        files = connection.execute(
+            """
+            SELECT * FROM change_session_checkpoint_files
+            WHERE checkpoint_id = ?
+            ORDER BY path ASC
+            """,
+            (row["checkpoint_id"],),
+        ).fetchall()
+        return ChangeCheckpoint(
+            checkpoint_id=row["checkpoint_id"],
+            session_id=row["session_id"],
+            segment_id=row["segment_id"],
+            parent_checkpoint_id=row["parent_checkpoint_id"],
+            sequence=int(row["sequence"]),
+            state=row["state"],
+            kind=row["kind"],
+            patch_sha256=row["patch_sha256"],
+            created_at=row["created_at"],
+            files=tuple(
+                ChangeCheckpointFile(
+                    path=file["path"],
+                    operation=file["operation"],
+                    before_sha256=file["before_sha256"],
+                    after_sha256=file["after_sha256"],
+                    before_blob_id=file["before_blob_id"],
+                    after_blob_id=file["after_blob_id"],
+                    before_mode=file["before_mode"],
+                    after_mode=file["after_mode"],
+                    old_path=file["old_path"],
+                )
+                for file in files
+            ),
+        )
+
 
 def _topology_value(value: WorkspaceTopologyKind | str) -> str:
     return value.value if isinstance(value, WorkspaceTopologyKind) else value
@@ -446,6 +698,11 @@ def _dump_git_details(details: tuple[GitChangeSegment, ...]) -> str:
                 "temporary_branch": item.temporary_branch,
                 "worktree_path": item.worktree_path,
                 "candidate_commit": item.candidate_commit,
+                "integration_strategy": item.integration_strategy,
+                "source_head_sha": item.source_head_sha,
+                "baseline_commit": item.baseline_commit,
+                "baseline_tree": item.baseline_tree,
+                "timings_ms": item.timings_ms,
             }
             for item in details
         ]
@@ -463,6 +720,11 @@ def _load_git_details(raw: str) -> tuple[GitChangeSegment, ...]:
             temporary_branch=item["temporary_branch"],
             worktree_path=item["worktree_path"],
             candidate_commit=item.get("candidate_commit"),
+            integration_strategy=item.get("integration_strategy", "cherry_pick_v1"),
+            source_head_sha=item.get("source_head_sha"),
+            baseline_commit=item.get("baseline_commit"),
+            baseline_tree=item.get("baseline_tree"),
+            timings_ms=item.get("timings_ms"),
         )
         for item in items
     )
@@ -517,13 +779,60 @@ def _load_mirror_details(raw: str) -> tuple[MirrorChangeSegment, ...]:
     )
 
 
+def _dump_integration_failure(failure: IntegrationFailure | None) -> str | None:
+    if failure is None:
+        return None
+    return json.dumps(
+        {
+            "code": failure.code,
+            "message": failure.message,
+            "failed_segment": failure.failed_segment,
+            "strategy": failure.strategy,
+            "conflicts": [
+                {
+                    "path": conflict.path,
+                    "kind": conflict.kind,
+                    "base_sha256": conflict.base_sha256,
+                    "current_sha256": conflict.current_sha256,
+                    "proposed_sha256": conflict.proposed_sha256,
+                }
+                for conflict in failure.conflicts
+            ],
+        }
+    )
+
+
+def _load_integration_failure(raw: str | None) -> IntegrationFailure | None:
+    if not raw:
+        return None
+    item = json.loads(raw)
+    return IntegrationFailure(
+        code=item["code"],
+        message=item["message"],
+        failed_segment=item["failed_segment"],
+        strategy=item["strategy"],
+        conflicts=tuple(
+            IntegrationConflict(
+                path=conflict["path"],
+                kind=conflict["kind"],
+                base_sha256=conflict.get("base_sha256"),
+                current_sha256=conflict.get("current_sha256"),
+                proposed_sha256=conflict.get("proposed_sha256"),
+            )
+            for conflict in item.get("conflicts", [])
+        ),
+    )
+
+
 def _row_to_session(row: sqlite3.Row, segment_rows: list[sqlite3.Row]) -> ChangeSession:
+    failure = _load_integration_failure(row["integration_failure_json"])
+    status = ChangeSessionStatus(row["status"])
     return ChangeSession(
         session_id=row["session_id"],
         workspace_id=row["workspace_id"],
         workspace_root=row["workspace_root"],
         topology_kind=WorkspaceTopologyKind(row["topology_kind"]),
-        status=ChangeSessionStatus(row["status"]),
+        status=status,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         expires_at=row["expires_at"],
@@ -545,4 +854,10 @@ def _row_to_session(row: sqlite3.Row, segment_rows: list[sqlite3.Row]) -> Change
         warnings=tuple(json.loads(row["warnings_json"] or "[]")),
         git_details=_load_git_details(row["git_details_json"]),
         mirror_details=_load_mirror_details(row["mirror_details_json"]),
+        integration_failure=failure,
+        available_actions=(
+            ("retry_accept", "reject")
+            if status is ChangeSessionStatus.CONFLICT and failure is not None
+            else ()
+        ),
     )

@@ -11,6 +11,24 @@ from code_harness.domain.models.change_segment import (
 
 
 @dataclass(frozen=True, slots=True)
+class IntegrationConflict:
+    path: str
+    kind: str
+    base_sha256: str | None = None
+    current_sha256: str | None = None
+    proposed_sha256: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class IntegrationFailure:
+    code: str
+    message: str
+    failed_segment: str
+    strategy: str
+    conflicts: tuple[IntegrationConflict, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ChangeSession:
     session_id: str
     workspace_id: str
@@ -26,6 +44,8 @@ class ChangeSession:
     warnings: tuple[str, ...] = ()
     git_details: tuple[GitChangeSegment, ...] = ()
     mirror_details: tuple[MirrorChangeSegment, ...] = ()
+    integration_failure: IntegrationFailure | None = None
+    available_actions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,9 +65,21 @@ class ChangeSessionEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class ChangeSegmentDiff:
+    segment_id: str
+    relative_root: str
+    unified_text: str
+    files: tuple[str, ...]
+    candidate_digest: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ChangeSessionDiff:
     session_id: str
     candidate_digest: str | None
     segment_id: str
     unified_text: str
     files: tuple[str, ...]
+    state: str = "prepared"
+    segments: tuple[ChangeSegmentDiff, ...] = ()
+    warnings: tuple[str, ...] = ()

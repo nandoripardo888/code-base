@@ -43,6 +43,7 @@ class RejectChangeSessionTool:
             session_id,
             ChangeSessionStatus.REJECTED,
             updated_at=now,
+            clear_integration_failure=True,
         )
         self._store.append_event(
             ChangeSessionEvent(

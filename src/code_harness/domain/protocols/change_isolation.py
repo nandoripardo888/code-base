@@ -55,6 +55,30 @@ class GitWorktreeManager(Protocol):
         """Return (candidate_commit, unified_diff, changed_files)."""
         ...
 
+    def build_proposed_changes(
+        self,
+        *,
+        session_id: str,
+        worktree_path: Path,
+        base_commit: str,
+        candidate_commit: str,
+        files: tuple[str, ...],
+    ) -> tuple[ProposedFileChange, ...]: ...
+
+    def preview_diff(
+        self,
+        *,
+        worktree_path: Path,
+    ) -> tuple[str, tuple[str, ...]]: ...
+
+    def prepared_diff(
+        self,
+        *,
+        repository_root: Path,
+        baseline_commit: str,
+        candidate_commit: str,
+    ) -> tuple[str, tuple[str, ...]]: ...
+
 
 class GitBranchReader(Protocol):
     def current_branch(self, repository_root: Path) -> str: ...
@@ -82,6 +106,17 @@ class WorkspaceMirrorPort(Protocol):
         base_manifest_digest: str,
         sessions_home: Path | None = None,
     ) -> object: ...
+
+    def preview(
+        self,
+        *,
+        session_id: str,
+        segment_id: str,
+        source_root: Path,
+        mirror_root: Path,
+        base_manifest_digest: str,
+        sessions_home: Path | None = None,
+    ) -> tuple[str, tuple[str, ...]]: ...
 
 
 class MirrorIntegratorPort(Protocol):

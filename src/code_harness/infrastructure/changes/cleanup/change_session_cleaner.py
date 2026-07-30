@@ -24,11 +24,21 @@ class ChangeSessionCleaner:
         self._sessions_home = Path(sessions_home)
         self._worktrees = worktree_manager or LocalGitWorktreeManager()
 
-    def cleanup_session(self, session: ChangeSession, *, preserve_conflict: bool = True) -> ChangeSession:
+    def cleanup_session(
+        self,
+        session: ChangeSession,
+        *,
+        preserve_conflict: bool = True,
+    ) -> ChangeSession:
         if preserve_conflict and session.status is ChangeSessionStatus.CONFLICT:
             return session
         now = datetime.now(UTC).isoformat()
-        self._store.update_status(session.session_id, ChangeSessionStatus.CLEANING, updated_at=now)
+        self._store.update_status(
+            session.session_id,
+            ChangeSessionStatus.CLEANING,
+            updated_at=now,
+            clear_integration_failure=True,
+        )
         self._store.append_event(
             ChangeSessionEvent(
                 event_type="cleanup_started",
@@ -51,14 +61,15 @@ class ChangeSessionCleaner:
                     details={"worktree_path": detail.worktree_path},
                 )
             )
-            self._store.append_event(
-                ChangeSessionEvent(
-                    event_type="branch_removed",
-                    occurred_at=datetime.now(UTC).isoformat(),
-                    session_id=session.session_id,
-                    details={"temporary_branch": detail.temporary_branch},
+            if detail.temporary_branch:
+                self._store.append_event(
+                    ChangeSessionEvent(
+                        event_type="branch_removed",
+                        occurred_at=datetime.now(UTC).isoformat(),
+                        session_id=session.session_id,
+                        details={"temporary_branch": detail.temporary_branch},
+                    )
                 )
-            )
         for segment in session.segments:
             if segment.kind is ChangeSegmentKind.WORKSPACE_MIRROR:
                 isolation = Path(segment.isolation_root)
@@ -86,6 +97,7 @@ class ChangeSessionCleaner:
             session.session_id,
             ChangeSessionStatus.CLEANED,
             updated_at=datetime.now(UTC).isoformat(),
+            clear_integration_failure=True,
         )
         self._store.append_event(
             ChangeSessionEvent(

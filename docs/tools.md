@@ -189,6 +189,23 @@ back to the original format, committed to the real files, and recorded as
 byte-exact history. Binary patches, symlinks, submodules, copies, and renames are
 rejected in this version.
 
+## OpenPatchReview
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `transaction_id` | string | default `latest`; an id returned by `ApplyPatch` |
+| `open_browser` | bool | default `true` |
+
+Starts the review server lazily on an ephemeral `127.0.0.1` port and returns a
+one-use browser URL. The page reads only saved before/after snapshots, never
+arbitrary paths or the live project. It provides side-by-side and unified
+views, file filters, collapsed context, change navigation, light/dark themes,
+review completion, and safe whole-transaction rollback.
+
+The URL exchanges its one-use token for an HttpOnly, SameSite session cookie.
+POST actions also require CSRF and same-origin checks. The server is stopped by
+the owning MCP or CLI session.
+
 ## RollbackPatch
 
 | Parameter | Type | Notes |

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -225,6 +226,28 @@ def rollback_patch_command(
 def delete(path: str, project: Path | None = _ROOT) -> None:
     """Delete a file."""
     _run(project, lambda session: tools.delete(session.guard, path=path))
+
+
+@app.command()
+def review(
+    transaction_id: str = typer.Argument("latest"),
+    no_open: bool = typer.Option(False, "--no-open"),
+    project: Path | None = _ROOT,
+) -> None:
+    """Open a local patch review and keep it available until interrupted."""
+    session = Session.create(project)
+    try:
+        result = session.reviews.open(transaction_id, open_browser=not no_open)
+        typer.echo(json.dumps(result, ensure_ascii=False))
+        while True:
+            time.sleep(0.25)
+    except KeyboardInterrupt:
+        return
+    except HarnessError as error:
+        typer.echo(error.render(), err=True)
+        raise typer.Exit(code=1) from error
+    finally:
+        session.shutdown()
 
 
 def main() -> None:

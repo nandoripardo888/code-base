@@ -23,6 +23,7 @@ EXPECTED_TOOLS = {
     "Write",
     "StrReplace",
     "ApplyPatch",
+    "OpenPatchReview",
     "RollbackPatch",
     "Delete",
 }
@@ -70,6 +71,8 @@ def test_tool_schemas_match_the_cursor_contract(session: Session) -> None:
         "dry_run",
         "expected_hashes",
     }
+    assert schemas["OpenPatchReview"]["properties"]["transaction_id"]["default"] == "latest"
+    assert schemas["OpenPatchReview"]["properties"]["open_browser"]["default"] is True
     assert schemas["RollbackPatch"]["required"] == ["transaction_id"]
     assert set(schemas["RollbackPatch"]["properties"]) == {"transaction_id", "force"}
     assert schemas["Delete"]["required"] == ["path"]

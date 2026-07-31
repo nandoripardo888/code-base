@@ -10,6 +10,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from code_harness.encoding import DecodedText, atomic_write_bytes, decode_bytes, encode_text
 from code_harness.errors import (
@@ -20,6 +21,9 @@ from code_harness.errors import (
 )
 from code_harness.history import FileSnapshot, HistoryManager, TransactionManifest
 from code_harness.paths import PathGuard
+
+if TYPE_CHECKING:
+    from code_harness.review import ReviewManager
 
 _FORBIDDEN_PATCH_MARKERS = (
     "GIT binary patch",
@@ -65,16 +69,28 @@ def apply_patch(
     patch: str,
     dry_run: bool = False,
     expected_hashes: dict[str, str] | None = None,
+    reviews: ReviewManager | None = None,
 ) -> dict[str, object]:
     """Validate and apply a unified diff without requiring a Git repository."""
     with history.exclusive():
-        return _apply_patch_locked(
+        result = _apply_patch_locked(
             guard,
             history,
             patch=patch,
             dry_run=dry_run,
             expected_hashes=expected_hashes,
         )
+    if (
+        reviews is not None
+        and result.get("status") == "applied"
+        and isinstance(result.get("transaction_id"), str)
+    ):
+        try:
+            result["review"] = reviews.open(str(result["transaction_id"]))
+        except Exception:
+            # The review UI is optional and must not make a successful patch fail.
+            result["review"] = {"available": False}
+    return result
 
 
 def _apply_patch_locked(
@@ -176,6 +192,7 @@ def _git_version(git: str) -> str:
     try:
         result = subprocess.run(
             [git, "--version"],
+            stdin=subprocess.DEVNULL,
             check=True,
             capture_output=True,
             text=True,
@@ -326,6 +343,7 @@ def _run_git_apply(git: str, workspace: Path, patch_file: Path, *, check: bool) 
     try:
         result = subprocess.run(
             command,
+            stdin=subprocess.DEVNULL,
             cwd=workspace,
             capture_output=True,
             text=True,

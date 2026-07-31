@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -50,6 +52,33 @@ def test_apply_patch_dry_run_does_not_change_files(project: Path) -> None:
     assert result["status"] == "validated"
     assert "world" in (project / "src" / "hello.py").read_text(encoding="utf-8")
     assert list(session.history.transactions_dir.glob("*/manifest.json")) == []
+
+
+def test_apply_patch_git_processes_do_not_inherit_mcp_stdin(
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    standard_inputs: list[Any] = []
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        standard_inputs.append(kwargs.get("stdin"))
+        stdout = "git version test" if command[1:] == ["--version"] else ""
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    session = Session.create(project)
+    try:
+        result = apply_patch(
+            session.guard,
+            session.history,
+            patch=MODIFY_PATCH,
+            dry_run=True,
+        )
+    finally:
+        session.shutdown()
+
+    assert result["status"] == "validated"
+    assert standard_inputs == [subprocess.DEVNULL, subprocess.DEVNULL, subprocess.DEVNULL]
 
 
 @requires_git

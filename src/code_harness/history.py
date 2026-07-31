@@ -140,6 +140,11 @@ class TransactionManifest:
     git_version: str | None = None
     error: str | None = None
     rolled_back_at: str | None = None
+    source_tool: str = "apply_patch"
+    review_state: str = "unreviewed"
+    reviewed_at: str | None = None
+    summary_additions: int | None = None
+    summary_deletions: int | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -153,6 +158,11 @@ class TransactionManifest:
             "git_version": self.git_version,
             "error": self.error,
             "rolled_back_at": self.rolled_back_at,
+            "source_tool": self.source_tool,
+            "review_state": self.review_state,
+            "reviewed_at": self.reviewed_at,
+            "summary_additions": self.summary_additions,
+            "summary_deletions": self.summary_deletions,
             "files": [item.to_dict() for item in self.files],
         }
 
@@ -172,6 +182,11 @@ class TransactionManifest:
             git_version=_optional_string(value.get("git_version")),
             error=_optional_string(value.get("error")),
             rolled_back_at=_optional_string(value.get("rolled_back_at")),
+            source_tool=str(value.get("source_tool", "apply_patch")),
+            review_state=str(value.get("review_state", "unreviewed")),
+            reviewed_at=_optional_string(value.get("reviewed_at")),
+            summary_additions=_optional_int(value.get("summary_additions")),
+            summary_deletions=_optional_int(value.get("summary_deletions")),
             files=tuple(
                 FileSnapshot.from_dict(item) for item in raw_files if isinstance(item, dict)
             ),
@@ -180,6 +195,14 @@ class TransactionManifest:
 
 def _optional_string(value: object) -> str | None:
     return None if value is None else str(value)
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, str, bytes, bytearray)):
+        return int(value)
+    raise TypeError("manifest summary value must be an integer")
 
 
 class HistoryManager:
@@ -257,6 +280,7 @@ class HistoryManager:
         files: tuple[FileSnapshot, ...],
         *,
         git_version: str,
+        source_tool: str = "apply_patch",
     ) -> TransactionManifest:
         now = datetime.now(UTC)
         transaction_id = f"{now:%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
@@ -270,6 +294,7 @@ class HistoryManager:
             files=files,
             patch_sha256=_sha256(patch_text.encode("utf-8")),
             git_version=git_version,
+            source_tool=source_tool,
         )
         transaction_dir = self._transaction_dir(transaction_id)
         transaction_dir.mkdir(parents=True, exist_ok=False)
@@ -290,6 +315,10 @@ class HistoryManager:
         files: tuple[FileSnapshot, ...] | None = None,
         error: str | None = None,
         rolled_back_at: str | None = None,
+        review_state: str | None = None,
+        reviewed_at: str | None = None,
+        summary_additions: int | None = None,
+        summary_deletions: int | None = None,
     ) -> TransactionManifest:
         updated = replace(
             manifest,
@@ -297,6 +326,20 @@ class HistoryManager:
             files=files or manifest.files,
             error=error,
             rolled_back_at=rolled_back_at,
+            review_state=review_state or manifest.review_state,
+            reviewed_at=(
+                reviewed_at if review_state is not None else manifest.reviewed_at
+            ),
+            summary_additions=(
+                manifest.summary_additions
+                if summary_additions is None
+                else summary_additions
+            ),
+            summary_deletions=(
+                manifest.summary_deletions
+                if summary_deletions is None
+                else summary_deletions
+            ),
             updated_at=_utc_now(),
         )
         self.save(updated)
@@ -316,6 +359,71 @@ class HistoryManager:
         if not isinstance(value, dict):
             raise PatchHistoryError(f"Patch transaction is invalid: {transaction_id}")
         return TransactionManifest.from_dict(value)
+
+    def list_transactions(self, *, status: str | None = None) -> tuple[TransactionManifest, ...]:
+        """Return this workspace's transactions, newest first."""
+        manifests = self._list_manifests()
+        if status is not None:
+            manifests = [item for item in manifests if item.status == status]
+        return tuple(sorted(manifests, key=lambda item: item.created_at, reverse=True))
+
+    def latest_transaction(self, *, status: str | None = None) -> TransactionManifest:
+        """Return the newest transaction, optionally limited to one operational status."""
+        transactions = self.list_transactions(status=status)
+        if not transactions:
+            detail = f" with status {status!r}" if status else ""
+            raise PatchHistoryError(f"No patch transactions were found{detail}.")
+        return transactions[0]
+
+    def mark_reviewed(self, transaction_id: str) -> TransactionManifest:
+        """Mark a transaction reviewed without changing its rollback eligibility."""
+        with self._mutation_lock:
+            manifest = self.load(transaction_id)
+            return self.update(
+                manifest,
+                review_state="reviewed",
+                reviewed_at=_utc_now(),
+            )
+
+    def set_review_summary(
+        self,
+        transaction_id: str,
+        *,
+        additions: int,
+        deletions: int,
+    ) -> TransactionManifest:
+        with self._mutation_lock:
+            manifest = self.load(transaction_id)
+            if (
+                manifest.summary_additions == additions
+                and manifest.summary_deletions == deletions
+            ):
+                return manifest
+            return self.update(
+                manifest,
+                summary_additions=additions,
+                summary_deletions=deletions,
+            )
+
+    def read_before_content(self, transaction_id: str, file_index: int) -> bytes | None:
+        """Read a before snapshot by manifest index without exposing object identifiers."""
+        manifest = self.load(transaction_id)
+        item = self._file_at(manifest, file_index)
+        if not item.existed_before:
+            return None
+        if item.before_object is None:
+            raise PatchHistoryError(f"Before snapshot is missing for {item.path}.")
+        return self.read_object(item.before_object)
+
+    def read_after_content(self, transaction_id: str, file_index: int) -> bytes | None:
+        """Read an after snapshot by manifest index without reading the live project file."""
+        manifest = self.load(transaction_id)
+        item = self._file_at(manifest, file_index)
+        if not item.exists_after:
+            return None
+        if item.after_object is None:
+            raise PatchHistoryError(f"After snapshot is missing for {item.path}.")
+        return self.read_object(item.after_object)
 
     def rollback(self, transaction_id: str, *, force: bool = False) -> dict[str, object]:
         manifest = self.load(transaction_id)
@@ -520,6 +628,12 @@ class HistoryManager:
 
     def _transaction_dir(self, transaction_id: str) -> Path:
         return self.transactions_dir / transaction_id
+
+    @staticmethod
+    def _file_at(manifest: TransactionManifest, file_index: int) -> FileSnapshot:
+        if file_index < 0 or file_index >= len(manifest.files):
+            raise PatchHistoryError(f"Review file index is out of range: {file_index}")
+        return manifest.files[file_index]
 
     @staticmethod
     def _directory_size(directory: Path) -> int:

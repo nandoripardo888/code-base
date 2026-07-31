@@ -1,4 +1,4 @@
-"""A session binds the project root, path guard, jobs, and patch history."""
+"""A session binds one project to tools, jobs, history, and local reviews."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from pathlib import Path
 
 from code_harness.history import HistoryManager
 from code_harness.paths import PathGuard
+from code_harness.review import ReviewManager
 from code_harness.shell.background import JobRegistry
 
 
@@ -22,17 +23,20 @@ class Session:
     guard: PathGuard
     jobs: JobRegistry
     history: HistoryManager
+    reviews: ReviewManager
 
     @classmethod
     def create(cls, project: Path | str | None = None) -> Session:
         jobs = JobRegistry()
         guard = PathGuard(resolve_project_root(project))
         history = HistoryManager(guard.root)
-        return cls(guard, jobs, history)
+        reviews = ReviewManager(history)
+        return cls(guard, jobs, history, reviews)
 
     @property
     def root(self) -> Path:
         return self.guard.root
 
     def shutdown(self) -> None:
+        self.reviews.shutdown()
         self.jobs.cleanup()

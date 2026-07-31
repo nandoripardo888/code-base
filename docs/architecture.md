@@ -7,7 +7,8 @@ The package is deliberately flat. A tool is a function that takes a `PathGuard`
 flowchart TB
     CLI[cli.py] --> Session
     MCP[mcp/server.py] --> Session
-    Session[session.py<br/>PathGuard + JobRegistry] --> Tools
+    Session[session.py<br/>PathGuard + JobRegistry + History + Reviews] --> Tools
+    Session --> Review[review/<br/>snapshot diff + loopback HTTP]
     subgraph Tools [tools/]
         Shell
         GetJobStatus

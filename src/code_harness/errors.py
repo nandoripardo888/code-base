@@ -140,6 +140,8 @@ class PatchRollbackConflictError(HarnessError):
     code = "rollback_conflict"
 
     def __init__(self, transaction_id: str, paths: list[str]) -> None:
+        self.transaction_id = transaction_id
+        self.paths = tuple(paths)
         rendered = ", ".join(paths)
         super().__init__(
             f"Transaction {transaction_id} cannot be rolled back because these files changed: "

@@ -1,6 +1,6 @@
 # code-harness
 
-A local MCP server with a compact Cursor-like tool set. Ten tools, no index, no
+A local MCP server with a compact Cursor-like tool set. Eleven tools, no index, no
 embeddings, no SQLite.
 
 | Tool | Purpose |
@@ -13,6 +13,7 @@ embeddings, no SQLite.
 | `Write` | Create or overwrite a file atomically |
 | `StrReplace` | Guarded substitution, tolerant of LF/CRLF differences |
 | `ApplyPatch` | Apply a unified diff through Git in a temporary workspace |
+| `OpenPatchReview` | Open a secure local review of a saved patch transaction |
 | `RollbackPatch` | Restore byte snapshots saved by `ApplyPatch` |
 | `Delete` | Delete a file |
 
@@ -69,6 +70,8 @@ code-harness write notes.txt "hello"
 code-harness str-replace notes.txt "hello" "hi" --expected-occurrences 1
 code-harness apply-patch change.patch --dry-run
 code-harness apply-patch change.patch
+code-harness review latest
+code-harness review 20260730T161500-a84f --no-open
 code-harness rollback-patch 20260730T161500-a84f
 code-harness delete notes.txt
 code-harness shell "pytest -q" --block-until-ms 5000 --shell auto
@@ -89,6 +92,17 @@ code-harness shell "pytest -q" --block-until-ms 5000 --shell auto
 
 A successful call returns a `transaction_id`. `RollbackPatch` restores the
 original bytes and refuses to overwrite later edits unless `force=true`.
+
+Successful MCP patch calls also return a one-use local review URL. The
+review page compares the exact before/after snapshots side by side, supports
+light and dark themes, marks a transaction reviewed, and can roll back the
+whole transaction after revalidating the current file hashes. It binds only to
+`127.0.0.1`, loads no CDN resources, and stops with the owning session.
+
+`OpenPatchReview(transaction_id="latest")` reopens the newest applied
+transaction. From a terminal, `code-harness review latest` keeps the local page
+available until interrupted; add `--no-open` to print the URL without launching
+the browser.
 
 The temporary workspace is removed after each call. Persistent history is kept
 outside the project by default and does not depend on Git commits, branches,

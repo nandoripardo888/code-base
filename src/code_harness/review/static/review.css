@@ -239,6 +239,21 @@ h1 {
   color: var(--red);
 }
 
+.review-description {
+  max-width: 720px;
+  margin-top: 7px;
+  overflow: hidden;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-description[hidden] {
+  display: none;
+}
+
 .topbar-actions {
   display: flex;
   align-items: center;
@@ -314,13 +329,13 @@ h1 {
 
 .workspace {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-columns: 340px minmax(0, 1fr);
   min-height: 0;
 }
 
 .files-panel {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
   background: var(--surface-soft);
   border-right: 1px solid var(--border);
@@ -359,14 +374,6 @@ h1 {
   font-weight: 700;
 }
 
-.filters {
-  display: flex;
-  gap: 4px;
-  padding: 0 10px 12px;
-  overflow-x: auto;
-}
-
-.filter,
 .view-switcher button {
   min-height: 30px;
   padding: 5px 8px;
@@ -380,53 +387,132 @@ h1 {
   white-space: nowrap;
 }
 
-.filter:hover,
-.filter.active {
-  color: var(--text);
-  background: var(--selection);
-}
-
-.file-list {
+.history-tree {
+  min-height: 0;
   overflow: auto;
   padding: 0 8px 16px;
 }
 
-.file-item {
-  position: relative;
-  display: grid;
-  grid-template-columns: 20px minmax(0, 1fr);
-  gap: 8px;
+.review-tree-item {
+  margin: 3px 0;
+}
+
+.review-node,
+.tree-file {
   width: 100%;
-  padding: 11px 10px;
   color: var(--text-soft);
   text-align: left;
   border: 1px solid transparent;
-  border-radius: 9px;
   background: transparent;
   cursor: pointer;
 }
 
-.file-item:hover {
+.review-node {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 5px;
+  padding: 10px 8px;
+  border-radius: 9px;
+}
+
+.review-node:hover,
+.review-tree-item.active-review > .review-node {
   color: var(--text);
   background: var(--selection);
 }
 
-.file-item.active {
-  color: var(--text);
-  background: var(--surface);
+.review-tree-item.active-review > .review-node {
   border-color: var(--border);
-  box-shadow: 0 2px 8px rgba(21, 25, 31, 0.04);
 }
 
-.file-item.active::before {
-  position: absolute;
-  top: 11px;
-  bottom: 11px;
-  left: -1px;
-  width: 3px;
-  content: "";
-  border-radius: 0 3px 3px 0;
-  background: var(--green);
+.tree-chevron {
+  padding-top: 1px;
+  color: var(--text-faint);
+  font-size: 17px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.review-node-info {
+  display: block;
+  min-width: 0;
+}
+
+.review-node-title,
+.review-node-meta,
+.review-node-status {
+  display: block;
+}
+
+.review-node-title {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-node-meta {
+  overflow: hidden;
+  margin-top: 3px;
+  color: var(--text-faint);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-node-status {
+  width: max-content;
+  margin-top: 6px;
+  padding: 2px 6px;
+  color: var(--amber);
+  border-radius: 999px;
+  background: var(--amber-bg);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.review-node-status.revisada {
+  color: var(--green);
+  background: var(--green-bg);
+}
+
+.review-node-status.desfeita {
+  color: var(--text-soft);
+  background: var(--surface);
+}
+
+.review-file-group {
+  margin: 1px 0 7px 16px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+
+.review-file-group[hidden] {
+  display: none;
+}
+
+.tree-file {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px;
+  border-radius: 8px;
+}
+
+.tree-file:hover,
+.tree-file.active {
+  color: var(--text);
+  background: var(--surface);
+}
+
+.tree-file.active {
+  border-color: var(--border);
+  box-shadow: 0 2px 8px rgba(21, 25, 31, 0.04);
 }
 
 .file-icon {
@@ -477,6 +563,13 @@ h1 {
   color: var(--text-faint);
   font-family: inherit;
   text-transform: uppercase;
+}
+
+.tree-file .operation-label {
+  display: block;
+  width: max-content;
+  margin: 5px 0 0;
+  font-size: 9px;
 }
 
 .sidebar-foot {
@@ -941,7 +1034,7 @@ dialog p {
   }
 
   .workspace {
-    grid-template-columns: 220px minmax(0, 1fr);
+    grid-template-columns: 280px minmax(0, 1fr);
   }
 
   .button {
@@ -974,6 +1067,7 @@ dialog p {
 @media (max-width: 640px) {
   .topbar {
     padding: 12px;
+    flex-wrap: wrap;
   }
 
   .brand-mark {
@@ -998,10 +1092,12 @@ dialog p {
 
   .workspace {
     grid-template-columns: 1fr;
+    grid-template-rows: minmax(180px, 34vh) minmax(0, 1fr);
   }
 
   .files-panel {
-    display: none;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
   }
 
   .review-toolbar {

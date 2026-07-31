@@ -67,16 +67,19 @@ def apply_patch(
     history: HistoryManager,
     *,
     patch: str,
+    description: str | None = None,
     dry_run: bool = False,
     expected_hashes: dict[str, str] | None = None,
     reviews: ReviewManager | None = None,
 ) -> dict[str, object]:
     """Validate and apply a unified diff without requiring a Git repository."""
+    normalized_description = _normalize_description(description)
     with history.exclusive():
         result = _apply_patch_locked(
             guard,
             history,
             patch=patch,
+            description=normalized_description,
             dry_run=dry_run,
             expected_hashes=expected_hashes,
         )
@@ -86,10 +89,20 @@ def apply_patch(
         and isinstance(result.get("transaction_id"), str)
     ):
         try:
-            result["review"] = reviews.open(str(result["transaction_id"]))
-        except Exception:
+            review = reviews.open(
+                str(result["transaction_id"]),
+                open_browser=os.environ.get("CODE_HARNESS_REVIEW_AUTO_OPEN", "").lower()
+                in {"1", "true", "yes", "on"},
+            )
+            result["review"] = review
+            result["review_available"] = True
+            result["review_url"] = review["url"]
+            result["review_message"] = "Abra o portal local para revisar esta alteração."
+        except Exception as error:
             # The review UI is optional and must not make a successful patch fail.
             result["review"] = {"available": False}
+            result["review_available"] = False
+            result["review_error"] = str(error)
     return result
 
 
@@ -98,6 +111,7 @@ def _apply_patch_locked(
     history: HistoryManager,
     *,
     patch: str,
+    description: str | None,
     dry_run: bool,
     expected_hashes: dict[str, str] | None,
 ) -> dict[str, object]:
@@ -119,19 +133,23 @@ def _apply_patch_locked(
         completed = _collect_results(workspace, prepared)
         _assert_expected_workspace(workspace, completed)
         if dry_run:
-            return {
+            result: dict[str, object] = {
                 "status": "validated",
                 "dry_run": True,
                 "git_version": git_version,
                 "files_changed": len(completed),
                 "files": [item.target.path for item in completed],
             }
+            if description is not None:
+                result["description"] = description
+            return result
 
         snapshots = _store_snapshots(history, completed)
         manifest = history.begin(
             normalized_patch,
             snapshots,
             git_version=git_version,
+            description=description,
         )
         manifest = history.update(manifest, status="ready", files=snapshots)
         _assert_current_files(completed)
@@ -144,7 +162,7 @@ def _apply_patch_locked(
             history.update(manifest, status=status, error=str(error))
             raise PatchApplyError(f"Could not commit patch to real files: {error}") from error
         history.update(manifest, status="applied")
-        return {
+        result = {
             "status": "applied",
             "transaction_id": manifest.transaction_id,
             "git_version": git_version,
@@ -154,6 +172,9 @@ def _apply_patch_locked(
             ],
             "history_saved": True,
         }
+        if description is not None:
+            result["description"] = description
+        return result
     finally:
         shutil.rmtree(temporary_root, ignore_errors=True)
 
@@ -178,6 +199,17 @@ def _normalize_patch(patch: str) -> str:
     for marker in _FORBIDDEN_PATCH_MARKERS:
         if marker in normalized:
             raise PatchInvalidError(f"Unsupported patch operation: {marker.strip()}")
+    return normalized
+
+
+def _normalize_description(description: str | None) -> str | None:
+    if description is None:
+        return None
+    normalized = " ".join(description.split())
+    if not normalized:
+        return None
+    if len(normalized) > 500:
+        raise PatchInvalidError("Patch description must be at most 500 characters.")
     return normalized
 
 

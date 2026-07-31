@@ -1,12 +1,14 @@
 (() => {
   "use strict";
 
-  const transactionId = document.querySelector('meta[name="review-transaction"]').content;
+  const initialTransactionId = document.querySelector('meta[name="review-transaction"]').content;
   const csrfToken = document.querySelector('meta[name="review-csrf"]').content;
   const state = {
+    transactionId: initialTransactionId,
     summary: null,
+    reviews: [],
+    expandedReviews: new Set([initialTransactionId]),
     selectedIndex: 0,
-    filter: "all",
     view: window.matchMedia("(max-width: 900px)").matches ? "unified" : "split",
     fileDiff: null,
     changeRows: [],
@@ -20,8 +22,9 @@
     created: document.querySelector("#created-at"),
     additions: document.querySelector("#total-additions"),
     deletions: document.querySelector("#total-deletions"),
-    fileCount: document.querySelector("#file-count"),
-    fileList: document.querySelector("#file-list"),
+    description: document.querySelector("#review-description"),
+    reviewCount: document.querySelector("#review-count"),
+    reviewTree: document.querySelector("#review-tree"),
     selectedPath: document.querySelector("#selected-path"),
     operationBadge: document.querySelector("#operation-badge"),
     scroller: document.querySelector("#diff-scroller"),
@@ -32,8 +35,8 @@
     rollbackDialog: document.querySelector("#rollback-dialog"),
     confirmRollback: document.querySelector("#confirm-rollback"),
     themeToggle: document.querySelector("#theme-toggle"),
-    transactionShort: document.querySelector("#transaction-short"),
     toastRegion: document.querySelector("#toast-region"),
+    reviewRetention: document.querySelector("#review-retention"),
   };
 
   const operationLabels = {
@@ -79,16 +82,123 @@
     return payload;
   }
 
-  async function loadSummary() {
-    const summary = await request(`/api/reviews/${encodeURIComponent(transactionId)}`);
+  async function loadReviews() {
+    const payload = await request("/api/reviews?limit=200");
+    state.reviews = payload.items;
+    elements.reviewCount.textContent = payload.total;
+    elements.reviewRetention.textContent = `${payload.total} ${payload.total === 1 ? "revisão retida" : "revisões retidas"}`;
+    if (state.reviews.length && !state.reviews.some((item) => item.transaction_id === state.transactionId)) {
+      state.transactionId = state.reviews[0].transaction_id;
+    }
+    state.expandedReviews.add(state.transactionId);
+    renderReviewTree();
+  }
+
+  function reviewStatus(review) {
+    if (review.status === "rolled_back") return "desfeita";
+    return review.review_state === "reviewed" ? "revisada" : "não revisada";
+  }
+
+  function renderReviewTree() {
+    elements.reviewTree.replaceChildren();
+    for (const review of state.reviews) {
+      const expanded = state.expandedReviews.has(review.transaction_id);
+      const activeReview = review.transaction_id === state.transactionId;
+      const container = document.createElement("div");
+      container.className = `review-tree-item${activeReview ? " active-review" : ""}`;
+
+      const reviewButton = document.createElement("button");
+      reviewButton.type = "button";
+      reviewButton.className = "review-node";
+      reviewButton.setAttribute("role", "treeitem");
+      reviewButton.setAttribute("aria-expanded", String(expanded));
+      reviewButton.setAttribute("aria-selected", String(activeReview));
+      reviewButton.append(span("tree-chevron", expanded ? "⌄" : "›"));
+
+      const info = span("review-node-info");
+      const title = span(
+        "review-node-title",
+        review.description || `Revisão de ${formatDate(review.created_at)}`,
+      );
+      const stats = review.additions === null || review.deletions === null
+        ? ""
+        : ` · +${review.additions}/−${review.deletions}`;
+      const meta = span(
+        "review-node-meta",
+        `${formatDate(review.created_at)} · ${review.files_changed} ${review.files_changed === 1 ? "arquivo" : "arquivos"}${stats}`,
+      );
+      const status = span(`review-node-status ${reviewStatus(review).replaceAll(" ", "-")}`, reviewStatus(review));
+      info.append(title, meta, status);
+      reviewButton.append(info);
+      reviewButton.addEventListener("click", () => {
+        if (activeReview) {
+          if (expanded) state.expandedReviews.delete(review.transaction_id);
+          else state.expandedReviews.add(review.transaction_id);
+          renderReviewTree();
+          return;
+        }
+        state.expandedReviews.add(review.transaction_id);
+        selectReview(review.transaction_id).catch((error) => toast(error.message, true));
+      });
+      container.append(reviewButton);
+
+      const fileGroup = document.createElement("div");
+      fileGroup.className = "review-file-group";
+      fileGroup.setAttribute("role", "group");
+      fileGroup.hidden = !expanded;
+      for (const file of review.files) {
+        const fileButton = document.createElement("button");
+        fileButton.type = "button";
+        fileButton.className = `tree-file${activeReview && file.index === state.selectedIndex ? " active" : ""}`;
+        fileButton.setAttribute("role", "treeitem");
+        fileButton.setAttribute("aria-selected", String(activeReview && file.index === state.selectedIndex));
+        const parts = file.path.split("/");
+        const filename = parts.pop();
+        const directory = parts.length ? parts.join("/") : "raiz do projeto";
+        const icon = span("file-icon", extensionLabel(filename));
+        icon.setAttribute("aria-hidden", "true");
+        const fileInfo = span("file-info");
+        fileInfo.append(
+          span("file-name", filename),
+          span("file-path", directory),
+          span("operation-label", operationLabels[file.operation] || file.operation),
+        );
+        fileButton.append(icon, fileInfo);
+        fileButton.title = file.path;
+        fileButton.addEventListener("click", () => {
+          state.expandedReviews.add(review.transaction_id);
+          if (activeReview) selectFile(file.index).catch((error) => toast(error.message, true));
+          else selectReview(review.transaction_id, file.index).catch((error) => toast(error.message, true));
+        });
+        fileGroup.append(fileButton);
+      }
+      container.append(fileGroup);
+      elements.reviewTree.append(container);
+    }
+  }
+
+  async function selectReview(transactionId, fileIndex = 0) {
+    state.transactionId = transactionId;
+    state.selectedIndex = fileIndex;
+    state.fileDiff = null;
+    state.expandedReviews.add(transactionId);
+    const url = new URL(window.location.href);
+    url.searchParams.set("review", transactionId);
+    url.searchParams.set("file", String(fileIndex));
+    window.history.replaceState({}, "", url);
+    await loadSummary(fileIndex);
+  }
+
+  async function loadSummary(fileIndex = 0) {
+    const summary = await request(`/api/reviews/${encodeURIComponent(state.transactionId)}`);
     state.summary = summary;
     renderSummary();
-    renderFiles();
-    const firstVisible = visibleFiles()[0];
-    if (firstVisible) {
-      await selectFile(firstVisible.index);
+    renderReviewTree();
+    if (summary.files.length) {
+      const selected = Math.min(Math.max(fileIndex, 0), summary.files.length - 1);
+      await selectFile(selected);
     } else {
-      renderEmpty("Nenhum arquivo neste filtro.");
+      renderEmpty("Nenhum arquivo nesta revisão.");
     }
   }
 
@@ -100,8 +210,8 @@
     elements.created.dateTime = summary.created_at;
     elements.additions.textContent = `+${summary.additions}`;
     elements.deletions.textContent = `−${summary.deletions}`;
-    elements.fileCount.textContent = summary.files_changed;
-    elements.transactionShort.textContent = summary.transaction_id;
+    elements.description.textContent = summary.description || "";
+    elements.description.hidden = !summary.description;
 
     const rolledBack = summary.status === "rolled_back";
     const reviewed = summary.review_state === "reviewed";
@@ -130,41 +240,6 @@
     }
   }
 
-  function visibleFiles() {
-    if (!state.summary) return [];
-    return state.summary.files
-      .map((file, index) => ({ ...file, index }))
-      .filter((file) => state.filter === "all" || file.operation === state.filter);
-  }
-
-  function renderFiles() {
-    elements.fileList.replaceChildren();
-    for (const file of visibleFiles()) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = `file-item${file.index === state.selectedIndex ? " active" : ""}`;
-      button.dataset.index = file.index;
-      const parts = file.path.split("/");
-      const filename = parts.pop();
-      const directory = parts.length ? parts.join("/") : "raiz do projeto";
-      const icon = span("file-icon", extensionLabel(filename));
-      icon.setAttribute("aria-hidden", "true");
-      const info = span("file-info");
-      info.append(span("file-name", filename), span("file-path", directory));
-      const stats = span("file-stats");
-      stats.append(
-        span("addition-count", `+${file.additions}`),
-        span("deletion-count", `−${file.deletions}`),
-        span("operation-label", operationLabels[file.operation] || file.operation),
-      );
-      info.append(stats);
-      button.append(icon, info);
-      button.title = file.path;
-      button.addEventListener("click", () => selectFile(file.index));
-      elements.fileList.append(button);
-    }
-  }
-
   function extensionLabel(filename) {
     const extension = filename.includes(".") ? filename.split(".").pop() : "";
     return extension.slice(0, 3).toUpperCase() || "•";
@@ -179,12 +254,16 @@
 
   async function selectFile(index, fullContext = false) {
     state.selectedIndex = index;
-    renderFiles();
+    const url = new URL(window.location.href);
+    url.searchParams.set("review", state.transactionId);
+    url.searchParams.set("file", String(index));
+    window.history.replaceState({}, "", url);
+    renderReviewTree();
     elements.scroller.innerHTML = '<div class="diff-loading"><span></span><span></span><span></span><span></span></div>';
     try {
       const suffix = fullContext ? "?context=full" : "";
       state.fileDiff = await request(
-        `/api/reviews/${encodeURIComponent(transactionId)}/files/${index}${suffix}`,
+        `/api/reviews/${encodeURIComponent(state.transactionId)}/files/${index}${suffix}`,
       );
       state.activeChange = -1;
       renderDiff();
@@ -371,10 +450,11 @@
     elements.complete.disabled = true;
     try {
       state.summary = await request(
-        `/api/reviews/${encodeURIComponent(transactionId)}/complete`,
+        `/api/reviews/${encodeURIComponent(state.transactionId)}/complete`,
         { method: "POST", body: "{}" },
       );
       renderSummary();
+      await loadReviews();
       toast("Revisão concluída. O rollback continua disponível.");
     } catch (error) {
       elements.complete.disabled = false;
@@ -387,10 +467,11 @@
     elements.rollback.disabled = true;
     try {
       state.summary = await request(
-        `/api/reviews/${encodeURIComponent(transactionId)}/rollback`,
+        `/api/reviews/${encodeURIComponent(state.transactionId)}/rollback`,
         { method: "POST", body: "{}" },
       );
       renderSummary();
+      await loadReviews();
       toast("Transação desfeita e snapshots anteriores restaurados.");
     } catch (error) {
       elements.rollback.disabled = false;
@@ -411,18 +492,6 @@
     elements.toastRegion.append(item);
     window.setTimeout(() => item.remove(), 5200);
   }
-
-  document.querySelectorAll(".filter").forEach((button) => {
-    button.addEventListener("click", async () => {
-      document.querySelector(".filter.active")?.classList.remove("active");
-      button.classList.add("active");
-      state.filter = button.dataset.filter;
-      const first = visibleFiles()[0];
-      renderFiles();
-      if (first) await selectFile(first.index);
-      else renderEmpty("Nenhum arquivo neste filtro.");
-    });
-  });
 
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -463,12 +532,12 @@
     document.querySelector('[data-view="unified"]').classList.add("active");
     elements.columnHeadings.classList.add("unified");
   }
-  if (window.location.protocol === "file:" || transactionId.includes("__")) {
+  if (window.location.protocol === "file:" || initialTransactionId.includes("__")) {
     elements.title.textContent = "Abra pela revisão local";
     elements.reviewState.textContent = "Sem sessão";
-    elements.fileList.replaceChildren();
-    elements.fileCount.textContent = "0";
-    elements.transactionShort.textContent = "Servidor local não iniciado";
+    elements.reviewTree.replaceChildren();
+    elements.reviewCount.textContent = "0";
+    elements.reviewRetention.textContent = "Servidor local não iniciado";
     elements.selectedPath.textContent = "Nenhuma transação carregada";
     elements.complete.disabled = true;
     elements.rollback.disabled = true;
@@ -482,5 +551,24 @@
     );
     return;
   }
-  loadSummary().catch((error) => renderError(error.message));
+  async function initialize() {
+    const url = new URL(window.location.href);
+    const requestedReview = url.searchParams.get("review");
+    const requestedFile = Number.parseInt(url.searchParams.get("file") || "0", 10);
+    await loadReviews();
+    if (
+      requestedReview
+      && /^[A-Za-z0-9_-]+$/.test(requestedReview)
+      && state.reviews.some((item) => item.transaction_id === requestedReview)
+    ) {
+      state.transactionId = requestedReview;
+    }
+    state.expandedReviews.add(state.transactionId);
+    await loadSummary(Number.isInteger(requestedFile) ? requestedFile : 0);
+  }
+
+  initialize().catch((error) => renderError(error.message));
+  window.setInterval(() => {
+    loadReviews().catch(() => undefined);
+  }, 10000);
 })();

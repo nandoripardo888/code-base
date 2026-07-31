@@ -54,6 +54,39 @@ def test_apply_patch_dry_run_does_not_change_files(project: Path) -> None:
     assert list(session.history.transactions_dir.glob("*/manifest.json")) == []
 
 
+@requires_git
+def test_apply_patch_normalizes_and_persists_optional_description(project: Path) -> None:
+    session = Session.create(project)
+    try:
+        result = apply_patch(
+            session.guard,
+            session.history,
+            patch=MODIFY_PATCH,
+            description="  Ajusta   a saudação\npara o usuário.  ",
+        )
+        manifest = session.history.load(str(result["transaction_id"]))
+    finally:
+        session.shutdown()
+
+    assert result["description"] == "Ajusta a saudação para o usuário."
+    assert manifest.description == "Ajusta a saudação para o usuário."
+
+
+def test_apply_patch_rejects_description_over_limit(project: Path) -> None:
+    session = Session.create(project)
+    try:
+        with pytest.raises(PatchInvalidError, match="at most 500 characters"):
+            apply_patch(
+                session.guard,
+                session.history,
+                patch=MODIFY_PATCH,
+                description="x" * 501,
+                dry_run=True,
+            )
+    finally:
+        session.shutdown()
+
+
 def test_apply_patch_git_processes_do_not_inherit_mcp_stdin(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,

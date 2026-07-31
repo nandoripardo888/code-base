@@ -18,6 +18,50 @@ class ReviewFileSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class ReviewListFile:
+    index: int
+    path: str
+    operation: str
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewListItem:
+    transaction_id: str
+    source_tool: str
+    status: str
+    review_state: str
+    created_at: str
+    reviewed_at: str | None
+    description: str | None
+    files_changed: int
+    additions: int | None
+    deletions: int | None
+    files: tuple[ReviewListFile, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        value = asdict(self)
+        value["files"] = [item.to_dict() for item in self.files]
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewList:
+    items: tuple[ReviewListItem, ...]
+    total: int
+    retained_limit: int
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "items": [item.to_dict() for item in self.items],
+            "total": self.total,
+            "retained_limit": self.retained_limit,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ReviewSummary:
     transaction_id: str
     source_tool: str
@@ -25,6 +69,7 @@ class ReviewSummary:
     review_state: str
     created_at: str
     reviewed_at: str | None
+    description: str | None
     files_changed: int
     additions: int
     deletions: int

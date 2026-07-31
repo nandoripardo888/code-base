@@ -20,6 +20,7 @@ def _applied_transaction(
     *,
     before: bytes = b"before\n",
     after: bytes = b"after\n",
+    description: str | None = None,
 ) -> str:
     target = project / "sample.txt"
     target.write_bytes(after)
@@ -35,7 +36,12 @@ def _applied_transaction(
         encoding="utf-8",
         line_ending="LF",
     )
-    manifest = history.begin("patch", (snapshot,), git_version="git version test")
+    manifest = history.begin(
+        "patch",
+        (snapshot,),
+        git_version="git version test",
+        description=description,
+    )
     history.update(manifest, status="applied")
     return manifest.transaction_id
 
@@ -55,12 +61,18 @@ def test_review_server_serves_summary_file_and_security_headers(
     tmp_path: Path,
 ) -> None:
     history = HistoryManager(project, history_root=tmp_path / "history")
-    transaction_id = _applied_transaction(project, history)
+    transaction_id = _applied_transaction(
+        project,
+        history,
+        description="Ajusta o arquivo de exemplo.",
+    )
     manager = ReviewManager(history)
     try:
         opener, page, _csrf = _open_review(manager, transaction_id)
         assert "Revisão de alterações" in page
         assert 'href="./review.css"' in page
+        assert 'id="review-tree"' in page
+        assert 'id="review-select"' not in page
         assert (
             opener.open(f"{manager.origin}/review.css")
             .headers["Content-Type"]
@@ -71,6 +83,7 @@ def test_review_server_serves_summary_file_and_security_headers(
         assert summary["files_changed"] == 1
         assert summary["additions"] == 1
         assert summary["deletions"] == 1
+        assert summary["description"] == "Ajusta o arquivo de exemplo."
         assert response.headers["Cache-Control"] == "no-store"
         assert "default-src 'none'" in response.headers["Content-Security-Policy"]
 
@@ -80,6 +93,53 @@ def test_review_server_serves_summary_file_and_security_headers(
         assert file_diff["rows"][0]["kind"] == "replacement"
     finally:
         manager.shutdown()
+
+
+def test_review_portal_lists_and_opens_transactions_from_previous_session(
+    project: Path,
+    tmp_path: Path,
+) -> None:
+    history_root = tmp_path / "history"
+    first_history = HistoryManager(project, history_root=history_root)
+    first_id = _applied_transaction(
+        project,
+        first_history,
+        before=b"initial\n",
+        after=b"first\n",
+        description="Primeira alteração.",
+    )
+    first_manager = ReviewManager(first_history)
+    first_manager.shutdown()
+
+    second_history = HistoryManager(project, history_root=history_root)
+    second_id = _applied_transaction(
+        project,
+        second_history,
+        before=b"first\n",
+        after=b"second\n",
+        description="Segunda alteração.",
+    )
+    second_manager = ReviewManager(second_history)
+    try:
+        opener, page, _csrf = _open_review(second_manager, second_id)
+        assert f'content="{second_id}"' in page
+
+        listing = json.loads(opener.open(f"{second_manager.origin}/api/reviews").read())
+        assert listing["total"] == 2
+        assert [item["transaction_id"] for item in listing["items"]] == [second_id, first_id]
+        assert listing["items"][0]["description"] == "Segunda alteração."
+        assert listing["items"][0]["files"] == [
+            {"index": 0, "path": "sample.txt", "operation": "modify"}
+        ]
+        assert listing["retained_limit"] == second_history.policy.keep_last_per_workspace
+
+        previous = json.loads(
+            opener.open(f"{second_manager.origin}/api/reviews/{first_id}").read()
+        )
+        assert previous["transaction_id"] == first_id
+        assert previous["files_changed"] == 1
+    finally:
+        second_manager.shutdown()
 
 
 def test_review_page_token_is_single_use(project: Path, tmp_path: Path) -> None:

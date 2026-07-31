@@ -93,11 +93,23 @@ code-harness shell "pytest -q" --block-until-ms 5000 --shell auto
 A successful call returns a `transaction_id`. `RollbackPatch` restores the
 original bytes and refuses to overwrite later edits unless `force=true`.
 
-Successful MCP patch calls also return a one-use local review URL. The
-review page compares the exact before/after snapshots side by side, supports
-light and dark themes, marks a transaction reviewed, and can roll back the
-whole transaction after revalidating the current file hashes. It binds only to
-`127.0.0.1`, loads no CDN resources, and stops with the owning session.
+Successful MCP patch calls also return `review_url` at the top level. Clients
+should surface this URL immediately after applying a patch. `ApplyPatch` accepts
+an optional `description` of up to 500 characters; it is stored with the
+transaction and displayed in the portal. The one-use URL opens a local workspace
+review portal with the new transaction selected and all retained reviews grouped
+as a tree of revisions and changed files.
+
+The portal compares exact before/after snapshots side by side, supports light
+and dark themes, marks transactions reviewed, and can roll back a whole
+transaction after revalidating the current file hashes. It binds only to
+`127.0.0.1`, loads no CDN resources, and stops with the owning session. Old URLs
+do not survive a session restart, but retained transactions remain available in
+the next portal opened for the same project.
+
+Set `CODE_HARNESS_REVIEW_AUTO_OPEN=true` to ask a local installation to open the
+browser automatically after a successful patch. The default is disabled for
+remote, VM, and headless MCP deployments.
 
 `OpenPatchReview(transaction_id="latest")` reopens the newest applied
 transaction. From a terminal, `code-harness review latest` keeps the local page

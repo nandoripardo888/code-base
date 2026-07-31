@@ -180,6 +180,7 @@ style are preserved. Writes use an atomic replacement.
 | Parameter | Type | Notes |
 |-----------|------|-------|
 | `patch` | string | required unified diff |
+| `description` | string | optional observation stored with the transaction; max 500 characters |
 | `dry_run` | bool | default `false`; run Git validation without real changes |
 | `expected_hashes` | object | optional map of path to expected SHA-256 |
 
@@ -187,7 +188,13 @@ Git is required, but the project does not need a `.git` directory. The patch is
 applied first in a temporary UTF-8/LF workspace. Successful results are encoded
 back to the original format, committed to the real files, and recorded as
 byte-exact history. Binary patches, symlinks, submodules, copies, and renames are
-rejected in this version.
+rejected in this version. A successful MCP call returns `review_available`,
+`review_url`, and `review_message` at the top level in addition to the rollback
+transaction id. The MCP instructions require clients to surface `review_url`
+without waiting for a separate `OpenPatchReview` request.
+
+Set `CODE_HARNESS_REVIEW_AUTO_OPEN=true` to open the local browser automatically
+after applying a patch. It is disabled by default for headless and remote hosts.
 
 ## OpenPatchReview
 
@@ -197,10 +204,15 @@ rejected in this version.
 | `open_browser` | bool | default `true` |
 
 Starts the review server lazily on an ephemeral `127.0.0.1` port and returns a
-one-use browser URL. The page reads only saved before/after snapshots, never
-arbitrary paths or the live project. It provides side-by-side and unified
-views, file filters, collapsed context, change navigation, light/dark themes,
-review completion, and safe whole-transaction rollback.
+one-use browser URL. The page establishes a workspace-scoped session, selects
+the requested transaction, and lists every retained `applied` or `rolled_back`
+review for the same project, including transactions created by earlier MCP
+sessions. It reads only saved before/after snapshots, never arbitrary paths or
+the live project. The left-side tree groups each retained review with its changed
+files and uses the optional patch description as the primary label. The portal
+also provides side-by-side and unified views, collapsed context, change
+navigation, light/dark themes, review completion, and safe whole-transaction
+rollback.
 
 The URL exchanges its one-use token for an HttpOnly, SameSite session cookie.
 POST actions also require CSRF and same-origin checks. The server is stopped by

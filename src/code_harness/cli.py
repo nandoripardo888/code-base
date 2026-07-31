@@ -189,6 +189,7 @@ def str_replace_command(
 @app.command(name="apply-patch")
 def apply_patch_command(
     patch_file: Path,
+    description: str | None = typer.Option(None, "--description", "-m"),
     dry_run: bool = typer.Option(False, "--dry-run"),
     project: Path | None = _ROOT,
 ) -> None:
@@ -200,6 +201,7 @@ def apply_patch_command(
             session.guard,
             session.history,
             patch=patch,
+            description=description,
             dry_run=dry_run,
         ),
     )

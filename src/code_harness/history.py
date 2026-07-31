@@ -141,6 +141,7 @@ class TransactionManifest:
     error: str | None = None
     rolled_back_at: str | None = None
     source_tool: str = "apply_patch"
+    description: str | None = None
     review_state: str = "unreviewed"
     reviewed_at: str | None = None
     summary_additions: int | None = None
@@ -159,6 +160,7 @@ class TransactionManifest:
             "error": self.error,
             "rolled_back_at": self.rolled_back_at,
             "source_tool": self.source_tool,
+            "description": self.description,
             "review_state": self.review_state,
             "reviewed_at": self.reviewed_at,
             "summary_additions": self.summary_additions,
@@ -183,6 +185,7 @@ class TransactionManifest:
             error=_optional_string(value.get("error")),
             rolled_back_at=_optional_string(value.get("rolled_back_at")),
             source_tool=str(value.get("source_tool", "apply_patch")),
+            description=_optional_string(value.get("description")),
             review_state=str(value.get("review_state", "unreviewed")),
             reviewed_at=_optional_string(value.get("reviewed_at")),
             summary_additions=_optional_int(value.get("summary_additions")),
@@ -281,6 +284,7 @@ class HistoryManager:
         *,
         git_version: str,
         source_tool: str = "apply_patch",
+        description: str | None = None,
     ) -> TransactionManifest:
         now = datetime.now(UTC)
         transaction_id = f"{now:%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
@@ -295,6 +299,7 @@ class HistoryManager:
             patch_sha256=_sha256(patch_text.encode("utf-8")),
             git_version=git_version,
             source_tool=source_tool,
+            description=description,
         )
         transaction_dir = self._transaction_dir(transaction_id)
         transaction_dir.mkdir(parents=True, exist_ok=False)

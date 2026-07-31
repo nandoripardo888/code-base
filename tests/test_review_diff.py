@@ -79,5 +79,6 @@ def test_old_manifest_defaults_to_unreviewed_apply_patch() -> None:
     manifest = TransactionManifest.from_dict(value)
 
     assert manifest.source_tool == "apply_patch"
+    assert manifest.description is None
     assert manifest.review_state == "unreviewed"
     assert manifest.reviewed_at is None

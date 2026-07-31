@@ -55,16 +55,26 @@ def make_request_handler(manager: ReviewManager) -> type[BaseHTTPRequestHandler]
             if asset := _ASSETS.get(path):
                 self._serve_asset(*asset)
                 return
+            if path == "/api/reviews":
+                limit_values = parse_qs(parsed.query).get("limit", ["50"])
+                try:
+                    limit = int(limit_values[0])
+                    self._send_json(manager.service.list_reviews(limit=limit).to_dict())
+                except ValueError as error:
+                    self._json_error(HTTPStatus.BAD_REQUEST, str(error))
+                return
             if path == "/api/reviews/current":
-                self._send_json(manager.service.get_summary(session.transaction_id).to_dict())
+                self._send_json(
+                    manager.service.get_summary(session.selected_transaction_id).to_dict()
+                )
                 return
             if match := _REVIEW_API.fullmatch(path):
-                if not self._owns_review(session, match.group(1)):
+                if not self._owns_workspace(session):
                     return
                 self._send_json(manager.service.get_summary(match.group(1)).to_dict())
                 return
             if match := _FILE_API.fullmatch(path):
-                if not self._owns_review(session, match.group(1)):
+                if not self._owns_workspace(session):
                     return
                 full_context = parse_qs(parsed.query).get("context") == ["full"]
                 try:
@@ -109,7 +119,7 @@ def make_request_handler(manager: ReviewManager) -> type[BaseHTTPRequestHandler]
                 self._json_error(HTTPStatus.NOT_FOUND, "Route not found.")
                 return
             transaction_id, action = match.groups()
-            if not self._owns_review(session, transaction_id):
+            if not self._owns_workspace(session):
                 return
             try:
                 summary = (
@@ -160,7 +170,7 @@ def make_request_handler(manager: ReviewManager) -> type[BaseHTTPRequestHandler]
             template = (_STATIC_ROOT / "review.html").read_text(encoding="utf-8")
             page = template.replace(
                 "__TRANSACTION_ID__",
-                html.escape(session.transaction_id, quote=True),
+                html.escape(session.selected_transaction_id, quote=True),
             ).replace(
                 "__CSRF_TOKEN__",
                 html.escape(session.csrf_token, quote=True),
@@ -180,8 +190,8 @@ def make_request_handler(manager: ReviewManager) -> type[BaseHTTPRequestHandler]
             morsel = cookie.get("code_harness_review")
             return manager.security.get_session(morsel.value if morsel else None)
 
-        def _owns_review(self, session: BrowserSession, transaction_id: str) -> bool:
-            if session.transaction_id == transaction_id:
+        def _owns_workspace(self, session: BrowserSession) -> bool:
+            if session.workspace_id == manager.service.history.workspace_id:
                 return True
             self._json_error(HTTPStatus.FORBIDDEN, "Review access was rejected.")
             return False

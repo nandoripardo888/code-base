@@ -26,6 +26,7 @@
             <time id="created-at">—</time>
             <span class="diff-total"><b id="total-additions">+0</b> <b id="total-deletions">−0</b></span>
           </div>
+          <p class="review-description" id="review-description" hidden></p>
         </div>
         <div class="topbar-actions">
           <button class="icon-button" id="theme-toggle" type="button" aria-label="Alternar tema">
@@ -41,28 +42,22 @@
       </header>
 
       <main class="workspace">
-        <aside class="files-panel" aria-label="Arquivos alterados">
+        <aside class="files-panel" aria-label="Histórico de revisões">
           <div class="files-header">
             <div>
               <p class="eyebrow">Alterações</p>
-              <h2>Arquivos</h2>
+              <h2>Histórico</h2>
             </div>
-            <span class="file-count" id="file-count">0</span>
+            <span class="file-count" id="review-count">0</span>
           </div>
-          <div class="filters" role="group" aria-label="Filtrar arquivos">
-            <button class="filter active" type="button" data-filter="all">Todos</button>
-            <button class="filter" type="button" data-filter="modify">Modificados</button>
-            <button class="filter" type="button" data-filter="create">Criados</button>
-            <button class="filter" type="button" data-filter="delete">Excluídos</button>
-          </div>
-          <nav class="file-list" id="file-list" aria-label="Lista de arquivos">
+          <nav class="history-tree" id="review-tree" role="tree" aria-label="Revisões e arquivos alterados">
             <div class="file-skeleton"></div>
             <div class="file-skeleton"></div>
             <div class="file-skeleton"></div>
           </nav>
           <div class="sidebar-foot">
             <span class="dot"></span>
-            <span id="transaction-short">Transação local</span>
+            <span id="review-retention">Carregando revisões…</span>
           </div>
         </aside>
 

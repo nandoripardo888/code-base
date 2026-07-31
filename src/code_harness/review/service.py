@@ -4,7 +4,16 @@ from __future__ import annotations
 
 from code_harness.history import HistoryManager, TransactionManifest
 from code_harness.review.diff_builder import build_side_by_side
-from code_harness.review.models import ReviewFileDiff, ReviewFileSummary, ReviewSummary
+from code_harness.review.models import (
+    ReviewFileDiff,
+    ReviewFileSummary,
+    ReviewList,
+    ReviewListFile,
+    ReviewListItem,
+    ReviewSummary,
+)
+
+_VISIBLE_REVIEW_STATUSES = {"applied", "rolled_back"}
 
 
 class ReviewService:
@@ -15,6 +24,39 @@ class ReviewService:
         if transaction_id == "latest":
             return self.history.latest_transaction(status="applied").transaction_id
         return self.history.load(transaction_id).transaction_id
+
+    def list_reviews(self, *, limit: int = 50) -> ReviewList:
+        if limit < 1 or limit > 200:
+            raise ValueError("Review list limit must be between 1 and 200.")
+        manifests = tuple(
+            item
+            for item in self.history.list_transactions()
+            if item.status in _VISIBLE_REVIEW_STATUSES
+        )
+        selected = manifests[:limit]
+        return ReviewList(
+            items=tuple(
+                ReviewListItem(
+                    transaction_id=manifest.transaction_id,
+                    source_tool=manifest.source_tool,
+                    status=manifest.status,
+                    review_state=manifest.review_state,
+                    created_at=manifest.created_at,
+                    reviewed_at=manifest.reviewed_at,
+                    description=manifest.description,
+                    files_changed=len(manifest.files),
+                    additions=manifest.summary_additions,
+                    deletions=manifest.summary_deletions,
+                    files=tuple(
+                        ReviewListFile(index=index, path=item.path, operation=item.operation)
+                        for index, item in enumerate(manifest.files)
+                    ),
+                )
+                for manifest in selected
+            ),
+            total=len(manifests),
+            retained_limit=self.history.policy.keep_last_per_workspace,
+        )
 
     def get_summary(self, transaction_id: str) -> ReviewSummary:
         manifest = self.history.load(self.resolve_transaction_id(transaction_id))
@@ -103,6 +145,7 @@ class ReviewService:
             review_state=manifest.review_state,
             created_at=manifest.created_at,
             reviewed_at=manifest.reviewed_at,
+            description=manifest.description,
             files_changed=len(manifest.files),
             additions=additions,
             deletions=deletions,

@@ -68,6 +68,7 @@ def test_tool_schemas_match_the_cursor_contract(session: Session) -> None:
     assert schemas["ApplyPatch"]["required"] == ["patch"]
     assert set(schemas["ApplyPatch"]["properties"]) == {
         "patch",
+        "description",
         "dry_run",
         "expected_hashes",
     }

@@ -43,7 +43,7 @@ class ReviewManager:
     ) -> dict[str, object]:
         resolved = self.service.resolve_transaction_id(transaction_id)
         summary = self.service.get_summary(resolved)
-        token = self.security.issue_page_token(resolved)
+        token = self.security.issue_page_token(self.service.history.workspace_id, resolved)
         url = f"{self.origin}/r/{token}"
         opened = False
         if open_browser:

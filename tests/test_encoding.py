@@ -90,7 +90,9 @@ def test_grep_finds_cp1252_content(guard: PathGuard, cp1252_file: Path) -> None:
     result = grep(guard, pattern="configura", path="legado.txt")
     assert "No matches found" not in result
     assert CP1252_WORD in result
-    assert "legado.txt:1:" in result
+    assert "legado.txt" in result
+    assert "1:" in result
+    assert "legado.txt:1:" not in result
 
 
 @requires_ripgrep
@@ -98,13 +100,13 @@ def test_grep_decodes_json_bytes_field() -> None:
     """Simulate ripgrep's base64 ``bytes`` payload for non-UTF-8 lines."""
     import base64
 
-    from code_harness.tools.grep import _parse_line_entry
+    from code_harness.tools.search_core import parse_line_entry
 
     payload = {
         "path": {"text": "legado.txt"},
         "line_number": 1,
         "lines": {"bytes": base64.b64encode(CP1252_BYTES + b"\n").decode("ascii")},
     }
-    entry = _parse_line_entry(payload, is_match=True)
+    entry = parse_line_entry(payload, is_match=True)
     assert entry is not None
     assert entry.text == CP1252_WORD

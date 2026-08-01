@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Changed
+
+- `Grep` and `Glob` share an internal `search_core` module. MCP tool names and
+  behaviour are unchanged; see `docs/search-improvements.md`.
+- `Grep` and `Glob` default to **source-first** search: harness noise
+  (`.code-harness/`, common caches, `*.err`) and optional `.code-harnessignore`
+  are skipped. Pass `include_all=true` to search everything.
+- `Grep` `content` mode groups matches by file (path heading + line text) and
+  prints `N matches in M files` when more than one file is shown.
+- `Glob` / Grep `glob` expand brace patterns (`*.{py,md}`) and accept a list of
+  patterns; malformed braces raise `InvalidArgumentError`.
+- Empty `Grep` / `Glob` results append a short generic `Suggestions:` list.
+  Grep empty hints stay on Grep params (`output_mode="symbols"`, `glob=...`),
+  not the separate Glob tool.
+- `Grep` MCP schema exposes `output_mode` as an enum
+  (`content` | `files_with_matches` | `count` | `symbols`); docs never used
+  `mode=files` (that was only an early Search draft).
+
 ## 0.3.0 — 2026-07-30
 
 ### Breaking

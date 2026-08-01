@@ -84,7 +84,11 @@ def shell(
 def grep(
     pattern: str,
     path: str | None = typer.Option(None, "--path"),
-    glob: str | None = typer.Option(None, "--glob"),
+    glob: list[str] | None = typer.Option(
+        None,
+        "--glob",
+        help="File glob filter; repeatable. Brace patterns like *.{py,md} are expanded.",
+    ),
     file_type: str | None = typer.Option(None, "--type"),
     output_mode: str = typer.Option("content", "--output-mode"),
     case_insensitive: bool = typer.Option(False, "--case-insensitive", "-i"),
@@ -92,16 +96,24 @@ def grep(
     multiline: bool = typer.Option(False, "--multiline"),
     head_limit: int | None = typer.Option(None, "--head-limit"),
     offset: int | None = typer.Option(None, "--offset"),
+    include_all: bool = typer.Option(False, "--include-all"),
     project: Path | None = _ROOT,
 ) -> None:
     """Search file contents with a regular expression."""
+    glob_arg: str | list[str] | None
+    if glob is None:
+        glob_arg = None
+    elif len(glob) == 1:
+        glob_arg = glob[0]
+    else:
+        glob_arg = glob
     _run(
         project,
         lambda session: tools.grep(
             session.guard,
             pattern=pattern,
             path=path,
-            glob=glob,
+            glob=glob_arg,
             file_type=file_type,
             output_mode=output_mode,
             case_insensitive=case_insensitive,
@@ -109,23 +121,30 @@ def grep(
             multiline=multiline,
             head_limit=head_limit,
             offset=offset,
+            include_all=include_all,
         ),
     )
 
 
 @app.command(name="glob")
 def glob_command(
-    glob_pattern: str,
+    glob_pattern: list[str] = typer.Argument(
+        ...,
+        help="Glob pattern(s); braces like *.{py,md} expand. Pass multiple patterns as args.",
+    ),
     target_directory: str | None = typer.Option(None, "--dir"),
+    include_all: bool = typer.Option(False, "--include-all"),
     project: Path | None = _ROOT,
 ) -> None:
     """Find files matching a glob pattern."""
+    pattern_arg: str | list[str] = glob_pattern[0] if len(glob_pattern) == 1 else glob_pattern
     _run(
         project,
         lambda session: tools.glob(
             session.guard,
-            glob_pattern=glob_pattern,
+            glob_pattern=pattern_arg,
             target_directory=target_directory,
+            include_all=include_all,
         ),
     )
 

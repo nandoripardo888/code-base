@@ -97,9 +97,9 @@ this version.
 |-----------|------|-------|
 | `pattern` | string | required; ripgrep regex syntax |
 | `path` | string | file or directory to search; default is the root |
-| `glob` | string | filter such as `*.py` or `!*.min.js` |
+| `glob` | string or list | filter such as `*.py`, `*.{py,md}`, or `["*.py","*.md"]` |
 | `type` | string | ripgrep type name such as `py` or `rust` |
-| `output_mode` | string | `content` (default), `files_with_matches`, `count` |
+| `output_mode` | string | `content` (default), `files_with_matches`, `count`, `symbols` |
 | `case_insensitive` | bool | default `false` |
 | `context_before` | int | lines before each match, content mode only |
 | `context_after` | int | lines after each match, content mode only |
@@ -107,21 +107,56 @@ this version.
 | `multiline` | bool | default `false`; lets the pattern span lines |
 | `head_limit` | int | maximum matches, or files in the other two modes |
 | `offset` | int | skip the first N results |
+| `include_all` | bool | default `false`; when false, also skip harness noise |
 
-Match lines use `path:line:text` and context lines use `path-line-text`, the
-same convention as ripgrep. With no matches the answer is `No matches found.`
+Match lines are grouped by file: a path heading, then `line:text` for matches
+and `line-text` for context (ripgrep heading style). When matches span more
+than one file, the first line is a summary such as `3 matches in 2 files`.
+With no matches the answer starts with `No matches found.` followed by a short
+`Suggestions:` list (case sensitivity, `output_mode="symbols"`, Grep `glob`,
+filters, `include_all`).
+
+### `output_mode=symbols`
+
+Finds definitions via language extractors (Python, JS/TS, generic fallback).
+Regular content search is unchanged.
+
+- `path` pointing at a **file**: outline that file; `pattern` optionally filters by name
+  (empty pattern lists all symbols).
+- `path` omitted or a **directory**: requires a non-empty `pattern` (substring match on
+  symbol names). `glob`, `type`, `include_all`, `case_insensitive`, paging apply.
+- `context_*` and `multiline` are ignored in this mode.
+
+Output groups by file:
+
+```text
+2 symbols in 1 file
+
+src/app.py
+  10 class App
+  24 function run
+```
+
+Empty results start with `No symbols found.` plus suggestions.
 
 Results are capped at 1,000 entries even without `head_limit`. When results are
 left over, a trailing line tells you the offset to continue from.
 
-Hidden files are searched; `.git` and anything in `.gitignore` are not.
+Hidden files are searched; `.git` and anything in `.gitignore` are not. By
+default a **source-first** layer also skips harness noise (`.code-harness/`,
+common caches, `*.err`, plus optional `.code-harnessignore` at the project
+root). Pass `include_all=true` to disable that layer. If the filtered search
+is empty but ignored paths would match, a short footnote suggests
+`include_all=true`. Brace patterns such as `*.{py,md}` are expanded before
+ripgrep; malformed braces raise an error instead of returning an empty list.
 
 ## Glob
 
 | Parameter | Type | Notes |
 |-----------|------|-------|
-| `glob_pattern` | string | required; `**/` is prepended when missing |
+| `glob_pattern` | string or list | required; `**/` is prepended when missing; braces expand |
 | `target_directory` | string | must be inside the project; default is the root |
+| `include_all` | bool | default `false`; same source-first layer as Grep |
 
 ```text
 Result of search in '.' (total 2 files):
@@ -129,7 +164,8 @@ Result of search in '.' (total 2 files):
 - src/hello.py
 ```
 
-Sorted by modification time, newest first.
+Sorted by modification time, newest first. An empty result starts with
+`No files found matching '...'` and appends generic `Suggestions:`.
 
 ## Read
 

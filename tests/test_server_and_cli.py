@@ -51,6 +51,12 @@ def test_tool_schemas_match_the_cursor_contract(session: Session) -> None:
     assert set(schemas["GetJobStatus"]["properties"]) == {"job_id", "wait_ms", "tail_lines"}
     assert schemas["Grep"]["required"] == ["pattern"]
     assert "type" in schemas["Grep"]["properties"]
+    assert schemas["Grep"]["properties"]["output_mode"]["enum"] == [
+        "content",
+        "files_with_matches",
+        "count",
+        "symbols",
+    ]
     assert schemas["Glob"]["required"] == ["glob_pattern"]
     assert schemas["Read"]["required"] == ["path"]
     assert set(schemas["Write"]["required"]) == {"path", "contents"}

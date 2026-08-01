@@ -22,8 +22,11 @@ flowchart TB
     Shell --> Env[shell/environment.py]
     Shell --> Jobs[shell/background.py]
     GetJobStatus --> Jobs
-    Grep --> RG[ripgrep.py]
-    Glob --> RG
+    Grep --> Core[search_core.py]
+    Glob --> Core
+    Core --> RG[ripgrep.py]
+    Grep --> Symbols[symbols/]
+    Symbols --> RG
 ```
 
 | Module | Responsibility |
@@ -32,15 +35,21 @@ flowchart TB
 | `ripgrep.py` | Finds the `rg` executable and runs it |
 | `errors.py` | The handful of typed failures, each with a stable `code` |
 | `session.py` | Binds a project root to its path guard and shell jobs |
-| `tools/` | One module per tool, no shared base class |
+| `tools/` | One module per tool; Grep/Glob share `search_core.py` |
+| `tools/search_core.py` | Shared Grep/Glob internals (not an MCP tool) |
+| `tools/search_ignores.py` | Source-first ignore defaults + `.code-harnessignore` |
+| `tools/search_globs.py` | Brace expansion and multi-pattern normalization |
+| `tools/search_hints.py` | Generic suggestions when Grep/Glob find nothing |
+| `symbols/` | Language extractors + `SymbolStore` for `Grep` `output_mode=symbols` |
 | `shell/environment.py` | Shell discovery, argv construction, syntax diagnostics |
 | `shell/background.py` | Job registry, process lifecycle, bounded log tails |
 | `mcp/server.py` | FastMCP registration over stdio |
 | `cli.py` | The same tools behind typer commands |
 
-There is no index, no database, no parser, and no ranking. `Grep` and `Glob`
-shell out to ripgrep on every call, which is fast enough that caching would cost
-more in staleness than it saves in time.
+There is no index or database in v1. `Grep` and `Glob` remain the MCP surface.
+Content search shells out to ripgrep via `search_core`. `output_mode=symbols`
+uses on-demand extractors behind a `SymbolStore` facade (replaceable by an
+index later). See [search-improvements.md](search-improvements.md).
 
 ## Why paths are confined
 

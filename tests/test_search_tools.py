@@ -14,11 +14,15 @@ pytestmark = requires_ripgrep
 
 def test_grep_content_lists_matches(guard: PathGuard) -> None:
     result = grep(guard, pattern="hello")
-    assert "src/hello.py:1:def hello():" in result
+    assert "src/hello.py" in result
+    assert "1:def hello():" in result
+    assert "matches in" in result  # multi-file heading summary
 
 
 def test_grep_is_case_sensitive_by_default(guard: PathGuard) -> None:
-    assert grep(guard, pattern="HELLO") == "No matches found."
+    result = grep(guard, pattern="HELLO")
+    assert result.startswith("No matches found.")
+    assert "case_insensitive=true" in result
 
 
 def test_grep_case_insensitive(guard: PathGuard) -> None:
@@ -40,7 +44,9 @@ def test_grep_count(guard: PathGuard) -> None:
 def test_grep_scoped_to_a_file(guard: PathGuard) -> None:
     result = grep(guard, pattern="alpha", path="data/notes.txt")
     assert "README.md" not in result
-    assert result.count("data/notes.txt") == 2
+    assert result.count("data/notes.txt") == 1  # path heading once
+    assert "1:alpha" in result
+    assert "3:alpha" in result
 
 
 def test_grep_glob_filter(guard: PathGuard) -> None:
@@ -51,19 +57,31 @@ def test_grep_glob_filter(guard: PathGuard) -> None:
 
 def test_grep_head_limit_and_offset(guard: PathGuard) -> None:
     first = grep(guard, pattern="alpha", path="data/notes.txt", head_limit=1)
-    assert "data/notes.txt:1:alpha" in first
+    assert "data/notes.txt" in first
+    assert "1:alpha" in first
     assert "(1 more matches; pass offset=1)" in first
 
     second = grep(guard, pattern="alpha", path="data/notes.txt", offset=1)
-    assert "data/notes.txt:3:alpha" in second
-    assert "data/notes.txt:1:alpha" not in second
+    assert "data/notes.txt" in second
+    assert "3:alpha" in second
+    assert "1:alpha" not in second
 
 
 def test_grep_context_lines(guard: PathGuard) -> None:
     result = grep(guard, pattern="beta", path="data/notes.txt", context_lines=1)
-    assert "data/notes.txt-1-alpha" in result
-    assert "data/notes.txt:2:beta" in result
-    assert "data/notes.txt-3-alpha" in result
+    assert "data/notes.txt" in result
+    assert "1-alpha" in result
+    assert "2:beta" in result
+    assert "3-alpha" in result
+
+
+def test_grep_content_groups_by_file(guard: PathGuard) -> None:
+    result = grep(guard, pattern="hello")
+    assert result.startswith("3 matches in 3 files\n\n")
+    assert "src/hello.py:1:" not in result
+    assert "\nsrc/hello.py\n1:def hello():" in f"\n{result}"
+    assert "\nsrc/util.py\n" in f"\n{result}"
+    assert "\nREADME.md\n" in f"\n{result}"
 
 
 def test_grep_multiline(guard: PathGuard) -> None:
@@ -111,7 +129,91 @@ def test_glob_sorts_by_modification_time(guard: PathGuard, project: Path) -> Non
 
 
 def test_glob_without_matches(guard: PathGuard) -> None:
-    assert glob(guard, glob_pattern="*.nope") == "No files found matching '*.nope'."
+    result = glob(guard, glob_pattern="*.nope")
+    assert result.startswith("No files found matching '*.nope'.")
+    assert "Suggestions:" in result
+
+
+def test_empty_grep_suggests_glob_for_symbol_like_pattern(guard: PathGuard) -> None:
+    result = grep(guard, pattern="TotallyMissingSymbol")
+    assert result.startswith("No matches found.")
+    assert 'output_mode="symbols"' in result
+    assert 'glob="*TotallyMissingSymbol*"' in result
+    assert "glob_pattern" not in result
+    assert "include_all=true" in result
+
+
+def test_empty_glob_suggests_broader_pattern(guard: PathGuard) -> None:
+    result = glob(guard, glob_pattern="MissingName")
+    assert result.startswith("No files found matching 'MissingName'.")
+    assert '*MissingName*' in result
+
+
+def test_source_first_skips_code_harness_err(project: Path, guard: PathGuard) -> None:
+    sample = project / ".code-harness" / "cli-samples"
+    sample.mkdir(parents=True)
+    (sample / "noise.err").write_text("UNIQUE_HARNESS_NOISE_TOKEN\n", encoding="utf-8")
+
+    default = grep(guard, pattern="UNIQUE_HARNESS_NOISE_TOKEN")
+    assert "No matches found." in default
+    assert "include_all=true" in default
+    assert ".code-harness" not in default.split("\n\n")[0]
+
+    full = grep(guard, pattern="UNIQUE_HARNESS_NOISE_TOKEN", include_all=True)
+    assert "UNIQUE_HARNESS_NOISE_TOKEN" in full
+    assert ".code-harness/cli-samples/noise.err" in full
+
+
+def test_source_first_skips_err_in_glob(project: Path, guard: PathGuard) -> None:
+    sample = project / ".code-harness" / "cli-samples"
+    sample.mkdir(parents=True)
+    (sample / "noise.err").write_text("x\n", encoding="utf-8")
+
+    default = glob(guard, glob_pattern="*.err")
+    assert "No files found matching '*.err'." in default
+    assert "include_all=true" in default
+
+    full = glob(guard, glob_pattern="*.err", include_all=True)
+    assert ".code-harness/cli-samples/noise.err" in full
+
+
+def test_code_harnessignore_excludes_custom_paths(project: Path, guard: PathGuard) -> None:
+    (project / "vendor").mkdir()
+    (project / "vendor" / "secret.txt").write_text("VENDOR_ONLY_TOKEN\n", encoding="utf-8")
+    (project / ".code-harnessignore").write_text("vendor/**\n", encoding="utf-8")
+
+    default = grep(guard, pattern="VENDOR_ONLY_TOKEN")
+    assert "No matches found." in default
+    assert "include_all=true" in default
+
+    full = grep(guard, pattern="VENDOR_ONLY_TOKEN", include_all=True)
+    assert "vendor/secret.txt" in full
+
+
+def test_glob_brace_expansion(guard: PathGuard) -> None:
+    result = glob(guard, glob_pattern="*.{py,md}")
+    assert "src/hello.py" in result
+    assert "src/util.py" in result
+    assert "README.md" in result
+    assert "notes.txt" not in result
+
+
+def test_glob_pattern_list(guard: PathGuard) -> None:
+    result = glob(guard, glob_pattern=["*.py", "*.md"])
+    assert "src/hello.py" in result
+    assert "README.md" in result
+
+
+def test_glob_rejects_malformed_braces(guard: PathGuard) -> None:
+    with pytest.raises(InvalidArgumentError, match="malformed brace"):
+        glob(guard, glob_pattern="*.{py,md")
+
+
+def test_grep_glob_brace_filter(guard: PathGuard) -> None:
+    result = grep(guard, pattern="hello", glob="*.{md,py}")
+    assert "README.md" in result
+    assert "src/hello.py" in result
+    assert "notes.txt" not in result
 
 
 def test_search_does_not_block_on_an_open_stdin(project: Path) -> None:

@@ -17,9 +17,7 @@ def normalize_glob_patterns(value: GlobInput) -> list[str]:
     seen: set[str] = set()
     for item in raw_items:
         if not isinstance(item, str):
-            raise InvalidArgumentError(
-                f"glob patterns must be strings; got {type(item).__name__}."
-            )
+            raise InvalidArgumentError(f"glob patterns must be strings; got {type(item).__name__}.")
         text = item.strip()
         if not text:
             raise InvalidArgumentError("glob pattern must not be empty.")
@@ -34,6 +32,20 @@ def with_recursive_prefix(pattern: str) -> str:
     return pattern if pattern.startswith("**/") else f"**/{pattern}"
 
 
+def exclusion_glob_flags(value: GlobInput | None) -> list[str]:
+    """Render caller-provided exclusions as ripgrep negative glob flags."""
+    if value is None:
+        return []
+    flags: list[str] = []
+    for pattern in normalize_glob_patterns(value):
+        if pattern.startswith("!"):
+            raise InvalidArgumentError(
+                "exclude patterns must not start with '!'; pass the pattern directly."
+            )
+        flags.extend(["--glob", f"!{with_recursive_prefix(pattern)}"])
+    return flags
+
+
 def expand_braces(pattern: str) -> list[str]:
     """Expand ``{a,b}`` / ``*.{py,md}`` bash-style; nested braces supported.
 
@@ -43,16 +55,12 @@ def expand_braces(pattern: str) -> list[str]:
     if "{" not in pattern and "}" not in pattern:
         return [pattern]
     if pattern.count("{") != pattern.count("}"):
-        raise InvalidArgumentError(
-            f"malformed brace pattern {pattern!r}: unmatched '{{' or '}}'."
-        )
+        raise InvalidArgumentError(f"malformed brace pattern {pattern!r}: unmatched '{{' or '}}'.")
 
     start = pattern.find("{")
     if start < 0:
         if "}" in pattern:
-            raise InvalidArgumentError(
-                f"malformed brace pattern {pattern!r}: unmatched '}}'."
-            )
+            raise InvalidArgumentError(f"malformed brace pattern {pattern!r}: unmatched '}}'.")
         return [pattern]
 
     depth = 0
@@ -67,13 +75,9 @@ def expand_braces(pattern: str) -> list[str]:
                 end = index
                 break
             if depth < 0:
-                raise InvalidArgumentError(
-                    f"malformed brace pattern {pattern!r}: unmatched '}}'."
-                )
+                raise InvalidArgumentError(f"malformed brace pattern {pattern!r}: unmatched '}}'.")
     if end < 0:
-        raise InvalidArgumentError(
-            f"malformed brace pattern {pattern!r}: unmatched '{{'."
-        )
+        raise InvalidArgumentError(f"malformed brace pattern {pattern!r}: unmatched '{{'.")
 
     prefix = pattern[:start]
     body = pattern[start + 1 : end]
@@ -106,9 +110,7 @@ def _split_top_level(body: str) -> list[str]:
         elif char == "}":
             depth -= 1
             if depth < 0:
-                raise InvalidArgumentError(
-                    f"malformed brace pattern: unmatched '}}' in {body!r}."
-                )
+                raise InvalidArgumentError(f"malformed brace pattern: unmatched '}}' in {body!r}.")
         elif char == "," and depth == 0:
             parts.append(body[start:index])
             start = index + 1

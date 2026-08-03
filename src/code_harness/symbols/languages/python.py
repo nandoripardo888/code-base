@@ -46,7 +46,9 @@ class PythonExtractor:
                 indent = len(def_match.group(1).replace("\t", "    "))
                 name = def_match.group(2)
                 _pop_deeper(class_stack, indent)
-                container = class_stack[-1][1] if class_stack and indent > class_stack[-1][0] else None
+                container = (
+                    class_stack[-1][1] if class_stack and indent > class_stack[-1][0] else None
+                )
                 kind: SymbolKind = "method" if container else "function"
                 symbols.append(
                     Symbol(

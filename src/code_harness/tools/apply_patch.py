@@ -21,6 +21,11 @@ from code_harness.errors import (
 )
 from code_harness.history import FileSnapshot, HistoryManager, TransactionManifest
 from code_harness.paths import PathGuard
+from code_harness.tools.change_tracking import (
+    attach_review,
+    normalize_description,
+    resolve_group,
+)
 
 if TYPE_CHECKING:
     from code_harness.review import ReviewManager
@@ -68,42 +73,26 @@ def apply_patch(
     *,
     patch: str,
     description: str | None = None,
+    group_id: str | None = None,
+    group_title: str | None = None,
     dry_run: bool = False,
     expected_hashes: dict[str, str] | None = None,
     reviews: ReviewManager | None = None,
 ) -> dict[str, object]:
     """Validate and apply a unified diff without requiring a Git repository."""
-    normalized_description = _normalize_description(description)
+    normalized_description = normalize_description(description, required=not dry_run)
     with history.exclusive():
         result = _apply_patch_locked(
             guard,
             history,
             patch=patch,
             description=normalized_description,
+            group_id=group_id,
+            group_title=group_title,
             dry_run=dry_run,
             expected_hashes=expected_hashes,
         )
-    if (
-        reviews is not None
-        and result.get("status") == "applied"
-        and isinstance(result.get("transaction_id"), str)
-    ):
-        try:
-            review = reviews.open(
-                str(result["transaction_id"]),
-                open_browser=os.environ.get("CODE_HARNESS_REVIEW_AUTO_OPEN", "").lower()
-                in {"1", "true", "yes", "on"},
-            )
-            result["review"] = review
-            result["review_available"] = True
-            result["review_url"] = review["url"]
-            result["review_message"] = "Abra o portal local para revisar esta alteração."
-        except Exception as error:
-            # The review UI is optional and must not make a successful patch fail.
-            result["review"] = {"available": False}
-            result["review_available"] = False
-            result["review_error"] = str(error)
-    return result
+    return attach_review(result, reviews)
 
 
 def _apply_patch_locked(
@@ -112,6 +101,8 @@ def _apply_patch_locked(
     *,
     patch: str,
     description: str | None,
+    group_id: str | None,
+    group_title: str | None,
     dry_run: bool,
     expected_hashes: dict[str, str] | None,
 ) -> dict[str, object]:
@@ -145,11 +136,17 @@ def _apply_patch_locked(
             return result
 
         snapshots = _store_snapshots(history, completed)
+        group = resolve_group(
+            history,
+            group_id=group_id,
+            group_title=group_title,
+        )
         manifest = history.begin(
             normalized_patch,
             snapshots,
             git_version=git_version,
             description=description,
+            group_id=group.group_id,
         )
         manifest = history.update(manifest, status="ready", files=snapshots)
         _assert_current_files(completed)
@@ -162,8 +159,11 @@ def _apply_patch_locked(
             history.update(manifest, status=status, error=str(error))
             raise PatchApplyError(f"Could not commit patch to real files: {error}") from error
         history.update(manifest, status="applied")
+        history.touch_group(group.group_id)
         result = {
             "status": "applied",
+            "group_id": group.group_id,
+            "group_title": group.group_title,
             "transaction_id": manifest.transaction_id,
             "git_version": git_version,
             "files_changed": len(completed),
@@ -199,17 +199,6 @@ def _normalize_patch(patch: str) -> str:
     for marker in _FORBIDDEN_PATCH_MARKERS:
         if marker in normalized:
             raise PatchInvalidError(f"Unsupported patch operation: {marker.strip()}")
-    return normalized
-
-
-def _normalize_description(description: str | None) -> str | None:
-    if description is None:
-        return None
-    normalized = " ".join(description.split())
-    if not normalized:
-        return None
-    if len(normalized) > 500:
-        raise PatchInvalidError("Patch description must be at most 500 characters.")
     return normalized
 
 

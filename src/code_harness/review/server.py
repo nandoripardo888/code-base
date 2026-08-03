@@ -25,9 +25,17 @@ _ASSETS = {
     "/static/review.css": ("review.css", "text/css; charset=utf-8"),
     "/static/review.js": ("review.js", "text/javascript; charset=utf-8"),
 }
-_REVIEW_API = re.compile(r"^/api/reviews/([A-Za-z0-9_-]+)$")
-_FILE_API = re.compile(r"^/api/reviews/([A-Za-z0-9_-]+)/files/(\d+)$")
-_ACTION_API = re.compile(r"^/api/reviews/([A-Za-z0-9_-]+)/(complete|rollback)$")
+_GROUP_API = re.compile(r"^/api/groups/([A-Za-z0-9_-]+)$")
+_PATCH_API = re.compile(
+    r"^/api/groups/([A-Za-z0-9_-]+)/patches/([A-Za-z0-9_-]+)$"
+)
+_FILE_API = re.compile(
+    r"^/api/groups/([A-Za-z0-9_-]+)/patches/([A-Za-z0-9_-]+)/files/(\d+)$"
+)
+_PATCH_ACTION_API = re.compile(
+    r"^/api/groups/([A-Za-z0-9_-]+)/patches/([A-Za-z0-9_-]+)/(complete|rollback)$"
+)
+_GROUP_ROLLBACK_API = re.compile(r"^/api/groups/([A-Za-z0-9_-]+)/rollback$")
 _MAX_BODY = 8192
 
 
@@ -55,23 +63,21 @@ def make_request_handler(manager: ReviewManager) -> type[BaseHTTPRequestHandler]
             if asset := _ASSETS.get(path):
                 self._serve_asset(*asset)
                 return
-            if path == "/api/reviews":
+            if path == "/api/groups":
                 limit_values = parse_qs(parsed.query).get("limit", ["50"])
                 try:
                     limit = int(limit_values[0])
-                    self._send_json(manager.service.list_reviews(limit=limit).to_dict())
+                    self._send_json(manager.service.list_groups(limit=limit).to_dict())
                 except ValueError as error:
                     self._json_error(HTTPStatus.BAD_REQUEST, str(error))
                 return
-            if path == "/api/reviews/current":
+            if path == "/api/groups/current":
                 self._send_json(
-                    manager.service.get_summary(session.selected_transaction_id).to_dict()
+                    manager.service.get_patch(
+                        session.selected_group_id,
+                        session.selected_transaction_id,
+                    ).to_dict()
                 )
-                return
-            if match := _REVIEW_API.fullmatch(path):
-                if not self._owns_workspace(session):
-                    return
-                self._send_json(manager.service.get_summary(match.group(1)).to_dict())
                 return
             if match := _FILE_API.fullmatch(path):
                 if not self._owns_workspace(session):
@@ -80,7 +86,8 @@ def make_request_handler(manager: ReviewManager) -> type[BaseHTTPRequestHandler]
                 try:
                     review_file = manager.service.get_file(
                         match.group(1),
-                        int(match.group(2)),
+                        match.group(2),
+                        int(match.group(3)),
                         collapse_context=not full_context,
                     )
                 except HarnessError as error:
@@ -90,6 +97,32 @@ def make_request_handler(manager: ReviewManager) -> type[BaseHTTPRequestHandler]
                     )
                     return
                 self._send_json(review_file.to_dict())
+                return
+            if match := _PATCH_API.fullmatch(path):
+                if not self._owns_workspace(session):
+                    return
+                try:
+                    patch = manager.service.get_patch(match.group(1), match.group(2))
+                except HarnessError as error:
+                    self._send_json(
+                        {"error": error.message, "code": error.code},
+                        status=HTTPStatus.NOT_FOUND,
+                    )
+                    return
+                self._send_json(patch.to_dict())
+                return
+            if match := _GROUP_API.fullmatch(path):
+                if not self._owns_workspace(session):
+                    return
+                try:
+                    group = manager.service.get_group(match.group(1))
+                except HarnessError as error:
+                    self._send_json(
+                        {"error": error.message, "code": error.code},
+                        status=HTTPStatus.NOT_FOUND,
+                    )
+                    return
+                self._send_json(group.to_dict())
                 return
             self._json_error(HTTPStatus.NOT_FOUND, "Route not found.")
 
@@ -114,20 +147,27 @@ def make_request_handler(manager: ReviewManager) -> type[BaseHTTPRequestHandler]
                 return
             if length:
                 self.rfile.read(length)
-            match = _ACTION_API.fullmatch(urlsplit(self.path).path)
-            if match is None:
+            path = urlsplit(self.path).path
+            patch_action = _PATCH_ACTION_API.fullmatch(path)
+            group_rollback = _GROUP_ROLLBACK_API.fullmatch(path)
+            if patch_action is None and group_rollback is None:
                 self._json_error(HTTPStatus.NOT_FOUND, "Route not found.")
                 return
-            transaction_id, action = match.groups()
             if not self._owns_workspace(session):
                 return
             try:
-                summary = (
-                    manager.service.complete(transaction_id)
-                    if action == "complete"
-                    else manager.service.rollback(transaction_id)
-                )
-                self._send_json(summary.to_dict())
+                if group_rollback is not None:
+                    payload = manager.service.rollback_group(group_rollback.group(1)).to_dict()
+                else:
+                    assert patch_action is not None
+                    group_id, transaction_id, action = patch_action.groups()
+                    patch_summary = (
+                        manager.service.complete(group_id, transaction_id)
+                        if action == "complete"
+                        else manager.service.rollback(group_id, transaction_id)
+                    )
+                    payload = patch_summary.to_dict()
+                self._send_json(payload)
             except PatchRollbackConflictError as error:
                 self._send_json(
                     {
@@ -169,6 +209,9 @@ def make_request_handler(manager: ReviewManager) -> type[BaseHTTPRequestHandler]
         def _serve_page(self, session: BrowserSession) -> None:
             template = (_STATIC_ROOT / "review.html").read_text(encoding="utf-8")
             page = template.replace(
+                "__GROUP_ID__",
+                html.escape(session.selected_group_id, quote=True),
+            ).replace(
                 "__TRANSACTION_ID__",
                 html.escape(session.selected_transaction_id, quote=True),
             ).replace(

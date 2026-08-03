@@ -20,6 +20,30 @@ mcp_app = typer.Typer(help="MCP server commands.")
 app.add_typer(mcp_app, name="mcp")
 
 _ROOT = typer.Option(None, "--project", "-p", help="Project root; defaults to the current dir.")
+_GLOB_FILTER = typer.Option(
+    None,
+    "--glob",
+    help="File glob filter; repeatable. Brace patterns like *.{py,md} are expanded.",
+)
+_EXCLUDE_FILTER = typer.Option(
+    None,
+    "--exclude",
+    help="File glob to exclude; repeatable. Explicit exclusions always apply.",
+)
+_REFERENCE_KIND_FILTER = typer.Option(
+    None,
+    "--reference-kind",
+    help="Reference category to include; repeatable or comma-separated.",
+)
+_EXCLUDE_REFERENCE_KIND_FILTER = typer.Option(
+    None,
+    "--exclude-reference-kind",
+    help="Reference category to omit; repeatable or comma-separated.",
+)
+_GLOB_PATTERNS = typer.Argument(
+    ...,
+    help="Glob pattern(s); braces like *.{py,md} expand. Pass multiple patterns as args.",
+)
 
 
 def _run(project: Path | None, action: Callable[[Session], Any]) -> None:
@@ -82,13 +106,9 @@ def shell(
 
 @app.command()
 def grep(
-    pattern: str,
+    pattern: str | None = typer.Argument(None),
     path: str | None = typer.Option(None, "--path"),
-    glob: list[str] | None = typer.Option(
-        None,
-        "--glob",
-        help="File glob filter; repeatable. Brace patterns like *.{py,md} are expanded.",
-    ),
+    glob: list[str] | None = _GLOB_FILTER,
     file_type: str | None = typer.Option(None, "--type"),
     output_mode: str = typer.Option("content", "--output-mode"),
     case_insensitive: bool = typer.Option(False, "--case-insensitive", "-i"),
@@ -97,6 +117,9 @@ def grep(
     head_limit: int | None = typer.Option(None, "--head-limit"),
     offset: int | None = typer.Option(None, "--offset"),
     include_all: bool = typer.Option(False, "--include-all"),
+    exclude: list[str] | None = _EXCLUDE_FILTER,
+    reference_kind: list[str] | None = _REFERENCE_KIND_FILTER,
+    exclude_reference_kind: list[str] | None = _EXCLUDE_REFERENCE_KIND_FILTER,
     project: Path | None = _ROOT,
 ) -> None:
     """Search file contents with a regular expression."""
@@ -107,6 +130,13 @@ def grep(
         glob_arg = glob[0]
     else:
         glob_arg = glob
+    exclude_arg: str | list[str] | None
+    if exclude is None:
+        exclude_arg = None
+    elif len(exclude) == 1:
+        exclude_arg = exclude[0]
+    else:
+        exclude_arg = exclude
     _run(
         project,
         lambda session: tools.grep(
@@ -122,22 +152,30 @@ def grep(
             head_limit=head_limit,
             offset=offset,
             include_all=include_all,
+            exclude=exclude_arg,
+            reference_kind=reference_kind,
+            exclude_reference_kind=exclude_reference_kind,
         ),
     )
 
 
 @app.command(name="glob")
 def glob_command(
-    glob_pattern: list[str] = typer.Argument(
-        ...,
-        help="Glob pattern(s); braces like *.{py,md} expand. Pass multiple patterns as args.",
-    ),
+    glob_pattern: list[str] = _GLOB_PATTERNS,
     target_directory: str | None = typer.Option(None, "--dir"),
     include_all: bool = typer.Option(False, "--include-all"),
+    exclude: list[str] | None = _EXCLUDE_FILTER,
     project: Path | None = _ROOT,
 ) -> None:
     """Find files matching a glob pattern."""
     pattern_arg: str | list[str] = glob_pattern[0] if len(glob_pattern) == 1 else glob_pattern
+    exclude_arg: str | list[str] | None
+    if exclude is None:
+        exclude_arg = None
+    elif len(exclude) == 1:
+        exclude_arg = exclude[0]
+    else:
+        exclude_arg = exclude
     _run(
         project,
         lambda session: tools.glob(
@@ -145,6 +183,7 @@ def glob_command(
             glob_pattern=pattern_arg,
             target_directory=target_directory,
             include_all=include_all,
+            exclude=exclude_arg,
         ),
     )
 
@@ -168,9 +207,27 @@ def read(
 
 
 @app.command()
-def write(path: str, contents: str, project: Path | None = _ROOT) -> None:
+def write(
+    path: str,
+    contents: str,
+    description: str | None = typer.Option(None, "--description", "-m"),
+    group_id: str | None = typer.Option(None, "--group-id"),
+    group_title: str | None = typer.Option(None, "--group-title"),
+    project: Path | None = _ROOT,
+) -> None:
     """Create or overwrite a file."""
-    _run(project, lambda session: tools.write(session.guard, path=path, contents=contents))
+    _run(
+        project,
+        lambda session: tools.write(
+            session.guard,
+            session.history,
+            path=path,
+            contents=contents,
+            description=description,
+            group_id=group_id,
+            group_title=group_title,
+        ),
+    )
 
 
 @app.command(name="str-replace")
@@ -186,6 +243,9 @@ def str_replace_command(
     expected_occurrences: int | None = typer.Option(None, "--expected-occurrences"),
     expected_sha256: str | None = typer.Option(None, "--expected-sha256"),
     dry_run: bool = typer.Option(False, "--dry-run"),
+    description: str | None = typer.Option(None, "--description", "-m"),
+    group_id: str | None = typer.Option(None, "--group-id"),
+    group_title: str | None = typer.Option(None, "--group-title"),
     project: Path | None = _ROOT,
 ) -> None:
     """Replace text, tolerating LF/CRLF differences by default."""
@@ -193,6 +253,7 @@ def str_replace_command(
         project,
         lambda session: tools.str_replace(
             session.guard,
+            session.history,
             path=path,
             old_string=old_string,
             new_string=new_string,
@@ -201,6 +262,9 @@ def str_replace_command(
             expected_occurrences=expected_occurrences,
             expected_sha256=expected_sha256,
             dry_run=dry_run,
+            description=description,
+            group_id=group_id,
+            group_title=group_title,
         ),
     )
 
@@ -209,6 +273,8 @@ def str_replace_command(
 def apply_patch_command(
     patch_file: Path,
     description: str | None = typer.Option(None, "--description", "-m"),
+    group_id: str | None = typer.Option(None, "--group-id"),
+    group_title: str | None = typer.Option(None, "--group-title"),
     dry_run: bool = typer.Option(False, "--dry-run"),
     project: Path | None = _ROOT,
 ) -> None:
@@ -221,6 +287,8 @@ def apply_patch_command(
             session.history,
             patch=patch,
             description=description,
+            group_id=group_id,
+            group_title=group_title,
             dry_run=dry_run,
         ),
     )
@@ -244,21 +312,37 @@ def rollback_patch_command(
 
 
 @app.command()
-def delete(path: str, project: Path | None = _ROOT) -> None:
+def delete(
+    path: str,
+    description: str | None = typer.Option(None, "--description", "-m"),
+    group_id: str | None = typer.Option(None, "--group-id"),
+    group_title: str | None = typer.Option(None, "--group-title"),
+    project: Path | None = _ROOT,
+) -> None:
     """Delete a file."""
-    _run(project, lambda session: tools.delete(session.guard, path=path))
+    _run(
+        project,
+        lambda session: tools.delete(
+            session.guard,
+            session.history,
+            path=path,
+            description=description,
+            group_id=group_id,
+            group_title=group_title,
+        ),
+    )
 
 
 @app.command()
 def review(
-    transaction_id: str = typer.Argument("latest"),
+    identifier: str = typer.Argument("latest"),
     no_open: bool = typer.Option(False, "--no-open"),
     project: Path | None = _ROOT,
 ) -> None:
     """Open a local patch review and keep it available until interrupted."""
     session = Session.create(project)
     try:
-        result = session.reviews.open(transaction_id, open_browser=not no_open)
+        result = session.reviews.open(identifier, open_browser=not no_open)
         typer.echo(json.dumps(result, ensure_ascii=False))
         while True:
             time.sleep(0.25)

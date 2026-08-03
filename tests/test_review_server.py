@@ -69,6 +69,8 @@ def test_review_server_serves_summary_file_and_security_headers(
     manager = ReviewManager(history)
     try:
         opener, page, _csrf = _open_review(manager, transaction_id)
+        group_id = f"legacy-group-{transaction_id}"
+        assert f'<meta name="group-id" content="{group_id}">' in page
         assert "Revisão de alterações" in page
         assert 'href="./review.css"' in page
         assert 'id="review-tree"' in page
@@ -78,16 +80,24 @@ def test_review_server_serves_summary_file_and_security_headers(
             .headers["Content-Type"]
             .startswith("text/css")
         )
-        response = opener.open(f"{manager.origin}/api/reviews/{transaction_id}")
+        response = opener.open(f"{manager.origin}/api/groups/{group_id}")
         summary = json.loads(response.read())
         assert summary["files_changed"] == 1
         assert summary["additions"] == 1
         assert summary["deletions"] == 1
-        assert summary["description"] == "Ajusta o arquivo de exemplo."
+        assert summary["group_title"] == "Ajusta o arquivo de exemplo."
+        assert summary["legacy"] is True
         assert response.headers["Cache-Control"] == "no-store"
         assert "default-src 'none'" in response.headers["Content-Security-Policy"]
 
-        file_response = opener.open(f"{manager.origin}/api/reviews/{transaction_id}/files/0")
+        patch_response = opener.open(
+            f"{manager.origin}/api/groups/{group_id}/patches/{transaction_id}"
+        )
+        patch_summary = json.loads(patch_response.read())
+        assert patch_summary["description"] == "Ajusta o arquivo de exemplo."
+        file_response = opener.open(
+            f"{manager.origin}/api/groups/{group_id}/patches/{transaction_id}/files/0"
+        )
         file_diff = json.loads(file_response.read())
         assert file_diff["path"] == "sample.txt"
         assert file_diff["rows"][0]["kind"] == "replacement"
@@ -124,19 +134,22 @@ def test_review_portal_lists_and_opens_transactions_from_previous_session(
         opener, page, _csrf = _open_review(second_manager, second_id)
         assert f'content="{second_id}"' in page
 
-        listing = json.loads(opener.open(f"{second_manager.origin}/api/reviews").read())
+        listing = json.loads(opener.open(f"{second_manager.origin}/api/groups").read())
         assert listing["total"] == 2
-        assert [item["transaction_id"] for item in listing["items"]] == [second_id, first_id]
-        assert listing["items"][0]["description"] == "Segunda alteração."
-        assert listing["items"][0]["files"] == [
-            {"index": 0, "path": "sample.txt", "operation": "modify"}
+        assert [item["group_id"] for item in listing["items"]] == [
+            f"legacy-group-{second_id}",
+            f"legacy-group-{first_id}",
         ]
+        assert listing["items"][0]["group_title"] == "Segunda alteração."
+        assert listing["items"][0]["patches"][0]["files"][0]["path"] == "sample.txt"
         assert listing["retained_limit"] == second_history.policy.keep_last_per_workspace
 
         previous = json.loads(
-            opener.open(f"{second_manager.origin}/api/reviews/{first_id}").read()
+            opener.open(
+                f"{second_manager.origin}/api/groups/legacy-group-{first_id}"
+            ).read()
         )
-        assert previous["transaction_id"] == first_id
+        assert previous["group_id"] == f"legacy-group-{first_id}"
         assert previous["files_changed"] == 1
     finally:
         second_manager.shutdown()
@@ -166,9 +179,10 @@ def test_review_complete_and_rollback_restore_snapshot(
     manager = ReviewManager(history)
     try:
         opener, _page, csrf = _open_review(manager, transaction_id)
+        group_id = f"legacy-group-{transaction_id}"
         headers = {"Origin": manager.origin, "X-CSRF-Token": csrf}
         complete = Request(
-            f"{manager.origin}/api/reviews/{transaction_id}/complete",
+            f"{manager.origin}/api/groups/{group_id}/patches/{transaction_id}/complete",
             data=b"{}",
             headers=headers,
             method="POST",
@@ -176,7 +190,7 @@ def test_review_complete_and_rollback_restore_snapshot(
         assert json.loads(opener.open(complete).read())["review_state"] == "reviewed"
 
         rollback = Request(
-            f"{manager.origin}/api/reviews/{transaction_id}/rollback",
+            f"{manager.origin}/api/groups/{group_id}/patches/{transaction_id}/rollback",
             data=b"{}",
             headers=headers,
             method="POST",
@@ -193,9 +207,10 @@ def test_review_rollback_rejects_later_file_changes(project: Path, tmp_path: Pat
     manager = ReviewManager(history)
     try:
         opener, _page, csrf = _open_review(manager, transaction_id)
+        group_id = f"legacy-group-{transaction_id}"
         (project / "sample.txt").write_bytes(b"later\n")
         rollback = Request(
-            f"{manager.origin}/api/reviews/{transaction_id}/rollback",
+            f"{manager.origin}/api/groups/{group_id}/rollback",
             data=b"{}",
             headers={"Origin": manager.origin, "X-CSRF-Token": csrf},
             method="POST",

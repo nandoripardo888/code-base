@@ -7,39 +7,30 @@ from dataclasses import asdict, dataclass
 
 @dataclass(frozen=True, slots=True)
 class ReviewFileSummary:
-    path: str
-    operation: str
-    additions: int
-    deletions: int
-    binary: bool
-
-    def to_dict(self) -> dict[str, object]:
-        return asdict(self)
-
-
-@dataclass(frozen=True, slots=True)
-class ReviewListFile:
     index: int
     path: str
     operation: str
+    additions: int | None
+    deletions: int | None
+    binary: bool | None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
 
 
 @dataclass(frozen=True, slots=True)
-class ReviewListItem:
+class PatchListItem:
     transaction_id: str
     source_tool: str
     status: str
     review_state: str
     created_at: str
     reviewed_at: str | None
-    description: str | None
+    description: str
     files_changed: int
     additions: int | None
     deletions: int | None
-    files: tuple[ReviewListFile, ...]
+    files: tuple[ReviewFileSummary, ...]
 
     def to_dict(self) -> dict[str, object]:
         value = asdict(self)
@@ -48,8 +39,30 @@ class ReviewListItem:
 
 
 @dataclass(frozen=True, slots=True)
-class ReviewList:
-    items: tuple[ReviewListItem, ...]
+class PatchGroupListItem:
+    group_id: str
+    group_title: str
+    created_at: str
+    updated_at: str
+    legacy: bool
+    patches_count: int
+    files_changed: int
+    additions: int | None
+    deletions: int | None
+    reviewed_count: int
+    pending_count: int
+    rolled_back_count: int
+    patches: tuple[PatchListItem, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        value = asdict(self)
+        value["patches"] = [item.to_dict() for item in self.patches]
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class PatchGroupList:
+    items: tuple[PatchGroupListItem, ...]
     total: int
     retained_limit: int
 
@@ -62,14 +75,37 @@ class ReviewList:
 
 
 @dataclass(frozen=True, slots=True)
-class ReviewSummary:
+class PatchGroupSummary:
+    group_id: str
+    group_title: str
+    created_at: str
+    updated_at: str
+    legacy: bool
+    patches_count: int
+    files_changed: int
+    additions: int
+    deletions: int
+    reviewed_count: int
+    pending_count: int
+    rolled_back_count: int
+    patches: tuple[PatchListItem, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        value = asdict(self)
+        value["patches"] = [item.to_dict() for item in self.patches]
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class PatchSummary:
+    group_id: str
     transaction_id: str
     source_tool: str
     status: str
     review_state: str
     created_at: str
     reviewed_at: str | None
-    description: str | None
+    description: str
     files_changed: int
     additions: int
     deletions: int

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from code_harness.paths import PathGuard
 from code_harness.tools.search_core import (
     MATCH_CAP,
@@ -17,7 +19,7 @@ __all__ = ["MATCH_CAP", "OUTPUT_MODES", "OutputMode", "grep"]
 def grep(
     guard: PathGuard,
     *,
-    pattern: str,
+    pattern: str | None = None,
     path: str | None = None,
     glob: GlobInput | None = None,
     file_type: str | None = None,
@@ -30,6 +32,9 @@ def grep(
     head_limit: int | None = None,
     offset: int | None = None,
     include_all: bool = False,
+    exclude: GlobInput | None = None,
+    reference_kind: str | Sequence[str] | None = None,
+    exclude_reference_kind: str | Sequence[str] | None = None,
 ) -> str:
     return grep_content(
         guard,
@@ -46,4 +51,7 @@ def grep(
         head_limit=head_limit,
         offset=offset,
         include_all=include_all,
+        exclude=exclude,
+        reference_kind=reference_kind,
+        exclude_reference_kind=exclude_reference_kind,
     )

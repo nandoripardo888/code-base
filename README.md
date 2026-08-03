@@ -1,7 +1,8 @@
 # code-harness
 
-A local MCP server with a compact Cursor-like tool set. Eleven tools, no index, no
-embeddings, no SQLite.
+A local MCP server with a compact Cursor-like tool set. Eleven tools, no index,
+embeddings, or SQLite. Optional on-demand parsers add syntactic references
+without changing the tool count.
 
 | Tool | Purpose |
 |------|---------|
@@ -27,6 +28,8 @@ outside the directory it was pointed at.
   and `Glob`
 - Git on `PATH`, needed by `ApplyPatch`; the target directory does **not** need
   to contain a `.git` repository
+- Optional: `pip install -e ".[parsers]"` for parsed references and richer
+  Python, Java, JavaScript, and TypeScript outlines
 
 ## Install
 
@@ -63,17 +66,21 @@ Each tool has a CLI command, mainly for trying things out by hand:
 
 ```bash
 code-harness grep "TODO" --glob "*.py"
+code-harness grep "TODO" --output-mode count --exclude "generated/**"
 code-harness grep "class " --output-mode files_with_matches
+code-harness grep Helper --output-mode references --glob "*.{py,java,ts}"
+code-harness grep Helper --output-mode references --reference-kind implementation
+code-harness grep --path src/main.py --output-mode symbols
 code-harness glob "**/*.ts"
 code-harness read src/main.py --offset 1 --limit 40
-code-harness write notes.txt "hello"
-code-harness str-replace notes.txt "hello" "hi" --expected-occurrences 1
+code-harness write notes.txt "hello" -m "Create notes" --group-title "Notes flow"
+code-harness str-replace notes.txt "hello" "hi" -m "Improve greeting" --group-id GROUP_ID --expected-occurrences 1
 code-harness apply-patch change.patch --dry-run
-code-harness apply-patch change.patch
+code-harness apply-patch change.patch -m "Apply requested update" --group-title "Patch topic"
 code-harness review latest
 code-harness review 20260730T161500-a84f --no-open
 code-harness rollback-patch 20260730T161500-a84f
-code-harness delete notes.txt
+code-harness delete notes.txt -m "Remove obsolete notes" --group-id GROUP_ID
 code-harness shell "pytest -q" --block-until-ms 5000 --shell auto
 ```
 
@@ -90,19 +97,21 @@ code-harness shell "pytest -q" --block-until-ms 5000 --shell auto
 7. saves byte-exact before/after snapshots;
 8. commits the real-file changes with atomic per-file replacements.
 
-A successful call returns a `transaction_id`. `RollbackPatch` restores the
-original bytes and refuses to overwrite later edits unless `force=true`.
+A successful mutation returns `group_id` and `transaction_id`. When `group_id`
+is omitted or blank, the server creates a new group and requires `group_title`.
+`description` is the required observation for that update. The first mutation
+in a group also requires `group_title`; later `Write`, `StrReplace`,
+`ApplyPatch`, and `Delete` calls reuse the returned `group_id` to append to that
+group. Omitting it again starts a new group. Dry runs do not create history and
+do not require group metadata.
 
-Successful MCP patch calls also return `review_url` at the top level. Clients
-should surface this URL immediately after applying a patch. `ApplyPatch` accepts
-an optional `description` of up to 500 characters; it is stored with the
-transaction and displayed in the portal. The one-use URL opens a local workspace
-review portal with the new transaction selected and all retained reviews grouped
-as a tree of revisions and changed files.
+Every successful mutation returns `review_url`. The one-use URL opens the local
+portal at the new update. Its tree is grouped as patch group → update → changed
+file, so follow-up patches and direct file edits remain under the same topic.
 
 The portal compares exact before/after snapshots side by side, supports light
-and dark themes, marks transactions reviewed, and can roll back a whole
-transaction after revalidating the current file hashes. It binds only to
+and dark themes, marks updates reviewed, rolls back one update, or rolls back an
+entire review in reverse order after simulating every snapshot. It binds only to
 `127.0.0.1`, loads no CDN resources, and stops with the owning session. Old URLs
 do not survive a session restart, but retained transactions remain available in
 the next portal opened for the same project.
@@ -126,8 +135,8 @@ History cleanup is internal and is not exposed as MCP tools. When the server
 starts, it:
 
 - recovers interrupted patch transactions;
-- removes transactions older than the retention policy while keeping recent
-  rollback points;
+- removes complete reviews older than the retention policy while keeping recent
+  rollback groups;
 - removes unreferenced snapshot objects;
 - removes abandoned temporary workspaces;
 - enforces per-workspace and global storage limits.
@@ -138,7 +147,7 @@ Defaults can be changed through environment variables:
 |----------|---------|
 | `CODE_HARNESS_HISTORY_DIR` | platform-local application state directory |
 | `CODE_HARNESS_HISTORY_RETENTION_DAYS` | `30` |
-| `CODE_HARNESS_HISTORY_KEEP_LAST` | `20` transactions per workspace |
+| `CODE_HARNESS_HISTORY_KEEP_LAST` | `20` reviews per workspace |
 | `CODE_HARNESS_HISTORY_MAX_WORKSPACE_MB` | `250` |
 | `CODE_HARNESS_HISTORY_MAX_GLOBAL_MB` | `1024` |
 | `CODE_HARNESS_HISTORY_STALE_TEMP_HOURS` | `24` |

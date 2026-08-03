@@ -11,7 +11,12 @@ from code_harness.paths import PathGuard
 from code_harness.symbols.extractors import ExtractorRegistry
 from code_harness.symbols.languages import build_default_registry
 from code_harness.symbols.models import Symbol
-from code_harness.tools.search_globs import GlobInput, normalize_glob_patterns, with_recursive_prefix
+from code_harness.tools.search_globs import (
+    GlobInput,
+    exclusion_glob_flags,
+    normalize_glob_patterns,
+    with_recursive_prefix,
+)
 from code_harness.tools.search_ignores import ignore_glob_flags
 
 MATCH_CAP = 1_000
@@ -31,6 +36,7 @@ class SymbolStore(Protocol):
         file_type: str | None = None,
         case_insensitive: bool = False,
         include_all: bool = False,
+        exclude: GlobInput | None = None,
         head_limit: int | None = None,
         offset: int = 0,
     ) -> list[Symbol]: ...
@@ -67,6 +73,7 @@ class OnDemandSymbolStore:
         file_type: str | None = None,
         case_insensitive: bool = False,
         include_all: bool = False,
+        exclude: GlobInput | None = None,
         head_limit: int | None = None,
         offset: int = 0,
     ) -> list[Symbol]:
@@ -80,6 +87,7 @@ class OnDemandSymbolStore:
             glob=glob,
             file_type=file_type,
             include_all=include_all,
+            exclude=exclude,
         ):
             for symbol in self._extract_file(absolute, relative):
                 if not _name_matches(symbol.name, name, case_insensitive=case_insensitive):
@@ -107,6 +115,7 @@ class OnDemandSymbolStore:
         glob: GlobInput | None,
         file_type: str | None,
         include_all: bool,
+        exclude: GlobInput | None,
     ) -> list[tuple[Path, str]]:
         target = self._guard.resolve(path or ".", kind="any")
         if target.is_file():
@@ -118,6 +127,7 @@ class OnDemandSymbolStore:
             "--glob",
             "!.git/",
             *ignore_glob_flags(self._guard.root, include_all=include_all),
+            *exclusion_glob_flags(exclude),
             "--files",
         ]
         if glob is not None:
@@ -125,6 +135,7 @@ class OnDemandSymbolStore:
                 arguments.extend(["--glob", with_recursive_prefix(pattern)])
         if file_type:
             arguments.extend(["--type", file_type])
+        arguments.extend(exclusion_glob_flags(exclude))
         arguments.extend(["--", relative_dir if relative_dir != "." else "."])
         output = ripgrep.run(arguments, cwd=self._guard.root)
 

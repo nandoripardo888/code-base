@@ -8,7 +8,8 @@ flowchart TB
     CLI[cli.py] --> Session
     MCP[mcp/server.py] --> Session
     Session[session.py<br/>PathGuard + JobRegistry + History + Reviews] --> Tools
-    Session --> Review[review/<br/>snapshot diff + loopback HTTP]
+    Session --> Review[review/<br/>grouped snapshots + loopback HTTP]
+    Session --> History[history.py<br/>reviews + immutable transactions]
     subgraph Tools [tools/]
         Shell
         GetJobStatus
@@ -27,6 +28,7 @@ flowchart TB
     Core --> RG[ripgrep.py]
     Grep --> Symbols[symbols/]
     Symbols --> RG
+    Symbols --> Parsers[optional Tree-sitter parsers]
 ```
 
 | Module | Responsibility |
@@ -34,13 +36,14 @@ flowchart TB
 | `paths.py` | Resolves paths and rejects anything outside the allowed roots |
 | `ripgrep.py` | Finds the `rg` executable and runs it |
 | `errors.py` | The handful of typed failures, each with a stable `code` |
-| `session.py` | Binds a project root to its path guard and shell jobs |
+| `session.py` | Binds the project to its guard, jobs, history, and review portal |
+| `history.py` | Persists explicit patch groups and immutable transactions, plus snapshots, retention, and rollback |
 | `tools/` | One module per tool; Grep/Glob share `search_core.py` |
 | `tools/search_core.py` | Shared Grep/Glob internals (not an MCP tool) |
 | `tools/search_ignores.py` | Source-first ignore defaults + `.code-harnessignore` |
 | `tools/search_globs.py` | Brace expansion and multi-pattern normalization |
 | `tools/search_hints.py` | Generic suggestions when Grep/Glob find nothing |
-| `symbols/` | Language extractors + `SymbolStore` for `Grep` `output_mode=symbols` |
+| `symbols/` | Language extractors, optional parsers, symbols, and syntactic references |
 | `shell/environment.py` | Shell discovery, argv construction, syntax diagnostics |
 | `shell/background.py` | Job registry, process lifecycle, bounded log tails |
 | `mcp/server.py` | FastMCP registration over stdio |
@@ -49,11 +52,13 @@ flowchart TB
 There is no index or database in v1. `Grep` and `Glob` remain the MCP surface.
 Content search shells out to ripgrep via `search_core`. `output_mode=symbols`
 uses on-demand extractors behind a `SymbolStore` facade (replaceable by an
-index later). See [search-improvements.md](search-improvements.md).
+index later). `output_mode=references` uses ripgrep to preselect candidates and
+optional in-process Tree-sitter parsers to classify identifiers; it creates no
+persistent index. See [search-improvements.md](search-improvements.md).
 
 ## Why paths are confined
 
-`Write`, `StrReplace`, and `Delete` mutate the filesystem, so `PathGuard`
+`Write`, `StrReplace`, `ApplyPatch`, and `Delete` mutate the filesystem, so `PathGuard`
 resolves each path and requires the result to sit under an allowed root. Shell
 job logs live in a scratch directory outside the project and are never exposed
 as readable paths; agents follow them only through `GetJobStatus`.

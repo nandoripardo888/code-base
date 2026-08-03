@@ -171,15 +171,31 @@ Descriptions das tools devem mencionar defaults (source-first) e novos modos, se
 
 ---
 
+## Fase 7 — Triagem, exclusões explícitas e referências estruturais
+
+**Status:** concluída
+
+- `pattern` opcional apenas para outline de um arquivo; demais modos validam a consulta.
+- `exclude` explícito e repetível em Grep/Glob, sem ampliar heurísticas automáticas.
+- `count` com totais globais, ranking por arquivo e paginação de arquivos.
+- `output_mode=references` com parsers opcionais para Python, Java e JS/TS;
+  busca sob demanda, sem índice e sem fallback lexical silencioso.
+
+**Critério de pronto:** um agente pode fazer `count → content/Read` e
+`symbols → references` com respostas limitadas, filtros previsíveis e contrato
+MCP coerente.
+
+---
+
 ## Ordem e dependências
 
-1 → 2 → 3 → 4 → 5 → 6
+1 → 2 → 3 → 4 → 5 → 6 → 7
 
 Fases 3 e 4 são independentes entre si após 2; a ordem prioriza legibilidade (3) antes de braces (4). Fase 5 depois do formato novo. Fase 6 por último.
 
 ## Fora de escopo
 
 - Renomear/substituir Grep e Glob por Search na API MCP
-- LSP / go-to-definition preciso / índice SQLite na v1
+- LSP / resolução semântica precisa / call hierarchy / índice SQLite
 - Novas tools MCP
 - Heurísticas acopladas a um produto/framework específico

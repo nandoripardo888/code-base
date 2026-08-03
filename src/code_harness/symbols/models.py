@@ -25,3 +25,26 @@ class Symbol:
     line: int
     language: str
     container: str | None = None
+
+
+ReferenceKind = Literal[
+    "definition",
+    "implementation",
+    "instantiation",
+    "call",
+    "type_use",
+    "import",
+    "usage",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class Reference:
+    name: str
+    kind: ReferenceKind
+    path: str
+    line: int
+    column: int
+    language: str
+    excerpt: str
+    container: str | None = None

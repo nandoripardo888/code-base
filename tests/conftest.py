@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import shutil
 from collections.abc import Iterator
 from pathlib import Path
@@ -17,6 +18,19 @@ requires_ripgrep = pytest.mark.skipif(
     reason="ripgrep is not installed",
 )
 requires_git = pytest.mark.skipif(shutil.which("git") is None, reason="Git is not installed")
+requires_parsers = pytest.mark.skipif(
+    any(
+        importlib.util.find_spec(name) is None
+        for name in (
+            "tree_sitter",
+            "tree_sitter_python",
+            "tree_sitter_java",
+            "tree_sitter_javascript",
+            "tree_sitter_typescript",
+        )
+    ),
+    reason="optional structural parsers are not installed",
+)
 
 
 @pytest.fixture(autouse=True)

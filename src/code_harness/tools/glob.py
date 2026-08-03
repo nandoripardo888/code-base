@@ -13,10 +13,12 @@ def glob(
     glob_pattern: GlobInput,
     target_directory: str | None = None,
     include_all: bool = False,
+    exclude: GlobInput | None = None,
 ) -> str:
     return list_files(
         guard,
         glob_pattern=glob_pattern,
         target_directory=target_directory,
         include_all=include_all,
+        exclude=exclude,
     )

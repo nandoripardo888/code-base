@@ -7,7 +7,12 @@ from typing import Any
 
 import pytest
 
-from code_harness.errors import PatchConflictError, PatchInvalidError, PatchRollbackConflictError
+from code_harness.errors import (
+    InvalidArgumentError,
+    PatchConflictError,
+    PatchInvalidError,
+    PatchRollbackConflictError,
+)
 from code_harness.session import Session
 from code_harness.tools import apply_patch, rollback_patch
 from tests.conftest import requires_git
@@ -21,13 +26,15 @@ MODIFY_PATCH = """diff --git a/src/hello.py b/src/hello.py
 +    return 'terra'
 """
 
+TRACKING = {"description": "Atualiza arquivo de teste.", "group_title": "Grupo de teste"}
+
 
 @requires_git
 def test_apply_patch_without_git_repository(project: Path) -> None:
     assert not (project / ".git").exists()
     session = Session.create(project)
     try:
-        result = apply_patch(session.guard, session.history, patch=MODIFY_PATCH)
+        result = apply_patch(session.guard, session.history, patch=MODIFY_PATCH, **TRACKING)
     finally:
         session.shutdown()
 
@@ -63,6 +70,7 @@ def test_apply_patch_normalizes_and_persists_optional_description(project: Path)
             session.history,
             patch=MODIFY_PATCH,
             description="  Ajusta   a saudação\npara o usuário.  ",
+            group_title="Saudação",
         )
         manifest = session.history.load(str(result["transaction_id"]))
     finally:
@@ -75,7 +83,7 @@ def test_apply_patch_normalizes_and_persists_optional_description(project: Path)
 def test_apply_patch_rejects_description_over_limit(project: Path) -> None:
     session = Session.create(project)
     try:
-        with pytest.raises(PatchInvalidError, match="at most 500 characters"):
+        with pytest.raises(InvalidArgumentError, match="at most 500 characters"):
             apply_patch(
                 session.guard,
                 session.history,
@@ -129,7 +137,7 @@ def test_apply_patch_preserves_cp1252_and_crlf(project: Path) -> None:
 """
     session = Session.create(project)
     try:
-        apply_patch(session.guard, session.history, patch=patch)
+        apply_patch(session.guard, session.history, patch=patch, **TRACKING)
     finally:
         session.shutdown()
 
@@ -157,7 +165,7 @@ deleted file mode 100644
 """
     session = Session.create(project)
     try:
-        result = apply_patch(session.guard, session.history, patch=patch)
+        result = apply_patch(session.guard, session.history, patch=patch, **TRACKING)
     finally:
         session.shutdown()
 
@@ -171,7 +179,7 @@ def test_rollback_patch_restores_byte_snapshots(project: Path) -> None:
     original = (project / "src" / "hello.py").read_bytes()
     session = Session.create(project)
     try:
-        result = apply_patch(session.guard, session.history, patch=MODIFY_PATCH)
+        result = apply_patch(session.guard, session.history, patch=MODIFY_PATCH, **TRACKING)
         transaction_id = str(result["transaction_id"])
         rollback = rollback_patch(session.history, transaction_id=transaction_id)
     finally:
@@ -185,7 +193,7 @@ def test_rollback_patch_restores_byte_snapshots(project: Path) -> None:
 def test_rollback_detects_changes_after_patch(project: Path) -> None:
     session = Session.create(project)
     try:
-        result = apply_patch(session.guard, session.history, patch=MODIFY_PATCH)
+        result = apply_patch(session.guard, session.history, patch=MODIFY_PATCH, **TRACKING)
         transaction_id = str(result["transaction_id"])
         (project / "src" / "hello.py").write_text("changed again\n", encoding="utf-8")
         with pytest.raises(PatchRollbackConflictError):
@@ -204,6 +212,7 @@ def test_apply_patch_checks_expected_hash(project: Path) -> None:
                 session.history,
                 patch=MODIFY_PATCH,
                 expected_hashes={"src/hello.py": "0" * 64},
+                **TRACKING,
             )
     finally:
         session.shutdown()
@@ -225,6 +234,6 @@ def test_apply_patch_rejects_unsafe_paths(project: Path) -> None:
     session = Session.create(project)
     try:
         with pytest.raises(PatchInvalidError, match="unsafe path"):
-            apply_patch(session.guard, session.history, patch=patch)
+            apply_patch(session.guard, session.history, patch=patch, **TRACKING)
     finally:
         session.shutdown()

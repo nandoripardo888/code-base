@@ -21,6 +21,7 @@ def grep_symbols(
     head_limit: int | None = None,
     offset: int | None = None,
     include_all: bool = False,
+    exclude: GlobInput | None = None,
     store: SymbolStore | None = None,
 ) -> str:
     symbol_store = store or OnDemandSymbolStore(guard)
@@ -44,6 +45,7 @@ def grep_symbols(
             file_type=file_type,
             case_insensitive=case_insensitive,
             include_all=include_all,
+            exclude=exclude,
             head_limit=head_limit,
             offset=offset or 0,
         )

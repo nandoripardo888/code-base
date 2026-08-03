@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+from typing import TYPE_CHECKING
 
-from code_harness.encoding import decode_file, normalize_newlines, write_text
+from code_harness.encoding import decode_file, encode_text, normalize_newlines, write_text
 from code_harness.errors import (
     AmbiguousReplacementError,
     InvalidArgumentError,
@@ -12,11 +13,21 @@ from code_harness.errors import (
     StringNotFoundError,
     UnexpectedOccurrencesError,
 )
+from code_harness.history import HistoryManager
 from code_harness.paths import PathGuard
+from code_harness.tools.change_tracking import (
+    attach_review,
+    normalize_description,
+    record_single_file_change,
+)
+
+if TYPE_CHECKING:
+    from code_harness.review import ReviewManager
 
 
 def str_replace(
     guard: PathGuard,
+    history: HistoryManager | None = None,
     *,
     path: str,
     old_string: str,
@@ -26,7 +37,11 @@ def str_replace(
     expected_occurrences: int | None = None,
     expected_sha256: str | None = None,
     dry_run: bool = False,
-) -> str:
+    description: str | None = None,
+    group_id: str | None = None,
+    group_title: str | None = None,
+    reviews: ReviewManager | None = None,
+) -> str | dict[str, object]:
     if old_string == new_string:
         raise InvalidArgumentError("new_string must differ from old_string.")
     if not old_string:
@@ -63,6 +78,39 @@ def str_replace(
     updated = original
     for start, end in reversed(selected):
         updated = updated[:start] + replacement + updated[end:]
+
+    if history is not None and dry_run:
+        normalized_description = normalize_description(description, required=False)
+        result: dict[str, object] = {
+            "status": "validated",
+            "dry_run": True,
+            "source_tool": "str_replace",
+            "files_changed": 1,
+            "files": [{"path": relative, "operation": "modify"}],
+        }
+        if normalized_description is not None:
+            result["description"] = normalized_description
+        return result
+
+    if history is not None:
+        normalized_description = normalize_description(description, required=True)
+        assert normalized_description is not None
+        after = encode_text(updated, decoded.encoding, has_bom=decoded.has_bom)
+        result = record_single_file_change(
+            history,
+            resolved=resolved,
+            relative=relative,
+            operation="modify",
+            before=raw,
+            after=after,
+            decoded=decoded,
+            source_tool="str_replace",
+            description=normalized_description,
+            group_id=group_id,
+            group_title=group_title,
+        )
+        result["occurrences"] = len(selected)
+        return attach_review(result, reviews)
 
     if not dry_run:
         write_text(

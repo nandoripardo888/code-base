@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -49,17 +50,23 @@ def test_tool_schemas_match_the_cursor_contract(session: Session) -> None:
     }
     assert schemas["GetJobStatus"]["required"] == ["job_id"]
     assert set(schemas["GetJobStatus"]["properties"]) == {"job_id", "wait_ms", "tail_lines"}
-    assert schemas["Grep"]["required"] == ["pattern"]
+    assert "required" not in schemas["Grep"] or "pattern" not in schemas["Grep"]["required"]
     assert "type" in schemas["Grep"]["properties"]
+    assert "exclude" in schemas["Grep"]["properties"]
+    assert "reference_kind" in schemas["Grep"]["properties"]
+    assert "exclude_reference_kind" in schemas["Grep"]["properties"]
     assert schemas["Grep"]["properties"]["output_mode"]["enum"] == [
         "content",
         "files_with_matches",
         "count",
         "symbols",
+        "references",
     ]
     assert schemas["Glob"]["required"] == ["glob_pattern"]
+    assert "exclude" in schemas["Glob"]["properties"]
     assert schemas["Read"]["required"] == ["path"]
     assert set(schemas["Write"]["required"]) == {"path", "contents"}
+    assert {"description", "group_id", "group_title"} <= set(schemas["Write"]["properties"])
     assert set(schemas["StrReplace"]["required"]) == {"path", "old_string", "new_string"}
     assert set(schemas["StrReplace"]["properties"]) == {
         "path",
@@ -70,11 +77,16 @@ def test_tool_schemas_match_the_cursor_contract(session: Session) -> None:
         "expected_occurrences",
         "expected_sha256",
         "dry_run",
+        "description",
+        "group_id",
+        "group_title",
     }
     assert schemas["ApplyPatch"]["required"] == ["patch"]
     assert set(schemas["ApplyPatch"]["properties"]) == {
         "patch",
         "description",
+        "group_id",
+        "group_title",
         "dry_run",
         "expected_hashes",
     }
@@ -121,17 +133,52 @@ def test_cli_read(project: Path) -> None:
     assert "1|def hello():" in result.stdout
 
 
+def test_cli_symbols_outline_omits_pattern(project: Path) -> None:
+    result = runner.invoke(
+        app,
+        ["grep", "--path", "src/hello.py", "--output-mode", "symbols", "--project", str(project)],
+    )
+    assert result.exit_code == 0
+    assert "function hello" in result.stdout
+
+
 def test_cli_reports_errors(project: Path) -> None:
     result = runner.invoke(app, ["read", "missing.txt", "--project", str(project)])
     assert result.exit_code == 1
 
 
 def test_cli_write_and_delete(project: Path) -> None:
-    written = runner.invoke(app, ["write", "tmp.txt", "body", "--project", str(project)])
+    written = runner.invoke(
+        app,
+        [
+            "write",
+            "tmp.txt",
+            "body",
+            "--description",
+            "Cria temporário",
+            "--group-title",
+            "Teste CLI",
+            "--project",
+            str(project),
+        ],
+    )
     assert written.exit_code == 0
     assert (project / "tmp.txt").exists()
 
-    removed = runner.invoke(app, ["delete", "tmp.txt", "--project", str(project)])
+    group_id = json.loads(written.stdout)["group_id"]
+    removed = runner.invoke(
+        app,
+        [
+            "delete",
+            "tmp.txt",
+            "--description",
+            "Remove temporário",
+            "--group-id",
+            group_id,
+            "--project",
+            str(project),
+        ],
+    )
     assert removed.exit_code == 0
     assert not (project / "tmp.txt").exists()
 
@@ -139,7 +186,18 @@ def test_cli_write_and_delete(project: Path) -> None:
 def test_cli_str_replace(project: Path) -> None:
     result = runner.invoke(
         app,
-        ["str-replace", "src/hello.py", "world", "terra", "--project", str(project)],
+        [
+            "str-replace",
+            "src/hello.py",
+            "world",
+            "terra",
+            "--description",
+            "Troca saudação",
+            "--group-title",
+            "Teste CLI",
+            "--project",
+            str(project),
+        ],
     )
     assert result.exit_code == 0
     assert "terra" in (project / "src" / "hello.py").read_text(encoding="utf-8")
@@ -161,11 +219,18 @@ def test_cli_apply_and_rollback_patch(project: Path, tmp_path: Path) -> None:
     )
     applied = runner.invoke(
         app,
-        ["apply-patch", str(patch_file), "--project", str(project)],
+        [
+            "apply-patch",
+            str(patch_file),
+            "--description",
+            "Aplica saudação",
+            "--group-title",
+            "Teste CLI",
+            "--project",
+            str(project),
+        ],
     )
     assert applied.exit_code == 0
-    import json
-
     transaction_id = json.loads(applied.stdout)["transaction_id"]
     rolled_back = runner.invoke(
         app,

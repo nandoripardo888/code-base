@@ -20,6 +20,11 @@ def test_grep_symbols_outlines_python_file(guard: PathGuard) -> None:
     assert "function hello" in result
 
 
+def test_grep_symbols_outline_allows_omitted_pattern(guard: PathGuard) -> None:
+    result = grep(guard, path="src/hello.py", output_mode="symbols")
+    assert "function hello" in result
+
+
 def test_grep_symbols_finds_by_name(guard: PathGuard) -> None:
     result = grep(guard, pattern="hello", output_mode="symbols")
     assert "function hello" in result
@@ -35,6 +40,11 @@ def test_grep_symbols_empty_has_hints(guard: PathGuard) -> None:
     result = grep(guard, pattern="DefinitelyMissingSymbolXYZ", output_mode="symbols")
     assert result.startswith("No symbols found.")
     assert "Suggestions:" in result
+
+
+def test_grep_symbols_respects_explicit_exclude(guard: PathGuard) -> None:
+    result = grep(guard, pattern="hello", output_mode="symbols", exclude="src/**")
+    assert result.startswith("No symbols found.")
 
 
 def test_render_symbols_groups_by_file() -> None:

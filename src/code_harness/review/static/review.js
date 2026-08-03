@@ -1,13 +1,17 @@
 (() => {
   "use strict";
 
+  const initialGroupId = document.querySelector('meta[name="group-id"]').content;
   const initialTransactionId = document.querySelector('meta[name="review-transaction"]').content;
   const csrfToken = document.querySelector('meta[name="review-csrf"]').content;
   const state = {
+    groupId: initialGroupId,
     transactionId: initialTransactionId,
-    summary: null,
-    reviews: [],
-    expandedReviews: new Set([initialTransactionId]),
+    reviewSummary: null,
+    patchSummary: null,
+    groups: [],
+    expandedGroups: new Set([initialGroupId]),
+    expandedPatches: new Set([initialTransactionId]),
     selectedIndex: 0,
     view: window.matchMedia("(max-width: 900px)").matches ? "unified" : "split",
     fileDiff: null,
@@ -23,6 +27,8 @@
     additions: document.querySelector("#total-additions"),
     deletions: document.querySelector("#total-deletions"),
     description: document.querySelector("#review-description"),
+    patchLabel: document.querySelector("#patch-label"),
+    patchProgress: document.querySelector("#patch-progress"),
     reviewCount: document.querySelector("#review-count"),
     reviewTree: document.querySelector("#review-tree"),
     selectedPath: document.querySelector("#selected-path"),
@@ -32,8 +38,12 @@
     changePosition: document.querySelector("#change-position"),
     complete: document.querySelector("#complete-button"),
     rollback: document.querySelector("#rollback-button"),
+    rollbackReview: document.querySelector("#rollback-review-button"),
     rollbackDialog: document.querySelector("#rollback-dialog"),
     confirmRollback: document.querySelector("#confirm-rollback"),
+    rollbackReviewDialog: document.querySelector("#rollback-review-dialog"),
+    confirmReviewRollback: document.querySelector("#confirm-review-rollback"),
+    rollbackReviewDetail: document.querySelector("#rollback-review-detail"),
     themeToggle: document.querySelector("#theme-toggle"),
     toastRegion: document.querySelector("#toast-region"),
     reviewRetention: document.querySelector("#review-retention"),
@@ -82,28 +92,35 @@
     return payload;
   }
 
-  async function loadReviews() {
-    const payload = await request("/api/reviews?limit=200");
-    state.reviews = payload.items;
+  async function loadGroups() {
+    const payload = await request("/api/groups?limit=200");
+    state.groups = payload.items;
     elements.reviewCount.textContent = payload.total;
-    elements.reviewRetention.textContent = `${payload.total} ${payload.total === 1 ? "revisão retida" : "revisões retidas"}`;
-    if (state.reviews.length && !state.reviews.some((item) => item.transaction_id === state.transactionId)) {
-      state.transactionId = state.reviews[0].transaction_id;
+    elements.reviewRetention.textContent = `${payload.total} ${payload.total === 1 ? "grupo retido" : "grupos retidos"}`;
+    if (state.groups.length && !state.groups.some((item) => item.group_id === state.groupId)) {
+      state.groupId = state.groups[0].group_id;
+      state.transactionId = state.groups[0].patches.at(-1).transaction_id;
     }
-    state.expandedReviews.add(state.transactionId);
+    state.expandedGroups.add(state.groupId);
     renderReviewTree();
   }
 
   function reviewStatus(review) {
-    if (review.status === "rolled_back") return "desfeita";
-    return review.review_state === "reviewed" ? "revisada" : "não revisada";
+    if (review.rolled_back_count === review.patches_count) return "desfeito";
+    if (review.pending_count) return "pendente";
+    return "revisado";
+  }
+
+  function patchStatus(patch) {
+    if (patch.status === "rolled_back") return "desfeita";
+    return patch.review_state === "reviewed" ? "revisada" : "pendente";
   }
 
   function renderReviewTree() {
     elements.reviewTree.replaceChildren();
-    for (const review of state.reviews) {
-      const expanded = state.expandedReviews.has(review.transaction_id);
-      const activeReview = review.transaction_id === state.transactionId;
+    for (const review of state.groups) {
+      const expanded = state.expandedGroups.has(review.group_id);
+      const activeReview = review.group_id === state.groupId;
       const container = document.createElement("div");
       container.className = `review-tree-item${activeReview ? " active-review" : ""}`;
 
@@ -118,84 +135,126 @@
       const info = span("review-node-info");
       const title = span(
         "review-node-title",
-        review.description || `Revisão de ${formatDate(review.created_at)}`,
+        review.group_title,
       );
       const stats = review.additions === null || review.deletions === null
         ? ""
         : ` · +${review.additions}/−${review.deletions}`;
       const meta = span(
         "review-node-meta",
-        `${formatDate(review.created_at)} · ${review.files_changed} ${review.files_changed === 1 ? "arquivo" : "arquivos"}${stats}`,
+        `${review.patches_count} ${review.patches_count === 1 ? "atualização" : "atualizações"} · ${review.files_changed} ${review.files_changed === 1 ? "arquivo" : "arquivos"}${stats}`,
       );
       const status = span(`review-node-status ${reviewStatus(review).replaceAll(" ", "-")}`, reviewStatus(review));
       info.append(title, meta, status);
       reviewButton.append(info);
       reviewButton.addEventListener("click", () => {
         if (activeReview) {
-          if (expanded) state.expandedReviews.delete(review.transaction_id);
-          else state.expandedReviews.add(review.transaction_id);
+          if (expanded) state.expandedGroups.delete(review.group_id);
+          else state.expandedGroups.add(review.group_id);
           renderReviewTree();
           return;
         }
-        state.expandedReviews.add(review.transaction_id);
-        selectReview(review.transaction_id).catch((error) => toast(error.message, true));
+        state.expandedGroups.add(review.group_id);
+        selectGroup(review.group_id).catch((error) => toast(error.message, true));
       });
       container.append(reviewButton);
 
-      const fileGroup = document.createElement("div");
-      fileGroup.className = "review-file-group";
-      fileGroup.setAttribute("role", "group");
-      fileGroup.hidden = !expanded;
-      for (const file of review.files) {
-        const fileButton = document.createElement("button");
-        fileButton.type = "button";
-        fileButton.className = `tree-file${activeReview && file.index === state.selectedIndex ? " active" : ""}`;
-        fileButton.setAttribute("role", "treeitem");
-        fileButton.setAttribute("aria-selected", String(activeReview && file.index === state.selectedIndex));
-        const parts = file.path.split("/");
-        const filename = parts.pop();
-        const directory = parts.length ? parts.join("/") : "raiz do projeto";
-        const icon = span("file-icon", extensionLabel(filename));
-        icon.setAttribute("aria-hidden", "true");
-        const fileInfo = span("file-info");
-        fileInfo.append(
-          span("file-name", filename),
-          span("file-path", directory),
-          span("operation-label", operationLabels[file.operation] || file.operation),
+      const patchGroup = document.createElement("div");
+      patchGroup.className = "review-file-group patch-group";
+      patchGroup.setAttribute("role", "group");
+      patchGroup.hidden = !expanded;
+      for (const patch of review.patches) {
+        const patchExpanded = state.expandedPatches.has(patch.transaction_id);
+        const activePatch = activeReview && patch.transaction_id === state.transactionId;
+        const patchContainer = document.createElement("div");
+        patchContainer.className = `patch-tree-item${activePatch ? " active-patch" : ""}`;
+        const patchButton = document.createElement("button");
+        patchButton.type = "button";
+        patchButton.className = "patch-node";
+        patchButton.setAttribute("role", "treeitem");
+        patchButton.setAttribute("aria-expanded", String(patchExpanded));
+        patchButton.setAttribute("aria-selected", String(activePatch));
+        patchButton.append(span("tree-chevron", patchExpanded ? "⌄" : "›"));
+        const patchInfo = span("review-node-info");
+        patchInfo.append(
+          span("patch-node-title", patch.description),
+          span("patch-node-meta", `${formatSource(patch.source_tool)} · ${formatDate(patch.created_at)}`),
+          span(`patch-node-status ${patchStatus(patch)}`, patchStatus(patch)),
         );
-        fileButton.append(icon, fileInfo);
-        fileButton.title = file.path;
-        fileButton.addEventListener("click", () => {
-          state.expandedReviews.add(review.transaction_id);
-          if (activeReview) selectFile(file.index).catch((error) => toast(error.message, true));
-          else selectReview(review.transaction_id, file.index).catch((error) => toast(error.message, true));
+        patchButton.append(patchInfo);
+        patchButton.addEventListener("click", () => {
+          if (activePatch) {
+            if (patchExpanded) state.expandedPatches.delete(patch.transaction_id);
+            else state.expandedPatches.add(patch.transaction_id);
+            renderReviewTree();
+          } else {
+            state.expandedPatches.add(patch.transaction_id);
+            selectPatch(review.group_id, patch.transaction_id).catch((error) => toast(error.message, true));
+          }
         });
-        fileGroup.append(fileButton);
+        patchContainer.append(patchButton);
+        const files = document.createElement("div");
+        files.className = "patch-file-group";
+        files.setAttribute("role", "group");
+        files.hidden = !patchExpanded;
+        for (const file of patch.files) {
+          const fileButton = document.createElement("button");
+          fileButton.type = "button";
+          const activeFile = activePatch && file.index === state.selectedIndex;
+          fileButton.className = `tree-file${activeFile ? " active" : ""}`;
+          fileButton.setAttribute("role", "treeitem");
+          fileButton.setAttribute("aria-selected", String(activeFile));
+          const parts = file.path.split("/");
+          const filename = parts.pop();
+          const info = span("file-info");
+          info.append(span("file-name", filename), span("file-path", parts.join("/") || "raiz do projeto"), span("operation-label", operationLabels[file.operation] || file.operation));
+          fileButton.append(span("file-icon", extensionLabel(filename)), info);
+          fileButton.title = file.path;
+          fileButton.addEventListener("click", () => {
+            selectPatch(review.group_id, patch.transaction_id, file.index).catch((error) => toast(error.message, true));
+          });
+          files.append(fileButton);
+        }
+        patchContainer.append(files);
+        patchGroup.append(patchContainer);
       }
-      container.append(fileGroup);
+      container.append(patchGroup);
       elements.reviewTree.append(container);
     }
   }
 
-  async function selectReview(transactionId, fileIndex = 0) {
+  async function selectGroup(groupId) {
+    const group = state.groups.find((item) => item.group_id === groupId);
+    if (!group?.patches.length) return;
+    return selectPatch(groupId, group.patches.at(-1).transaction_id, 0);
+  }
+
+  async function selectPatch(groupId, transactionId, fileIndex = 0) {
+    state.groupId = groupId;
     state.transactionId = transactionId;
     state.selectedIndex = fileIndex;
     state.fileDiff = null;
-    state.expandedReviews.add(transactionId);
+    state.expandedGroups.add(groupId);
+    state.expandedPatches.add(transactionId);
     const url = new URL(window.location.href);
-    url.searchParams.set("review", transactionId);
+    url.searchParams.set("group", groupId);
+    url.searchParams.set("patch", transactionId);
     url.searchParams.set("file", String(fileIndex));
     window.history.replaceState({}, "", url);
     await loadSummary(fileIndex);
   }
 
   async function loadSummary(fileIndex = 0) {
-    const summary = await request(`/api/reviews/${encodeURIComponent(state.transactionId)}`);
-    state.summary = summary;
+    const [reviewSummary, patchSummary] = await Promise.all([
+      request(`/api/groups/${encodeURIComponent(state.groupId)}`),
+      request(`/api/groups/${encodeURIComponent(state.groupId)}/patches/${encodeURIComponent(state.transactionId)}`),
+    ]);
+    state.reviewSummary = reviewSummary;
+    state.patchSummary = patchSummary;
     renderSummary();
     renderReviewTree();
-    if (summary.files.length) {
-      const selected = Math.min(Math.max(fileIndex, 0), summary.files.length - 1);
+    if (patchSummary.files.length) {
+      const selected = Math.min(Math.max(fileIndex, 0), patchSummary.files.length - 1);
       await selectFile(selected);
     } else {
       renderEmpty("Nenhum arquivo nesta revisão.");
@@ -203,23 +262,31 @@
   }
 
   function renderSummary() {
-    const summary = state.summary;
-    elements.title.textContent = `Editou ${summary.files_changed} ${summary.files_changed === 1 ? "arquivo" : "arquivos"}`;
-    elements.source.textContent = formatSource(summary.source_tool);
-    elements.created.textContent = formatDate(summary.created_at);
-    elements.created.dateTime = summary.created_at;
-    elements.additions.textContent = `+${summary.additions}`;
-    elements.deletions.textContent = `−${summary.deletions}`;
-    elements.description.textContent = summary.description || "";
-    elements.description.hidden = !summary.description;
+    const review = state.reviewSummary;
+    const patch = state.patchSummary;
+    elements.title.textContent = review.group_title;
+    elements.patchLabel.textContent = patch.description;
+    elements.source.textContent = formatSource(patch.source_tool);
+    elements.created.textContent = formatDate(patch.created_at);
+    elements.created.dateTime = patch.created_at;
+    elements.patchProgress.textContent = `${review.reviewed_count}/${review.patches_count} revisadas`;
+    elements.additions.textContent = `+${patch.additions}`;
+    elements.deletions.textContent = `−${patch.deletions}`;
+    elements.description.textContent = patch.description;
+    elements.description.hidden = false;
 
-    const rolledBack = summary.status === "rolled_back";
-    const reviewed = summary.review_state === "reviewed";
+    const rolledBack = patch.status === "rolled_back";
+    const reviewed = patch.review_state === "reviewed";
     elements.reviewState.className = `state-pill${rolledBack ? " rolled-back" : reviewed ? " reviewed" : ""}`;
     elements.reviewState.textContent = rolledBack ? "Desfeito" : reviewed ? "Revisado" : "Não revisado";
     elements.complete.disabled = reviewed || rolledBack;
-    elements.complete.textContent = reviewed ? "Revisão concluída" : "Concluir revisão";
+    elements.complete.textContent = reviewed ? "Atualização revisada" : "Concluir atualização";
     elements.rollback.disabled = rolledBack;
+    elements.rollbackReview.disabled = review.rolled_back_count === review.patches_count;
+    const appliedCount = review.patches_count - review.rolled_back_count;
+    const updateLabel = appliedCount === 1 ? "atualização aplicada" : "atualizações aplicadas";
+    const fileLabel = review.files_changed === 1 ? "arquivo" : "arquivos";
+    elements.rollbackReviewDetail.textContent = `${appliedCount} ${updateLabel} e ${review.files_changed} ${fileLabel} serão validados antes de qualquer escrita.`;
   }
 
   function formatSource(value) {
@@ -255,7 +322,8 @@
   async function selectFile(index, fullContext = false) {
     state.selectedIndex = index;
     const url = new URL(window.location.href);
-    url.searchParams.set("review", state.transactionId);
+    url.searchParams.set("group", state.groupId);
+    url.searchParams.set("patch", state.transactionId);
     url.searchParams.set("file", String(index));
     window.history.replaceState({}, "", url);
     renderReviewTree();
@@ -263,7 +331,7 @@
     try {
       const suffix = fullContext ? "?context=full" : "";
       state.fileDiff = await request(
-        `/api/reviews/${encodeURIComponent(state.transactionId)}/files/${index}${suffix}`,
+        `/api/groups/${encodeURIComponent(state.groupId)}/patches/${encodeURIComponent(state.transactionId)}/files/${index}${suffix}`,
       );
       state.activeChange = -1;
       renderDiff();
@@ -274,6 +342,7 @@
 
   function renderDiff() {
     const file = state.fileDiff;
+    state.changeRows = [];
     elements.selectedPath.textContent = file.path;
     elements.selectedPath.title = file.path;
     elements.operationBadge.textContent = operationLabels[file.operation] || file.operation;
@@ -449,13 +518,14 @@
   async function completeReview() {
     elements.complete.disabled = true;
     try {
-      state.summary = await request(
-        `/api/reviews/${encodeURIComponent(state.transactionId)}/complete`,
+      state.patchSummary = await request(
+        `/api/groups/${encodeURIComponent(state.groupId)}/patches/${encodeURIComponent(state.transactionId)}/complete`,
         { method: "POST", body: "{}" },
       );
       renderSummary();
       await loadReviews();
-      toast("Revisão concluída. O rollback continua disponível.");
+      await loadSummary(state.selectedIndex);
+      toast("Atualização marcada como revisada. O rollback continua disponível.");
     } catch (error) {
       elements.complete.disabled = false;
       toast(error.message, true);
@@ -466,13 +536,14 @@
     elements.rollbackDialog.close();
     elements.rollback.disabled = true;
     try {
-      state.summary = await request(
-        `/api/reviews/${encodeURIComponent(state.transactionId)}/rollback`,
+      state.patchSummary = await request(
+        `/api/groups/${encodeURIComponent(state.groupId)}/patches/${encodeURIComponent(state.transactionId)}/rollback`,
         { method: "POST", body: "{}" },
       );
       renderSummary();
       await loadReviews();
-      toast("Transação desfeita e snapshots anteriores restaurados.");
+      await loadSummary(state.selectedIndex);
+      toast("Atualização desfeita e snapshots anteriores restaurados.");
     } catch (error) {
       elements.rollback.disabled = false;
       const conflicts = error.payload?.conflicts;
@@ -482,6 +553,21 @@
           : error.message,
         true,
       );
+    }
+  }
+
+  async function rollbackWholeReview() {
+    elements.rollbackReviewDialog.close();
+    elements.rollbackReview.disabled = true;
+    try {
+      await request(`/api/groups/${encodeURIComponent(state.groupId)}/rollback`, { method: "POST", body: "{}" });
+      await loadReviews();
+      await loadSummary(state.selectedIndex);
+      toast("Review desfeito em ordem reversa.");
+    } catch (error) {
+      elements.rollbackReview.disabled = false;
+      const conflicts = error.payload?.conflicts;
+      toast(conflicts?.length ? `Rollback bloqueado: ${conflicts.join(", ")}.` : error.message, true);
     }
   }
 
@@ -507,9 +593,14 @@
   document.querySelector("#next-change").addEventListener("click", () => navigateChange(1));
   elements.complete.addEventListener("click", completeReview);
   elements.rollback.addEventListener("click", () => elements.rollbackDialog.showModal());
+  elements.rollbackReview.addEventListener("click", () => elements.rollbackReviewDialog.showModal());
   elements.confirmRollback.addEventListener("click", (event) => {
     event.preventDefault();
     rollbackReview();
+  });
+  elements.confirmReviewRollback.addEventListener("click", (event) => {
+    event.preventDefault();
+    rollbackWholeReview();
   });
   elements.themeToggle.addEventListener("click", () => {
     setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
@@ -541,6 +632,7 @@
     elements.selectedPath.textContent = "Nenhuma transação carregada";
     elements.complete.disabled = true;
     elements.rollback.disabled = true;
+    elements.rollbackReview.disabled = true;
     document.querySelectorAll("button").forEach((button) => {
       if (button !== elements.themeToggle) button.disabled = true;
     });
@@ -553,22 +645,30 @@
   }
   async function initialize() {
     const url = new URL(window.location.href);
-    const requestedReview = url.searchParams.get("review");
+    const requestedGroup = url.searchParams.get("group");
+    const requestedPatch = url.searchParams.get("patch");
     const requestedFile = Number.parseInt(url.searchParams.get("file") || "0", 10);
-    await loadReviews();
+    await loadGroups();
     if (
-      requestedReview
-      && /^[A-Za-z0-9_-]+$/.test(requestedReview)
-      && state.reviews.some((item) => item.transaction_id === requestedReview)
+      requestedGroup
+      && /^[A-Za-z0-9_-]+$/.test(requestedGroup)
+      && state.groups.some((item) => item.group_id === requestedGroup)
     ) {
-      state.transactionId = requestedReview;
+      state.groupId = requestedGroup;
+      const group = state.groups.find((item) => item.group_id === requestedGroup);
+      if (requestedPatch && group.patches.some((item) => item.transaction_id === requestedPatch)) {
+        state.transactionId = requestedPatch;
+      } else {
+        state.transactionId = group.patches.at(-1).transaction_id;
+      }
     }
-    state.expandedReviews.add(state.transactionId);
+    state.expandedGroups.add(state.groupId);
+    state.expandedPatches.add(state.transactionId);
     await loadSummary(Number.isInteger(requestedFile) ? requestedFile : 0);
   }
 
   initialize().catch((error) => renderError(error.message));
   window.setInterval(() => {
-    loadReviews().catch(() => undefined);
+    loadGroups().catch(() => undefined);
   }, 10000);
 })();

@@ -7,6 +7,8 @@ from typing import Any
 from conftest import run_with_mcp, structured_result, text_result
 from mcp import ClientSession
 
+TRACKING = {"description": "Executa cenário black-box.", "group_title": "Teste MCP"}
+
 
 def sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
@@ -33,6 +35,9 @@ def test_patch_tools_are_discoverable_with_the_public_contract(
         "patch",
         "dry_run",
         "expected_hashes",
+        "description",
+        "group_id",
+        "group_title",
     }
     assert schemas["rollback"]["required"] == ["transaction_id"]
     assert set(schemas["rollback"]["properties"]) == {"transaction_id", "force"}
@@ -115,7 +120,11 @@ deleted file mode 100644
     async def apply(session: ClientSession) -> dict[str, Any]:
         result = await session.call_tool(
             "ApplyPatch",
-            {"patch": patch, "expected_hashes": {"utf8.txt": expected_hash}},
+            {
+                "patch": patch,
+                "expected_hashes": {"utf8.txt": expected_hash},
+                **TRACKING,
+            },
         )
         return structured_result(result)
 
@@ -145,7 +154,11 @@ def test_expected_hash_conflict_is_reported_without_mutation(tmp_path: Path) -> 
     async def apply(session: ClientSession) -> str:
         result = await session.call_tool(
             "ApplyPatch",
-            {"patch": patch, "expected_hashes": {"sample.txt": "0" * 64}},
+            {
+                "patch": patch,
+                "expected_hashes": {"sample.txt": "0" * 64},
+                **TRACKING,
+            },
         )
         return text_result(result)
 
@@ -166,7 +179,9 @@ def test_unsafe_path_is_rejected_before_writing_outside_project(tmp_path: Path) 
 """
 
     async def apply(session: ClientSession) -> str:
-        return text_result(await session.call_tool("ApplyPatch", {"patch": patch}))
+        return text_result(
+            await session.call_tool("ApplyPatch", {"patch": patch, **TRACKING})
+        )
 
     message = run_with_mcp(project, tmp_path / "history", apply)
     assert message.startswith("invalid_patch:")
@@ -194,7 +209,9 @@ def test_failed_multi_file_patch_is_atomic(tmp_path: Path) -> None:
 """
 
     async def apply(session: ClientSession) -> str:
-        return text_result(await session.call_tool("ApplyPatch", {"patch": patch}))
+        return text_result(
+            await session.call_tool("ApplyPatch", {"patch": patch, **TRACKING})
+        )
 
     message = run_with_mcp(project, tmp_path / "history", apply)
     assert message.startswith("patch_apply_failed:")
@@ -233,7 +250,9 @@ new file mode 100644
 """
 
     async def apply_and_rollback(session: ClientSession) -> tuple[dict[str, Any], dict[str, Any]]:
-        applied = structured_result(await session.call_tool("ApplyPatch", {"patch": patch}))
+        applied = structured_result(
+            await session.call_tool("ApplyPatch", {"patch": patch, **TRACKING})
+        )
         rolled_back = structured_result(
             await session.call_tool(
                 "RollbackPatch",
@@ -268,7 +287,9 @@ def test_rollback_refuses_later_edits_unless_forced(tmp_path: Path) -> None:
 """
 
     async def exercise(session: ClientSession) -> tuple[str, dict[str, Any]]:
-        applied = structured_result(await session.call_tool("ApplyPatch", {"patch": patch}))
+        applied = structured_result(
+            await session.call_tool("ApplyPatch", {"patch": patch, **TRACKING})
+        )
         target.write_bytes(b"later edit\n")
         conflict = text_result(
             await session.call_tool(
@@ -290,3 +311,81 @@ def test_rollback_refuses_later_edits_unless_forced(tmp_path: Path) -> None:
     assert forced["status"] == "rolled_back"
     assert forced["forced"] is True
     assert target.read_bytes() == b"before\n"
+
+
+def test_mutating_tools_reuse_group_id(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+
+    async def exercise(session: ClientSession) -> tuple[dict[str, Any], dict[str, Any]]:
+        written = structured_result(
+            await session.call_tool(
+                "Write",
+                {
+                    "path": "sample.txt",
+                    "contents": "before\n",
+                    "description": "Cria arquivo.",
+                    "group_title": "Fluxo MCP",
+                },
+            )
+        )
+        replaced = structured_result(
+            await session.call_tool(
+                "StrReplace",
+                {
+                    "path": "sample.txt",
+                    "old_string": "before",
+                    "new_string": "after",
+                    "description": "Atualiza arquivo.",
+                    "group_id": written["group_id"],
+                },
+            )
+        )
+        return written, replaced
+
+    written, replaced = run_with_mcp(project, tmp_path / "history", exercise)
+    assert written["group_id"] == replaced["group_id"]
+    assert written["transaction_id"] != replaced["transaction_id"]
+    assert (project / "sample.txt").read_bytes() == b"after\n"
+
+
+def test_two_apply_patches_can_start_distinct_groups(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "sample.txt").write_text("one\n", encoding="utf-8")
+
+    async def exercise(
+        session: ClientSession,
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        first = structured_result(
+            await session.call_tool(
+                "ApplyPatch",
+                {
+                    "patch": "--- a/sample.txt\n+++ b/sample.txt\n@@ -1 +1 @@\n-one\n+two\n",
+                    "description": "Primeiro patch.",
+                    "group_title": "Primeiro grupo",
+                },
+            )
+        )
+        second = structured_result(
+            await session.call_tool(
+                "ApplyPatch",
+                {
+                    "patch": "--- a/sample.txt\n+++ b/sample.txt\n@@ -1 +1 @@\n-two\n+three\n",
+                    "description": "Segundo patch.",
+                    "group_title": "Segundo grupo",
+                },
+            )
+        )
+        opened = structured_result(
+            await session.call_tool(
+                "OpenPatchReview",
+                {"transaction_id": second["transaction_id"], "open_browser": False},
+            )
+        )
+        return first, second, opened
+
+    first, second, opened = run_with_mcp(project, tmp_path / "history", exercise)
+    assert first["group_id"] != second["group_id"]
+    assert first["transaction_id"] != second["transaction_id"]
+    assert opened["group_id"] == second["group_id"]

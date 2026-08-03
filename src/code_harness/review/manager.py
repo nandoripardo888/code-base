@@ -37,13 +37,18 @@ class ReviewManager:
 
     def open(
         self,
-        transaction_id: str = "latest",
+        identifier: str = "latest",
         *,
+        transaction_id: str | None = None,
         open_browser: bool = False,
     ) -> dict[str, object]:
-        resolved = self.service.resolve_transaction_id(transaction_id)
-        summary = self.service.get_summary(resolved)
-        token = self.security.issue_page_token(self.service.history.workspace_id, resolved)
+        selection = self.service.resolve_selection(identifier, transaction_id=transaction_id)
+        summary = self.service.get_patch(selection.group_id, selection.transaction_id)
+        token = self.security.issue_page_token(
+            self.service.history.workspace_id,
+            selection.group_id,
+            selection.transaction_id,
+        )
         url = f"{self.origin}/r/{token}"
         opened = False
         if open_browser:
@@ -53,6 +58,8 @@ class ReviewManager:
                 opened = False
         return {
             "available": True,
+            "group_id": selection.group_id,
+            "transaction_id": selection.transaction_id,
             "files": summary.files_changed,
             "additions": summary.additions,
             "deletions": summary.deletions,

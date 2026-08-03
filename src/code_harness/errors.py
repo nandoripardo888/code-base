@@ -61,6 +61,26 @@ class RipgrepUnavailableError(HarnessError):
         )
 
 
+class ParserSupportUnavailableError(HarnessError):
+    code = "parser_support_unavailable"
+
+    def __init__(self, detail: str | None = None) -> None:
+        prefix = f"{detail.rstrip()} " if detail else ""
+        super().__init__(
+            f"{prefix}Install structural parsers with: pip install 'code-harness[parsers]'."
+        )
+
+
+class UnsupportedReferenceLanguageError(HarnessError):
+    code = "unsupported_reference_language"
+
+    def __init__(self, path: str) -> None:
+        super().__init__(
+            f"References are not supported for {path}. Supported extensions: "
+            ".py, .java, .js, .jsx, .ts, .tsx."
+        )
+
+
 class StringNotFoundError(HarnessError):
     code = "string_not_found"
 

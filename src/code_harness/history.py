@@ -1,4 +1,4 @@
-"""Persistent, project-independent patch history and startup maintenance."""
+"""Persistent, project-independent change history and startup maintenance."""
 
 from __future__ import annotations
 
@@ -128,6 +128,38 @@ class FileSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class PatchGroupManifest:
+    group_id: str
+    workspace_id: str
+    workspace_root: str
+    group_title: str
+    created_at: str
+    updated_at: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "group_id": self.group_id,
+            "workspace_id": self.workspace_id,
+            "workspace_root": self.workspace_root,
+            "group_title": self.group_title,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> PatchGroupManifest:
+        group_id = str(value.get("group_id") or value["review_id"])
+        return cls(
+            group_id=group_id,
+            workspace_id=str(value["workspace_id"]),
+            workspace_root=str(value["workspace_root"]),
+            group_title=str(value.get("group_title") or value["title"]),
+            created_at=str(value["created_at"]),
+            updated_at=str(value["updated_at"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class TransactionManifest:
     transaction_id: str
     workspace_id: str
@@ -136,7 +168,7 @@ class TransactionManifest:
     created_at: str
     updated_at: str
     files: tuple[FileSnapshot, ...]
-    patch_sha256: str
+    patch_sha256: str | None
     git_version: str | None = None
     error: str | None = None
     rolled_back_at: str | None = None
@@ -146,6 +178,7 @@ class TransactionManifest:
     reviewed_at: str | None = None
     summary_additions: int | None = None
     summary_deletions: int | None = None
+    group_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -165,6 +198,7 @@ class TransactionManifest:
             "reviewed_at": self.reviewed_at,
             "summary_additions": self.summary_additions,
             "summary_deletions": self.summary_deletions,
+            "group_id": self.group_id,
             "files": [item.to_dict() for item in self.files],
         }
 
@@ -180,7 +214,7 @@ class TransactionManifest:
             status=str(value["status"]),
             created_at=str(value["created_at"]),
             updated_at=str(value["updated_at"]),
-            patch_sha256=str(value["patch_sha256"]),
+            patch_sha256=_optional_string(value.get("patch_sha256")),
             git_version=_optional_string(value.get("git_version")),
             error=_optional_string(value.get("error")),
             rolled_back_at=_optional_string(value.get("rolled_back_at")),
@@ -190,6 +224,7 @@ class TransactionManifest:
             reviewed_at=_optional_string(value.get("reviewed_at")),
             summary_additions=_optional_int(value.get("summary_additions")),
             summary_deletions=_optional_int(value.get("summary_deletions")),
+            group_id=_optional_string(value.get("group_id") or value.get("review_id")),
             files=tuple(
                 FileSnapshot.from_dict(item) for item in raw_files if isinstance(item, dict)
             ),
@@ -227,6 +262,8 @@ class HistoryManager:
         self.workspace_dir = self.root / self.workspace_id
         self.objects_dir = self.workspace_dir / "objects"
         self.transactions_dir = self.workspace_dir / "transactions"
+        self.groups_dir = self.workspace_dir / "groups"
+        self.legacy_reviews_dir = self.workspace_dir / "reviews"
         self.temporary_dir = self.workspace_dir / "tmp"
         self.policy = policy or HistoryPolicy.from_environment()
         self._mutation_lock = threading.RLock()
@@ -241,12 +278,14 @@ class HistoryManager:
     def _initialize(self) -> None:
         self.objects_dir.mkdir(parents=True, exist_ok=True)
         self.transactions_dir.mkdir(parents=True, exist_ok=True)
+        self.groups_dir.mkdir(parents=True, exist_ok=True)
         self.temporary_dir.mkdir(parents=True, exist_ok=True)
 
     def maintain(self) -> dict[str, int]:
         """Recover interrupted work, apply retention, and remove orphan objects."""
-        recovered = self._recover_interrupted()
+        recovered = self._recover_group_rollbacks() + self._recover_interrupted()
         removed_transactions = self._cleanup_transactions()
+        self._remove_orphan_groups()
         removed_objects = self._remove_orphan_objects()
         removed_temporary = self._cleanup_stale_temporary()
         removed_global = self._enforce_global_limit()
@@ -279,12 +318,13 @@ class HistoryManager:
 
     def begin(
         self,
-        patch_text: str,
+        patch_text: str | None,
         files: tuple[FileSnapshot, ...],
         *,
-        git_version: str,
+        git_version: str | None,
         source_tool: str = "apply_patch",
         description: str | None = None,
+        group_id: str | None = None,
     ) -> TransactionManifest:
         now = datetime.now(UTC)
         transaction_id = f"{now:%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}"
@@ -296,16 +336,76 @@ class HistoryManager:
             created_at=now.isoformat(),
             updated_at=now.isoformat(),
             files=files,
-            patch_sha256=_sha256(patch_text.encode("utf-8")),
+            patch_sha256=(
+                _sha256(patch_text.encode("utf-8")) if patch_text is not None else None
+            ),
             git_version=git_version,
             source_tool=source_tool,
             description=description,
+            group_id=group_id,
         )
         transaction_dir = self._transaction_dir(transaction_id)
         transaction_dir.mkdir(parents=True, exist_ok=False)
-        atomic_write_bytes(transaction_dir / "forward.patch", patch_text.encode("utf-8"))
+        if patch_text is not None:
+            atomic_write_bytes(transaction_dir / "forward.patch", patch_text.encode("utf-8"))
         self.save(manifest)
         return manifest
+
+    def create_group(self, group_title: str) -> PatchGroupManifest:
+        now = datetime.now(UTC)
+        group = PatchGroupManifest(
+            group_id=f"group-{now:%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:8]}",
+            workspace_id=self.workspace_id,
+            workspace_root=str(self.project_root),
+            group_title=group_title,
+            created_at=now.isoformat(),
+            updated_at=now.isoformat(),
+        )
+        directory = self._group_dir(group.group_id)
+        directory.mkdir(parents=True, exist_ok=False)
+        self.save_group(group)
+        return group
+
+    def save_group(self, group: PatchGroupManifest) -> None:
+        target = self._group_dir(group.group_id) / "manifest.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        rendered = json.dumps(group.to_dict(), ensure_ascii=False, indent=2).encode("utf-8")
+        atomic_write_bytes(target, rendered)
+
+    def load_group(self, group_id: str) -> PatchGroupManifest:
+        self._validate_identifier(group_id, "group")
+        target = self._group_manifest_path(group_id)
+        try:
+            value = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise PatchHistoryError(f"Patch group was not found: {group_id}") from error
+        if not isinstance(value, dict):
+            raise PatchHistoryError(f"Patch group is invalid: {group_id}")
+        group = PatchGroupManifest.from_dict(value)
+        if group.workspace_id != self.workspace_id:
+            raise PatchHistoryError(f"Patch group belongs to another workspace: {group_id}")
+        return group
+
+    def list_groups(self) -> tuple[PatchGroupManifest, ...]:
+        groups = _read_group_manifests(self.groups_dir)
+        legacy = _read_group_manifests(self.legacy_reviews_dir)
+        by_id = {item.group_id: item for item in legacy}
+        by_id.update({item.group_id: item for item in groups})
+        return tuple(sorted(by_id.values(), key=lambda item: item.updated_at, reverse=True))
+
+    def touch_group(self, group_id: str) -> PatchGroupManifest:
+        group = self.load_group(group_id)
+        updated = replace(group, updated_at=_utc_now())
+        self.save_group(updated)
+        return updated
+
+    def transactions_for_group(self, group_id: str) -> tuple[TransactionManifest, ...]:
+        return tuple(
+            sorted(
+                (item for item in self._list_manifests() if item.group_id == group_id),
+                key=lambda item: item.created_at,
+            )
+        )
 
     def save(self, manifest: TransactionManifest) -> None:
         target = self._transaction_dir(manifest.transaction_id) / "manifest.json"
@@ -351,11 +451,7 @@ class HistoryManager:
         return updated
 
     def load(self, transaction_id: str) -> TransactionManifest:
-        if not transaction_id or any(
-            char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
-            for char in transaction_id
-        ):
-            raise PatchHistoryError("Invalid transaction id.")
+        self._validate_identifier(transaction_id, "transaction")
         target = self._transaction_dir(transaction_id) / "manifest.json"
         try:
             value = json.loads(target.read_text(encoding="utf-8"))
@@ -404,11 +500,13 @@ class HistoryManager:
                 and manifest.summary_deletions == deletions
             ):
                 return manifest
-            return self.update(
+            updated = replace(
                 manifest,
                 summary_additions=additions,
                 summary_deletions=deletions,
             )
+            self.save(updated)
+            return updated
 
     def read_before_content(self, transaction_id: str, file_index: int) -> bytes | None:
         """Read a before snapshot by manifest index without exposing object identifiers."""
@@ -452,6 +550,152 @@ class HistoryManager:
             "status": "rolled_back",
             "files_restored": len(manifest.files),
             "forced": force,
+        }
+
+    def rollback_group(self, group_id: str) -> dict[str, object]:
+        """Rollback every still-applied transaction after a complete reverse simulation."""
+        with self._mutation_lock:
+            group = self.load_group(group_id)
+            transactions = tuple(
+                item
+                for item in reversed(self.transactions_for_group(group_id))
+                if item.status == "applied"
+            )
+            if not transactions:
+                raise PatchHistoryError(
+                    f"Patch group {group_id} has no applied changes to roll back."
+                )
+
+            paths = sorted({item.path for manifest in transactions for item in manifest.files})
+            initial = {path: self._read_project_state(path) for path in paths}
+            simulated = dict(initial)
+            conflicts: set[str] = set()
+            for manifest in transactions:
+                for item in manifest.files:
+                    expected = self._snapshot_content(item, after=True)
+                    if simulated[item.path] != expected:
+                        conflicts.add(item.path)
+                if conflicts:
+                    continue
+                for item in manifest.files:
+                    simulated[item.path] = self._snapshot_content(item, after=False)
+            if conflicts:
+                raise PatchRollbackConflictError(group_id, sorted(conflicts))
+
+            journal = {
+                "group_id": group_id,
+                "transaction_ids": [item.transaction_id for item in transactions],
+                "initial": [self._journal_state(path, initial[path]) for path in paths],
+            }
+            journal_path = self._existing_group_dir(group_id) / "rollback-journal.json"
+            atomic_write_bytes(
+                journal_path,
+                json.dumps(journal, ensure_ascii=False, indent=2).encode("utf-8"),
+            )
+            try:
+                for path in paths:
+                    self._write_project_state(path, simulated[path])
+            except OSError as error:
+                restored = self._restore_state_map(initial)
+                if restored:
+                    journal_path.unlink(missing_ok=True)
+                raise PatchHistoryError(
+                    f"Could not roll back patch group {group_id}: {error}"
+                ) from error
+
+            rolled_back_at = _utc_now()
+            for manifest in transactions:
+                self.update(
+                    manifest,
+                    status="rolled_back",
+                    rolled_back_at=rolled_back_at,
+                )
+            journal_path.unlink(missing_ok=True)
+            self.touch_group(group.group_id)
+            return {
+                "group_id": group_id,
+                "status": "rolled_back",
+                "transactions_rolled_back": len(transactions),
+                "files_restored": len(paths),
+            }
+
+    def _recover_group_rollbacks(self) -> int:
+        recovered = 0
+        roots = (self.groups_dir, self.legacy_reviews_dir)
+        for root in roots:
+            for journal_path in root.glob("*/rollback-journal.json"):
+                recovered += self._recover_group_rollback(journal_path)
+        return recovered
+
+    def _recover_group_rollback(self, journal_path: Path) -> int:
+        try:
+            value = json.loads(journal_path.read_text(encoding="utf-8"))
+            raw_initial = value["initial"]
+            raw_ids = value["transaction_ids"]
+            if not isinstance(raw_initial, list) or not isinstance(raw_ids, list):
+                return 0
+            states: dict[str, bytes | None] = {}
+            for item in raw_initial:
+                if not isinstance(item, dict):
+                    raise ValueError("invalid rollback state")
+                path = str(item["path"])
+                object_id = _optional_string(item.get("object"))
+                states[path] = self.read_object(object_id) if object_id else None
+            if not self._restore_state_map(states):
+                return 0
+            for transaction_id in raw_ids:
+                manifest = self.load(str(transaction_id))
+                self.save(
+                    replace(
+                        manifest,
+                        status="applied",
+                        rolled_back_at=None,
+                        error="Recovered interrupted group rollback.",
+                        updated_at=_utc_now(),
+                    )
+                )
+            journal_path.unlink(missing_ok=True)
+            return 1
+        except (OSError, ValueError, KeyError, TypeError, PatchHistoryError):
+            return 0
+
+    def _snapshot_content(self, item: FileSnapshot, *, after: bool) -> bytes | None:
+        exists = item.exists_after if after else item.existed_before
+        object_id = item.after_object if after else item.before_object
+        if not exists:
+            return None
+        if object_id is None:
+            raise PatchHistoryError(f"History snapshot is missing for {item.path}.")
+        return self.read_object(object_id)
+
+    def _read_project_state(self, relative: str) -> bytes | None:
+        target = self._project_path(relative)
+        if not target.is_file():
+            return None
+        try:
+            return target.read_bytes()
+        except OSError as error:
+            raise PatchHistoryError(f"Could not read current file {relative}: {error}") from error
+
+    def _write_project_state(self, relative: str, content: bytes | None) -> None:
+        target = self._project_path(relative)
+        if content is None:
+            target.unlink(missing_ok=True)
+        else:
+            atomic_write_bytes(target, content)
+
+    def _restore_state_map(self, states: dict[str, bytes | None]) -> bool:
+        try:
+            for path, content in states.items():
+                self._write_project_state(path, content)
+        except OSError:
+            return False
+        return True
+
+    def _journal_state(self, path: str, content: bytes | None) -> dict[str, object]:
+        return {
+            "path": path,
+            "object": self.store_object(content) if content is not None else None,
         }
 
     def _recover_interrupted(self) -> int:
@@ -521,60 +765,67 @@ class HistoryManager:
             atomic_write_bytes(target, self.read_object(item.before_object))
 
     def _cleanup_transactions(self) -> int:
-        manifests = sorted(self._list_manifests(), key=lambda item: item.created_at, reverse=True)
-        keep_ids = {
-            item.transaction_id for item in manifests[: self.policy.keep_last_per_workspace]
-        }
+        groups = _history_groups(self.workspace_dir)
+        keep_ids = {item.key for item in groups[: self.policy.keep_last_per_workspace]}
         cutoff = datetime.now(UTC) - timedelta(days=self.policy.retention_days)
         removed = 0
-        for manifest in reversed(manifests):
-            if manifest.transaction_id in keep_ids or manifest.status in _ACTIVE_STATUSES:
+        for group in reversed(groups):
+            if group.key in keep_ids or any(
+                item.status in _ACTIVE_STATUSES for item in group.transactions
+            ):
                 continue
-            created = _parse_datetime(manifest.created_at)
-            if created >= cutoff:
+            if _parse_datetime(group.updated_at) >= cutoff:
                 continue
-            shutil.rmtree(self._transaction_dir(manifest.transaction_id), ignore_errors=True)
-            removed += 1
+            removed += _remove_history_group(group)
         self._remove_orphan_objects()
         while self._directory_size(self.workspace_dir) > self.policy.max_workspace_bytes:
             candidates = [
                 item
-                for item in sorted(self._list_manifests(), key=lambda value: value.created_at)
-                if item.transaction_id not in keep_ids and item.status not in _ACTIVE_STATUSES
+                for item in reversed(_history_groups(self.workspace_dir))
+                if item.key not in keep_ids
+                and not any(tx.status in _ACTIVE_STATUSES for tx in item.transactions)
             ]
             if not candidates:
                 break
-            shutil.rmtree(self._transaction_dir(candidates[0].transaction_id), ignore_errors=True)
-            removed += 1
+            removed += _remove_history_group(candidates[0])
             self._remove_orphan_objects()
         return removed
 
     def _enforce_global_limit(self) -> int:
         if self._directory_size(self.root) <= self.policy.max_global_bytes:
             return 0
-        candidates: list[tuple[TransactionManifest, Path]] = []
+        candidates: list[_HistoryGroup] = []
         for workspace in self.root.iterdir() if self.root.exists() else ():
-            transactions = workspace / "transactions"
-            manifests = _read_manifests(transactions)
-            keep = {
-                item.transaction_id
-                for item in sorted(manifests, key=lambda value: value.created_at, reverse=True)[
-                    : self.policy.keep_last_per_workspace
-                ]
-            }
+            groups = _history_groups(workspace)
+            keep = {item.key for item in groups[: self.policy.keep_last_per_workspace]}
             candidates.extend(
-                (item, transactions / item.transaction_id)
-                for item in manifests
-                if item.transaction_id not in keep and item.status not in _ACTIVE_STATUSES
+                item
+                for item in groups
+                if item.key not in keep
+                and not any(tx.status in _ACTIVE_STATUSES for tx in item.transactions)
             )
         removed = 0
-        for _manifest, directory in sorted(candidates, key=lambda value: value[0].created_at):
+        for group in sorted(candidates, key=lambda value: value.updated_at):
             if self._directory_size(self.root) <= self.policy.max_global_bytes:
                 break
-            shutil.rmtree(directory, ignore_errors=True)
-            removed += 1
+            removed += _remove_history_group(group)
         for workspace in self.root.iterdir() if self.root.exists() else ():
             self._remove_orphan_objects_for(workspace)
+        return removed
+
+    def _remove_orphan_groups(self) -> int:
+        referenced = {
+            item.group_id for item in self._list_manifests() if item.group_id is not None
+        }
+        removed = 0
+        for group in self.list_groups():
+            if group.group_id not in referenced:
+                shutil.rmtree(self._group_dir(group.group_id), ignore_errors=True)
+                shutil.rmtree(
+                    self.legacy_reviews_dir / group.group_id,
+                    ignore_errors=True,
+                )
+                removed += 1
         return removed
 
     def _remove_orphan_objects(self) -> int:
@@ -634,10 +885,28 @@ class HistoryManager:
     def _transaction_dir(self, transaction_id: str) -> Path:
         return self.transactions_dir / transaction_id
 
+    def _group_dir(self, group_id: str) -> Path:
+        return self.groups_dir / group_id
+
+    def _existing_group_dir(self, group_id: str) -> Path:
+        current = self._group_dir(group_id)
+        return current if current.exists() else self.legacy_reviews_dir / group_id
+
+    def _group_manifest_path(self, group_id: str) -> Path:
+        return self._existing_group_dir(group_id) / "manifest.json"
+
+    @staticmethod
+    def _validate_identifier(value: str, kind: str) -> None:
+        if not value or any(
+            char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+            for char in value
+        ):
+            raise PatchHistoryError(f"Invalid {kind} id.")
+
     @staticmethod
     def _file_at(manifest: TransactionManifest, file_index: int) -> FileSnapshot:
         if file_index < 0 or file_index >= len(manifest.files):
-            raise PatchHistoryError(f"Review file index is out of range: {file_index}")
+            raise PatchHistoryError(f"Patch group file index is out of range: {file_index}")
         return manifest.files[file_index]
 
     @staticmethod
@@ -674,3 +943,71 @@ def _read_manifests(transactions_dir: Path) -> list[TransactionManifest]:
         except (OSError, ValueError, json.JSONDecodeError, KeyError, TypeError):
             continue
     return manifests
+
+
+def _read_group_manifests(groups_dir: Path) -> list[PatchGroupManifest]:
+    manifests: list[PatchGroupManifest] = []
+    if not groups_dir.exists():
+        return manifests
+    for target in groups_dir.glob("*/manifest.json"):
+        try:
+            value = json.loads(target.read_text(encoding="utf-8"))
+            if isinstance(value, dict):
+                manifests.append(PatchGroupManifest.from_dict(value))
+        except (OSError, ValueError, json.JSONDecodeError, KeyError, TypeError):
+            continue
+    return manifests
+
+
+@dataclass(frozen=True, slots=True)
+class _HistoryGroup:
+    key: str
+    updated_at: str
+    transactions: tuple[TransactionManifest, ...]
+    workspace_dir: Path
+    group_dir: Path | None
+
+
+def _history_groups(workspace_dir: Path) -> list[_HistoryGroup]:
+    transactions = _read_manifests(workspace_dir / "transactions")
+    legacy_groups = _read_group_manifests(workspace_dir / "reviews")
+    groups = {item.group_id: item for item in legacy_groups}
+    groups.update(
+        {item.group_id: item for item in _read_group_manifests(workspace_dir / "groups")}
+    )
+    grouped: dict[str, list[TransactionManifest]] = {}
+    for item in transactions:
+        key = item.group_id or f"legacy-group-{item.transaction_id}"
+        grouped.setdefault(key, []).append(item)
+    result: list[_HistoryGroup] = []
+    for key, items in grouped.items():
+        group = groups.get(key)
+        transaction_updated_at = max(item.updated_at for item in items)
+        updated_at = (
+            max(group.updated_at, transaction_updated_at)
+            if group
+            else transaction_updated_at
+        )
+        result.append(
+            _HistoryGroup(
+                key=key,
+                updated_at=updated_at,
+                transactions=tuple(items),
+                workspace_dir=workspace_dir,
+                group_dir=(
+                    (workspace_dir / "groups" / key)
+                    if (workspace_dir / "groups" / key).exists()
+                    else (workspace_dir / "reviews" / key) if group else None
+                ),
+            )
+        )
+    return sorted(result, key=lambda item: item.updated_at, reverse=True)
+
+
+def _remove_history_group(group: _HistoryGroup) -> int:
+    for manifest in group.transactions:
+        transaction_dir = group.workspace_dir / "transactions" / manifest.transaction_id
+        shutil.rmtree(transaction_dir, ignore_errors=True)
+    if group.group_dir is not None:
+        shutil.rmtree(group.group_dir, ignore_errors=True)
+    return len(group.transactions)

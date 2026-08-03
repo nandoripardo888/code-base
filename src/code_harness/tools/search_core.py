@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -18,6 +19,7 @@ from code_harness.errors import InvalidArgumentError
 from code_harness.paths import PathGuard
 from code_harness.tools.search_globs import (
     GlobInput,
+    exclusion_glob_flags,
     format_glob_label,
     normalize_glob_patterns,
     with_recursive_prefix,
@@ -25,9 +27,15 @@ from code_harness.tools.search_globs import (
 from code_harness.tools.search_hints import append_glob_hints, append_grep_hints
 from code_harness.tools.search_ignores import OMITTED_BY_SOURCE_FIRST, ignore_glob_flags
 
-OutputMode = Literal["content", "files_with_matches", "count", "symbols"]
+OutputMode = Literal["content", "files_with_matches", "count", "symbols", "references"]
 
-OUTPUT_MODES: tuple[OutputMode, ...] = ("content", "files_with_matches", "count", "symbols")
+OUTPUT_MODES: tuple[OutputMode, ...] = (
+    "content",
+    "files_with_matches",
+    "count",
+    "symbols",
+    "references",
+)
 
 # Ripgrep can emit millions of lines; keep responses bounded even without head_limit.
 MATCH_CAP = 1_000
@@ -41,9 +49,20 @@ class MatchEntry:
     is_match: bool
 
 
-def base_rg_arguments(root: Path, *, include_all: bool = False) -> list[str]:
+def base_rg_arguments(
+    root: Path,
+    *,
+    include_all: bool = False,
+    exclude: GlobInput | None = None,
+) -> list[str]:
     """Flags shared by every project search (content or files)."""
-    return ["--hidden", "--glob", "!.git/", *ignore_glob_flags(root, include_all=include_all)]
+    return [
+        "--hidden",
+        "--glob",
+        "!.git/",
+        *ignore_glob_flags(root, include_all=include_all),
+        *exclusion_glob_flags(exclude),
+    ]
 
 
 def normalize_path(text: str) -> str:
@@ -60,7 +79,7 @@ def validate_paging(*, head_limit: int | None, offset: int | None) -> None:
 def grep_content(
     guard: PathGuard,
     *,
-    pattern: str,
+    pattern: str | None = None,
     path: str | None = None,
     glob: GlobInput | None = None,
     file_type: str | None = None,
@@ -73,12 +92,34 @@ def grep_content(
     head_limit: int | None = None,
     offset: int | None = None,
     include_all: bool = False,
+    exclude: GlobInput | None = None,
+    reference_kind: str | Sequence[str] | None = None,
+    exclude_reference_kind: str | Sequence[str] | None = None,
 ) -> str:
     if output_mode not in OUTPUT_MODES:
         raise InvalidArgumentError(
             f"output_mode must be one of: {', '.join(OUTPUT_MODES)}; got {output_mode!r}."
         )
+    if output_mode != "references" and (
+        reference_kind is not None or exclude_reference_kind is not None
+    ):
+        raise InvalidArgumentError(
+            "reference_kind filters are only valid with output_mode=references."
+        )
     validate_paging(head_limit=head_limit, offset=offset)
+
+    if pattern is None:
+        target = guard.resolve(path or ".", kind="any")
+        if output_mode == "symbols" and target.is_file():
+            pattern = ""
+        else:
+            raise InvalidArgumentError(
+                "pattern is required except for output_mode=symbols with path set to a file."
+            )
+    elif not pattern and output_mode != "symbols":
+        raise InvalidArgumentError(
+            "pattern must not be empty except for output_mode=symbols with path set to a file."
+        )
 
     if output_mode == "symbols":
         from code_harness.symbols.service import grep_symbols
@@ -93,6 +134,25 @@ def grep_content(
             head_limit=head_limit,
             offset=offset,
             include_all=include_all,
+            exclude=exclude,
+        )
+
+    if output_mode == "references":
+        from code_harness.symbols.references import find_references
+
+        return find_references(
+            guard,
+            pattern=pattern,
+            path=path,
+            glob=glob,
+            file_type=file_type,
+            case_insensitive=case_insensitive,
+            head_limit=head_limit,
+            offset=offset or 0,
+            include_all=include_all,
+            exclude=exclude,
+            reference_kind=reference_kind,
+            exclude_reference_kind=exclude_reference_kind,
         )
 
     glob_filters = None if glob is None else normalize_glob_patterns(glob)
@@ -113,6 +173,7 @@ def grep_content(
         context_lines=context_lines,
         multiline=multiline,
         include_all=include_all,
+        exclude=exclude,
     )
     output = ripgrep.run(arguments, cwd=guard.root)
 
@@ -126,6 +187,8 @@ def grep_content(
             offset=offset or 0,
             separate_groups=has_context,
         )
+    elif output_mode == "count":
+        rendered = render_count(output, head_limit=head_limit, offset=offset or 0)
     else:
         rendered = render_lines(output, head_limit=head_limit, offset=offset or 0)
 
@@ -141,6 +204,7 @@ def grep_content(
         file_type=file_type,
         case_insensitive=case_insensitive,
         multiline=multiline,
+        exclude=exclude,
     ):
         rendered = f"{rendered}\n\n{OMITTED_BY_SOURCE_FIRST}"
         source_first_omitted = True
@@ -163,14 +227,19 @@ def list_files(
     glob_pattern: GlobInput,
     target_directory: str | None = None,
     include_all: bool = False,
+    exclude: GlobInput | None = None,
 ) -> str:
     label = format_glob_label(glob_pattern)
     patterns = [with_recursive_prefix(item) for item in normalize_glob_patterns(glob_pattern)]
     directory = guard.resolve(target_directory or ".", kind="directory")
 
-    arguments = [*base_rg_arguments(guard.root, include_all=include_all), "--files"]
+    arguments = [
+        *base_rg_arguments(guard.root, include_all=include_all, exclude=exclude),
+        "--files",
+    ]
     for pattern in patterns:
         arguments.extend(["--glob", pattern])
+    arguments.extend(exclusion_glob_flags(exclude))
     arguments.extend(["--", "."])
     output = ripgrep.run(arguments, cwd=directory)
     paths = [line.strip() for line in output.splitlines() if line.strip()]
@@ -193,7 +262,7 @@ def list_files(
     message = f"No files found matching '{label}'."
     source_first_omitted = False
     if not include_all and _glob_has_files_without_harness_ignores(
-        guard.root, directory=directory, patterns=patterns
+        guard.root, directory=directory, patterns=patterns, exclude=exclude
     ):
         message = f"{message}\n\n{OMITTED_BY_SOURCE_FIRST}"
         source_first_omitted = True
@@ -220,8 +289,9 @@ def _grep_rg_arguments(
     context_lines: int | None,
     multiline: bool,
     include_all: bool,
+    exclude: GlobInput | None,
 ) -> list[str]:
-    arguments = base_rg_arguments(root, include_all=include_all)
+    arguments = base_rg_arguments(root, include_all=include_all, exclude=exclude)
     if case_insensitive:
         arguments.append("--ignore-case")
     if multiline:
@@ -231,6 +301,10 @@ def _grep_rg_arguments(
             arguments.extend(["--glob", item])
     if file_type:
         arguments.extend(["--type", file_type])
+    # Ripgrep resolves overlapping glob rules by the last matching rule.
+    # Repeat explicit exclusions after positive filters so callers cannot
+    # accidentally re-include paths they explicitly excluded.
+    arguments.extend(exclusion_glob_flags(exclude))
 
     if output_mode == "files_with_matches":
         arguments.append("--files-with-matches")
@@ -259,6 +333,7 @@ def _grep_has_matches_without_harness_ignores(
     file_type: str | None,
     case_insensitive: bool,
     multiline: bool,
+    exclude: GlobInput | None,
 ) -> bool:
     arguments = _grep_rg_arguments(
         guard.root,
@@ -273,17 +348,23 @@ def _grep_has_matches_without_harness_ignores(
         context_lines=None,
         multiline=multiline,
         include_all=True,
+        exclude=exclude,
     )
     output = ripgrep.run(arguments, cwd=guard.root)
     return bool(output.strip())
 
 
 def _glob_has_files_without_harness_ignores(
-    root: Path, *, directory: Path, patterns: list[str]
+    root: Path,
+    *,
+    directory: Path,
+    patterns: list[str],
+    exclude: GlobInput | None,
 ) -> bool:
-    arguments = [*base_rg_arguments(root, include_all=True), "--files"]
+    arguments = [*base_rg_arguments(root, include_all=True, exclude=exclude), "--files"]
     for pattern in patterns:
         arguments.extend(["--glob", pattern])
+    arguments.extend(exclusion_glob_flags(exclude))
     arguments.extend(["--", "."])
     output = ripgrep.run(arguments, cwd=directory)
     return bool(output.strip())
@@ -303,6 +384,36 @@ def render_lines(output: str, *, head_limit: int | None, offset: int) -> str:
     remaining = len(entries) - (offset + len(window))
     if remaining > 0:
         rendered += f"\n\n({remaining} more; pass offset={offset + len(window)})"
+    return rendered
+
+
+def render_count(output: str, *, head_limit: int | None, offset: int) -> str:
+    entries: list[tuple[str, int]] = []
+    for raw in output.splitlines():
+        path, separator, count_text = raw.rpartition(":")
+        if not separator:
+            continue
+        try:
+            count = int(count_text)
+        except ValueError:
+            continue
+        entries.append((normalize_path(path), count))
+    if not entries:
+        return "No matches found."
+
+    entries.sort(key=lambda item: (-item[1], item[0]))
+    total_matches = sum(count for _, count in entries)
+    total_files = len(entries)
+    limit = min(head_limit or MATCH_CAP, MATCH_CAP)
+    window = entries[offset : offset + limit]
+    if not window:
+        return f"No matches in range (total {total_files} files, offset {offset})."
+
+    rendered = f"{_match_summary(total_matches, total_files)}\n\n"
+    rendered += "\n".join(f"{path}:{count}" for path, count in window)
+    remaining = total_files - (offset + len(window))
+    if remaining > 0:
+        rendered += f"\n\n({remaining} more files; pass offset={offset + len(window)})"
     return rendered
 
 

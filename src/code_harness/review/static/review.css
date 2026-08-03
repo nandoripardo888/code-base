@@ -168,6 +168,25 @@ button:focus-visible,
   min-width: 0;
 }
 
+.breadcrumb {
+  display: flex;
+  max-width: min(760px, 55vw);
+  gap: 6px;
+  margin-bottom: 2px;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 10px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.breadcrumb span:last-child {
+  overflow: hidden;
+  color: var(--text-soft);
+  text-overflow: ellipsis;
+}
+
 .heading-line {
   display: flex;
   align-items: center;
@@ -493,6 +512,90 @@ h1 {
 }
 
 .review-file-group[hidden] {
+  display: none;
+}
+
+.patch-group {
+  margin-left: 14px;
+  padding-left: 7px;
+}
+
+.patch-tree-item {
+  margin: 2px 0;
+}
+
+.patch-node {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 17px minmax(0, 1fr);
+  gap: 5px;
+  padding: 8px 7px;
+  color: var(--text-soft);
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.patch-node:hover,
+.active-patch > .patch-node {
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--surface-soft);
+}
+
+.patch-node-title,
+.patch-node-meta,
+.patch-node-status {
+  display: block;
+}
+
+.patch-node-title {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.patch-node-meta {
+  margin-top: 2px;
+  color: var(--text-faint);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+}
+
+.patch-node-status {
+  width: max-content;
+  margin-top: 5px;
+  padding: 2px 5px;
+  color: var(--amber);
+  border-radius: 999px;
+  background: var(--amber-bg);
+  font-size: 8px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.patch-node-status.revisada {
+  color: var(--green);
+  background: var(--green-bg);
+}
+
+.patch-node-status.desfeita {
+  color: var(--text-soft);
+  background: var(--selection);
+}
+
+.patch-file-group {
+  margin-left: 17px;
+  padding-left: 7px;
+  border-left: 1px solid var(--border);
+}
+
+.patch-file-group[hidden] {
   display: none;
 }
 
@@ -1088,6 +1191,16 @@ dialog p {
 
   .button-ghost span {
     font-size: 18px;
+  }
+
+  #rollback-button::after {
+    content: "↶";
+    font-size: 17px;
+  }
+
+  #rollback-review-button::after {
+    content: "↶R";
+    font-size: 13px;
   }
 
   .workspace {

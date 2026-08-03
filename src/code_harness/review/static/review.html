@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light dark">
+    <meta name="group-id" content="__GROUP_ID__">
     <meta name="review-transaction" content="__TRANSACTION_ID__">
     <meta name="review-csrf" content="__CSRF_TOKEN__">
     <title>Revisão de alterações</title>
@@ -12,61 +13,44 @@
   <body>
     <div class="app-shell">
       <header class="topbar">
-        <div class="brand-mark" aria-hidden="true">
-          <span></span><span></span>
-        </div>
+        <div class="brand-mark" aria-hidden="true"><span></span><span></span></div>
         <div class="review-heading">
+          <div class="breadcrumb"><span>Review</span><span aria-hidden="true">/</span><span id="patch-label">Atualização</span></div>
           <div class="heading-line">
-            <h1 id="review-title">Carregando revisão…</h1>
-            <span class="state-pill" id="review-state">Não revisado</span>
+            <h1 id="review-title">Carregando review…</h1>
+            <span class="state-pill" id="review-state">Pendente</span>
           </div>
           <div class="review-meta">
-            <span id="source-tool">ApplyPatch</span>
-            <span aria-hidden="true">•</span>
+            <span id="source-tool">—</span><span aria-hidden="true">•</span>
             <time id="created-at">—</time>
+            <span id="patch-progress">0 atualizações</span>
             <span class="diff-total"><b id="total-additions">+0</b> <b id="total-deletions">−0</b></span>
           </div>
           <p class="review-description" id="review-description" hidden></p>
         </div>
         <div class="topbar-actions">
-          <button class="icon-button" id="theme-toggle" type="button" aria-label="Alternar tema">
-            <span class="theme-icon" aria-hidden="true">◐</span>
-          </button>
-          <button class="button button-ghost" id="rollback-button" type="button">
-            <span aria-hidden="true">↶</span> Desfazer
-          </button>
-          <button class="button button-primary" id="complete-button" type="button">
-            Concluir revisão
-          </button>
+          <button class="icon-button" id="theme-toggle" type="button" aria-label="Alternar tema"><span aria-hidden="true">◐</span></button>
+          <button class="button button-ghost" id="rollback-review-button" type="button" aria-label="Desfazer review">↶ Review</button>
+          <button class="button button-ghost" id="rollback-button" type="button" aria-label="Desfazer atualização">↶ Atualização</button>
+          <button class="button button-primary" id="complete-button" type="button" aria-label="Concluir atualização">Concluir atualização</button>
         </div>
       </header>
 
       <main class="workspace">
-        <aside class="files-panel" aria-label="Histórico de revisões">
+        <aside class="files-panel" aria-label="Histórico de grupos de patches">
           <div class="files-header">
-            <div>
-              <p class="eyebrow">Alterações</p>
-              <h2>Histórico</h2>
-            </div>
+            <div><p class="eyebrow">Conversas</p><h2>Reviews</h2></div>
             <span class="file-count" id="review-count">0</span>
           </div>
-          <nav class="history-tree" id="review-tree" role="tree" aria-label="Revisões e arquivos alterados">
-            <div class="file-skeleton"></div>
-            <div class="file-skeleton"></div>
-            <div class="file-skeleton"></div>
+          <nav class="history-tree" id="review-tree" role="tree" aria-label="Reviews, atualizações e arquivos">
+            <div class="file-skeleton"></div><div class="file-skeleton"></div><div class="file-skeleton"></div>
           </nav>
-          <div class="sidebar-foot">
-            <span class="dot"></span>
-            <span id="review-retention">Carregando revisões…</span>
-          </div>
+          <div class="sidebar-foot"><span class="dot"></span><span id="review-retention">Carregando histórico…</span></div>
         </aside>
 
         <section class="review-panel" aria-label="Comparação do arquivo">
           <div class="review-toolbar">
-            <div class="file-identity">
-              <span class="operation-badge" id="operation-badge">Modificado</span>
-              <strong id="selected-path">Selecione um arquivo</strong>
-            </div>
+            <div class="file-identity"><span class="operation-badge" id="operation-badge">Modificado</span><strong id="selected-path">Selecione um arquivo</strong></div>
             <div class="diff-tools">
               <div class="change-navigation" role="group" aria-label="Navegar entre alterações">
                 <button class="compact-button" id="previous-change" type="button" aria-label="Alteração anterior">↑</button>
@@ -79,38 +63,29 @@
               </div>
             </div>
           </div>
-
           <div class="column-headings" id="column-headings">
             <div><span>Antes</span><small>snapshot original</small></div>
             <div><span>Depois</span><small>alteração aplicada</small></div>
           </div>
           <div class="diff-scroller" id="diff-scroller" tabindex="0" aria-label="Diff do arquivo">
-            <div class="diff-loading">
-              <span></span><span></span><span></span><span></span><span></span>
-            </div>
+            <div class="diff-loading"><span></span><span></span><span></span><span></span><span></span></div>
           </div>
-          <div class="keyboard-hint">
-            <span><kbd>J</kbd><kbd>K</kbd> navegar</span>
-            <span><kbd>T</kbd> alternar tema</span>
-          </div>
+          <div class="keyboard-hint"><span><kbd>J</kbd><kbd>K</kbd> navegar</span><span><kbd>T</kbd> tema</span></div>
         </section>
       </main>
     </div>
 
     <div class="toast-region" id="toast-region" aria-live="polite"></div>
-
-    <dialog id="rollback-dialog">
-      <form method="dialog">
-        <div class="dialog-icon" aria-hidden="true">↶</div>
-        <h2>Desfazer esta alteração?</h2>
-        <p>Todos os arquivos desta transação voltarão aos snapshots anteriores. Alterações posteriores bloquearão a operação.</p>
-        <div class="dialog-actions">
-          <button class="button button-ghost" value="cancel">Cancelar</button>
-          <button class="button button-danger" id="confirm-rollback" value="confirm">Desfazer transação</button>
-        </div>
-      </form>
-    </dialog>
-
+    <dialog id="rollback-dialog"><form method="dialog">
+      <div class="dialog-icon" aria-hidden="true">↶</div><h2>Desfazer esta atualização?</h2>
+      <p>Os arquivos voltarão aos snapshots anteriores. Atualizações posteriores bloquearão a operação.</p>
+      <div class="dialog-actions"><button class="button button-ghost" value="cancel">Cancelar</button><button class="button button-danger" id="confirm-rollback" value="confirm">Desfazer atualização</button></div>
+    </form></dialog>
+    <dialog id="rollback-review-dialog"><form method="dialog">
+      <div class="dialog-icon danger" aria-hidden="true">↶</div><h2>Desfazer todo o review?</h2>
+      <p id="rollback-review-detail">Todas as atualizações aplicadas serão simuladas e desfeitas em ordem reversa.</p>
+      <div class="dialog-actions"><button class="button button-ghost" value="cancel">Cancelar</button><button class="button button-danger" id="confirm-review-rollback" value="confirm">Desfazer review</button></div>
+    </form></dialog>
     <script src="./review.js" defer></script>
   </body>
 </html>

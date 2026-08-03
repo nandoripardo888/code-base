@@ -37,8 +37,15 @@ def test_grep_files_with_matches(guard: PathGuard) -> None:
 
 def test_grep_count(guard: PathGuard) -> None:
     assert grep(guard, pattern="alpha", path="data/notes.txt", output_mode="count") == (
-        "data/notes.txt:2"
+        "2 matches in 1 file\n\ndata/notes.txt:2"
     )
+
+
+def test_grep_count_ranks_files_and_keeps_full_totals(guard: PathGuard) -> None:
+    (guard.root / "src" / "other.py").write_text("alpha\n", encoding="utf-8")
+    result = grep(guard, pattern="alpha", output_mode="count", head_limit=1)
+    assert result.startswith("3 matches in 2 files\n\ndata/notes.txt:2")
+    assert "(1 more files; pass offset=1)" in result
 
 
 def test_grep_scoped_to_a_file(guard: PathGuard) -> None:
@@ -53,6 +60,13 @@ def test_grep_glob_filter(guard: PathGuard) -> None:
     result = grep(guard, pattern="hello", glob="*.md")
     assert "README.md" in result
     assert "hello.py" not in result
+
+
+def test_grep_explicit_exclude_always_applies(guard: PathGuard) -> None:
+    result = grep(guard, pattern="hello", exclude="src/**", include_all=True)
+    assert "README.md" in result
+    assert "src/hello.py" not in result
+    assert "src/util.py" not in result
 
 
 def test_grep_head_limit_and_offset(guard: PathGuard) -> None:
@@ -117,6 +131,12 @@ def test_glob_scoped_directory(guard: PathGuard) -> None:
     assert "- data/notes.txt" in result
 
 
+def test_glob_explicit_exclude_supports_lists_and_braces(guard: PathGuard) -> None:
+    result = glob(guard, glob_pattern="*.{py,md}", exclude=["src/**"])
+    assert "README.md" in result
+    assert "src/hello.py" not in result
+
+
 def test_glob_sorts_by_modification_time(guard: PathGuard, project: Path) -> None:
     import os
     import time
@@ -146,7 +166,7 @@ def test_empty_grep_suggests_glob_for_symbol_like_pattern(guard: PathGuard) -> N
 def test_empty_glob_suggests_broader_pattern(guard: PathGuard) -> None:
     result = glob(guard, glob_pattern="MissingName")
     assert result.startswith("No files found matching 'MissingName'.")
-    assert '*MissingName*' in result
+    assert "*MissingName*" in result
 
 
 def test_source_first_skips_code_harness_err(project: Path, guard: PathGuard) -> None:

@@ -9,10 +9,19 @@ from code_harness.symbols.models import Symbol, SymbolKind
 _PATTERNS: tuple[tuple[re.Pattern[str], SymbolKind], ...] = (
     (re.compile(r"^\s*(?:export\s+)?(?:abstract\s+)?class\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "class"),
     (re.compile(r"^\s*(?:export\s+)?interface\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "interface"),
-    (re.compile(r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "function"),
+    (
+        re.compile(r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_][A-Za-z0-9_]*)\b"),
+        "function",
+    ),
     (re.compile(r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "function"),
     (re.compile(r"^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\b"), "function"),
-    (re.compile(r"^\s*(?:public|private|protected)?\s*(?:static\s+)?(?:final\s+)?(?:\w+\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\("), "function"),
+    (
+        re.compile(
+            r"^\s*(?:public|private|protected)?\s*(?:static\s+)?(?:final\s+)?"
+            r"(?:\w+\s+)+([A-Za-z_][A-Za-z0-9_]*)\s*\("
+        ),
+        "function",
+    ),
 )
 
 

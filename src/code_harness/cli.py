@@ -20,6 +20,36 @@ mcp_app = typer.Typer(help="MCP server commands.")
 app.add_typer(mcp_app, name="mcp")
 
 _ROOT = typer.Option(None, "--project", "-p", help="Project root; defaults to the current dir.")
+_MCP_TRANSPORT = typer.Option(
+    None,
+    "--transport",
+    help="MCP transport: stdio or streamable-http. Defaults to env or stdio.",
+)
+_MCP_HOST = typer.Option(None, "--host", help="HTTP listen host.")
+_MCP_PORT = typer.Option(None, "--port", help="HTTP listen port.")
+_MCP_PATH = typer.Option(None, "--path", help="Streamable HTTP endpoint path.")
+_MCP_API_KEY = typer.Option(None, "--api-key", help="API key required by the HTTP endpoint.")
+_MCP_NO_API_KEY = typer.Option(
+    False,
+    "--no-api-key",
+    help="Disable API-key auth, overriding CODE_HARNESS_MCP_API_KEY.",
+)
+_MCP_PUBLIC_URL = typer.Option(
+    None,
+    "--public-url",
+    help="Public connector URL, used to allow tunnel Host/Origin values.",
+)
+_MCP_ALLOWED_HOSTS = typer.Option(None, "--allowed-host", help="Allowed HTTP Host; repeatable.")
+_MCP_ALLOWED_ORIGINS = typer.Option(
+    None,
+    "--allowed-origin",
+    help="Allowed HTTP Origin; repeatable.",
+)
+_MCP_DISABLE_DNS_REBINDING = typer.Option(
+    None,
+    "--disable-dns-rebinding/--enable-dns-rebinding",
+    help="Override FastMCP DNS-rebinding protection.",
+)
 _GLOB_FILTER = typer.Option(
     None,
     "--glob",
@@ -58,10 +88,39 @@ def _run(project: Path | None, action: Callable[[Session], Any]) -> None:
         session.shutdown()
 
 
-def _serve(project: Path | None) -> None:
+def _serve(
+    project: Path | None,
+    *,
+    transport: str | None,
+    host: str | None,
+    port: int | None,
+    path: str | None,
+    api_key: str | None,
+    no_api_key: bool,
+    public_url: str | None,
+    allowed_hosts: list[str] | None,
+    allowed_origins: list[str] | None,
+    disable_dns_rebinding: bool | None,
+) -> None:
     from code_harness.mcp.server import run_server
 
-    run_server(project)
+    try:
+        run_server(
+            project,
+            transport=transport,
+            host=host,
+            port=port,
+            path=path,
+            api_key=api_key,
+            no_api_key=no_api_key,
+            public_url=public_url,
+            allowed_hosts=allowed_hosts,
+            allowed_origins=allowed_origins,
+            disable_dns_rebinding=disable_dns_rebinding,
+        )
+    except ValueError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(code=1) from error
 
 
 @app.command()
@@ -71,15 +130,63 @@ def version() -> None:
 
 
 @app.command()
-def serve(project: Path | None = _ROOT) -> None:
-    """Run the MCP server over stdio."""
-    _serve(project)
+def serve(
+    project: Path | None = _ROOT,
+    transport: str | None = _MCP_TRANSPORT,
+    host: str | None = _MCP_HOST,
+    port: int | None = _MCP_PORT,
+    path: str | None = _MCP_PATH,
+    api_key: str | None = _MCP_API_KEY,
+    no_api_key: bool = _MCP_NO_API_KEY,
+    public_url: str | None = _MCP_PUBLIC_URL,
+    allowed_hosts: list[str] | None = _MCP_ALLOWED_HOSTS,
+    allowed_origins: list[str] | None = _MCP_ALLOWED_ORIGINS,
+    disable_dns_rebinding: bool | None = _MCP_DISABLE_DNS_REBINDING,
+) -> None:
+    """Run the MCP server over stdio or Streamable HTTP."""
+    _serve(
+        project,
+        transport=transport,
+        host=host,
+        port=port,
+        path=path,
+        api_key=api_key,
+        no_api_key=no_api_key,
+        public_url=public_url,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=allowed_origins,
+        disable_dns_rebinding=disable_dns_rebinding,
+    )
 
 
 @mcp_app.command("serve")
-def mcp_serve(project: Path | None = _ROOT) -> None:
-    """Run the MCP server over stdio (alias for ``serve``)."""
-    _serve(project)
+def mcp_serve(
+    project: Path | None = _ROOT,
+    transport: str | None = _MCP_TRANSPORT,
+    host: str | None = _MCP_HOST,
+    port: int | None = _MCP_PORT,
+    path: str | None = _MCP_PATH,
+    api_key: str | None = _MCP_API_KEY,
+    no_api_key: bool = _MCP_NO_API_KEY,
+    public_url: str | None = _MCP_PUBLIC_URL,
+    allowed_hosts: list[str] | None = _MCP_ALLOWED_HOSTS,
+    allowed_origins: list[str] | None = _MCP_ALLOWED_ORIGINS,
+    disable_dns_rebinding: bool | None = _MCP_DISABLE_DNS_REBINDING,
+) -> None:
+    """Run the MCP server (alias for ``serve``)."""
+    _serve(
+        project,
+        transport=transport,
+        host=host,
+        port=port,
+        path=path,
+        api_key=api_key,
+        no_api_key=no_api_key,
+        public_url=public_url,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=allowed_origins,
+        disable_dns_rebinding=disable_dns_rebinding,
+    )
 
 
 @app.command()

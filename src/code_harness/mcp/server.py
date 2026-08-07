@@ -1,4 +1,4 @@
-"""MCP server exposing the local tools over stdio."""
+"""MCP server exposing the local tools over stdio or Streamable HTTP."""
 
 from __future__ import annotations
 
@@ -9,9 +9,17 @@ from pathlib import Path
 from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP, Image
+from mcp.server.transport_security import TransportSecuritySettings
 
 from code_harness import tools
 from code_harness.errors import HarnessError
+from code_harness.mcp.http_auth import ApiKeyMiddleware
+from code_harness.mcp.http_config import (
+    HttpServeConfig,
+    McpTransport,
+    resolve_http_config,
+    resolve_mcp_transport,
+)
 from code_harness.session import Session
 from code_harness.symbols.models import ReferenceKind
 
@@ -35,7 +43,22 @@ INSTRUCTIONS = (
 )
 
 
-def create_server(project: Path | str | None = None, *, session: Session | None = None) -> FastMCP:
+def _transport_security(config: HttpServeConfig) -> TransportSecuritySettings | None:
+    if not config.disable_dns_rebinding and not config.allowed_hosts and not config.allowed_origins:
+        return None
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=not config.disable_dns_rebinding,
+        allowed_hosts=list(config.allowed_hosts),
+        allowed_origins=list(config.allowed_origins),
+    )
+
+
+def create_server(
+    project: Path | str | None = None,
+    *,
+    session: Session | None = None,
+    http_config: HttpServeConfig | None = None,
+) -> FastMCP:
     session = session or Session.create(project)
 
     @asynccontextmanager
@@ -46,13 +69,71 @@ def create_server(project: Path | str | None = None, *, session: Session | None 
         finally:
             session.shutdown()
 
-    server = FastMCP("code-harness", instructions=INSTRUCTIONS, lifespan=lifespan)
+    http_kwargs: dict[str, Any] = {}
+    if http_config is not None:
+        http_kwargs = {
+            "host": http_config.host,
+            "port": http_config.port,
+            "streamable_http_path": http_config.path,
+            "transport_security": _transport_security(http_config),
+        }
+
+    server = FastMCP(
+        "code-harness",
+        instructions=INSTRUCTIONS,
+        lifespan=lifespan,
+        **http_kwargs,
+    )
     register_tools(server, session)
     return server
 
 
-def run_server(project: Path | str | None = None) -> None:
-    create_server(project).run(transport="stdio")
+def run_server(
+    project: Path | str | None = None,
+    *,
+    transport: str | None = None,
+    host: str | None = None,
+    port: int | None = None,
+    path: str | None = None,
+    api_key: str | None = None,
+    public_url: str | None = None,
+    allowed_hosts: list[str] | None = None,
+    allowed_origins: list[str] | None = None,
+    disable_dns_rebinding: bool | None = None,
+    no_api_key: bool = False,
+) -> None:
+    resolved_transport: McpTransport = resolve_mcp_transport(transport)
+    if resolved_transport == "stdio":
+        create_server(project).run(transport="stdio")
+        return
+
+    config = resolve_http_config(
+        transport="streamable-http",
+        host=host,
+        port=port,
+        path=path,
+        api_key=api_key,
+        public_url=public_url,
+        allowed_hosts=allowed_hosts,
+        allowed_origins=allowed_origins,
+        disable_dns_rebinding=disable_dns_rebinding,
+        no_api_key=no_api_key,
+    )
+    server = create_server(project, http_config=config)
+    if config.api_key is None:
+        server.run(transport="streamable-http")
+        return
+
+    import uvicorn
+
+    application = server.streamable_http_app()
+    application.add_middleware(ApiKeyMiddleware, api_key=config.api_key)
+    uvicorn.run(
+        application,
+        host=config.host,
+        port=config.port,
+        log_level=server.settings.log_level.lower(),
+    )
 
 
 def _guarded[T](call: Callable[[], T]) -> T | str:

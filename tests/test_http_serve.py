@@ -1,0 +1,208 @@
+"""Tests for Streamable HTTP config and API-key middleware."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from starlette.applications import Starlette
+from starlette.responses import PlainTextResponse
+from starlette.routing import Route
+from starlette.testclient import TestClient
+from typer.testing import CliRunner
+
+from code_harness.cli import app
+from code_harness.mcp.http_auth import ApiKeyMiddleware
+from code_harness.mcp.http_config import (
+    resolve_http_config,
+    resolve_mcp_transport,
+    validate_http_config,
+)
+from code_harness.mcp.server import create_server
+from code_harness.session import Session
+
+runner = CliRunner()
+
+
+def _app_with_key(api_key: str) -> Starlette:
+    async def ok(_request: object) -> PlainTextResponse:
+        return PlainTextResponse("ok")
+
+    application = Starlette(routes=[Route("/mcp", endpoint=ok, methods=["GET", "POST"])])
+    application.add_middleware(ApiKeyMiddleware, api_key=api_key)
+    return application
+
+
+def test_api_key_middleware_accepts_bearer_and_x_api_key() -> None:
+    client = TestClient(_app_with_key("secret-token"))
+    assert client.get("/mcp").status_code == 401
+    assert client.get("/mcp", headers={"Authorization": "Bearer wrong"}).status_code == 401
+    assert client.get("/mcp", headers={"Authorization": "Bearer secret-token"}).status_code == 200
+    assert client.get("/mcp", headers={"X-Api-Key": "secret-token"}).status_code == 200
+
+
+def test_resolve_mcp_transport_defaults_to_stdio(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CODE_HARNESS_MCP_TRANSPORT", raising=False)
+    assert resolve_mcp_transport() == "stdio"
+
+
+def test_resolve_mcp_transport_uses_env_and_explicit_value_wins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CODE_HARNESS_MCP_TRANSPORT", "streamable-http")
+    assert resolve_mcp_transport() == "streamable-http"
+    assert resolve_mcp_transport("stdio") == "stdio"
+
+
+def test_resolve_mcp_transport_rejects_unknown_value() -> None:
+    with pytest.raises(ValueError, match="Unsupported MCP transport"):
+        resolve_mcp_transport("sse")
+
+
+def test_resolve_http_config_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CODE_HARNESS_MCP_HOST", raising=False)
+    monkeypatch.delenv("CODE_HARNESS_MCP_PORT", raising=False)
+    monkeypatch.delenv("CODE_HARNESS_MCP_PATH", raising=False)
+    monkeypatch.delenv("CODE_HARNESS_MCP_API_KEY", raising=False)
+    monkeypatch.delenv("CODE_HARNESS_MCP_PUBLIC_URL", raising=False)
+    config = resolve_http_config(transport="streamable-http")
+    assert config.host == "127.0.0.1"
+    assert config.port == 8000
+    assert config.path == "/mcp"
+    assert config.api_key is None
+    assert config.connector_url == "http://127.0.0.1:8000/mcp"
+
+
+def test_resolve_http_config_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CODE_HARNESS_MCP_HOST", "0.0.0.0")
+    monkeypatch.setenv("CODE_HARNESS_MCP_PORT", "9001")
+    monkeypatch.setenv("CODE_HARNESS_MCP_PATH", "mcp")
+    monkeypatch.setenv("CODE_HARNESS_MCP_API_KEY", "env-key")
+    monkeypatch.setenv("CODE_HARNESS_MCP_PUBLIC_URL", "https://mcp.example.com/mcp")
+    config = resolve_http_config(transport="streamable-http")
+    assert config.host == "0.0.0.0"
+    assert config.port == 9001
+    assert config.path == "/mcp"
+    assert config.api_key == "env-key"
+    assert config.connector_url == "https://mcp.example.com/mcp"
+    assert "mcp.example.com" in config.allowed_hosts
+    assert "https://mcp.example.com" in config.allowed_origins
+    assert "https://claude.ai" in config.allowed_origins
+
+
+def test_public_url_allows_cloudflare_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CODE_HARNESS_MCP_ALLOWED_HOSTS", raising=False)
+    monkeypatch.delenv("CODE_HARNESS_MCP_ALLOWED_ORIGINS", raising=False)
+    monkeypatch.delenv("CODE_HARNESS_MCP_DISABLE_DNS_REBINDING", raising=False)
+    public = "https://brisbane-messages-cartridges-promising.trycloudflare.com/mcp"
+    config = resolve_http_config(
+        transport="streamable-http",
+        public_url=public,
+        api_key="secret",
+        disable_dns_rebinding=False,
+    )
+    assert "brisbane-messages-cartridges-promising.trycloudflare.com" in config.allowed_hosts
+    assert config.connector_url == public
+
+
+def test_no_api_key_ignores_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CODE_HARNESS_MCP_API_KEY", "env-secret")
+    monkeypatch.delenv("CODE_HARNESS_MCP_NO_API_KEY", raising=False)
+    config = resolve_http_config(transport="streamable-http", no_api_key=True)
+    assert config.api_key is None
+
+    monkeypatch.setenv("CODE_HARNESS_MCP_NO_API_KEY", "1")
+    config_env = resolve_http_config(transport="streamable-http")
+    assert config_env.api_key is None
+
+
+
+def test_non_loopback_requires_api_key() -> None:
+    with pytest.raises(ValueError, match="API key"):
+        resolve_http_config(transport="streamable-http", host="0.0.0.0")
+
+
+def test_validate_http_config_allows_loopback_without_key() -> None:
+    config = resolve_http_config(transport="streamable-http", host="127.0.0.1", port=8000)
+    validate_http_config(config)
+
+
+def test_create_server_applies_http_settings(session: Session) -> None:
+    config = resolve_http_config(
+        transport="streamable-http",
+        host="127.0.0.1",
+        port=9010,
+        path="custom-mcp",
+        allowed_hosts=["mcp.example.com"],
+        allowed_origins=["https://mcp.example.com"],
+    )
+    server = create_server(session=session, http_config=config)
+
+    assert server.settings.host == "127.0.0.1"
+    assert server.settings.port == 9010
+    assert server.settings.streamable_http_path == "/custom-mcp"
+    security = server.settings.transport_security
+    assert security is not None
+    assert security.enable_dns_rebinding_protection is True
+    assert "mcp.example.com" in security.allowed_hosts
+    assert "https://mcp.example.com" in security.allowed_origins
+
+
+def test_streamable_http_initialize_handshake(session: Session) -> None:
+    config = resolve_http_config(transport="streamable-http")
+    server = create_server(session=session, http_config=config)
+    headers = {
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+    }
+    initialize = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "test-client", "version": "1.0"},
+        },
+    }
+
+    with TestClient(server.streamable_http_app(), base_url="http://localhost:8000") as client:
+        response = client.post("/mcp", json=initialize, headers=headers)
+
+    assert response.status_code == 200
+    assert response.headers.get("mcp-session-id")
+    assert '"serverInfo"' in response.text
+    assert '"code-harness"' in response.text
+
+
+def test_cli_serve_help_lists_http_options() -> None:
+    result = runner.invoke(app, ["serve", "--help"])
+    assert result.exit_code == 0
+    assert "--transport" in result.stdout
+    assert "streamable-http" in result.stdout
+    assert "--api-key" in result.stdout
+
+
+def test_cli_mcp_serve_help_lists_same_http_options() -> None:
+    result = runner.invoke(app, ["mcp", "serve", "--help"])
+    assert result.exit_code == 0
+    assert "--transport" in result.stdout
+    assert "streamable-http" in result.stdout
+    assert "--api-key" in result.stdout
+
+
+def test_cli_rejects_non_loopback_without_key(project: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "serve",
+            "--transport",
+            "streamable-http",
+            "--host",
+            "0.0.0.0",
+            "--project",
+            str(project),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "API key" in result.stderr

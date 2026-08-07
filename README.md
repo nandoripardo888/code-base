@@ -41,13 +41,14 @@ On Windows you can use `scripts/setup.ps1`, and `scripts/setup.sh` elsewhere.
 
 ## Running the MCP server
 
+`stdio` remains the default transport, so existing client configurations keep working:
+
 ```bash
 code-harness serve --project /path/to/project
 ```
 
 Without `--project` the server uses `CODE_HARNESS_PROJECT`, falling back to the
-current directory. The transport is stdio, so point your MCP client at that
-command. An entry for a client config looks like this:
+current directory. An entry for a stdio client config looks like this:
 
 ```json
 {
@@ -59,6 +60,45 @@ command. An entry for a client config looks like this:
   }
 }
 ```
+
+To run the same MCP server over Streamable HTTP:
+
+```bash
+code-harness serve --transport streamable-http --project /path/to/project
+```
+
+The defaults are `127.0.0.1:8000` with the MCP endpoint at `/mcp`. A non-loopback
+listen address requires an API key:
+
+```bash
+code-harness serve \
+  --transport streamable-http \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --api-key "change-me"
+```
+
+HTTP authentication accepts either `Authorization: Bearer <key>` or
+`X-Api-Key: <key>`. For a tunnel or public connector, pass `--public-url` so the
+public Host and Origin are added to the FastMCP transport-security allowlists.
+
+The HTTP settings can also be supplied through environment variables. Explicit
+CLI options take precedence:
+
+```text
+CODE_HARNESS_MCP_TRANSPORT=stdio|streamable-http
+CODE_HARNESS_MCP_HOST=127.0.0.1
+CODE_HARNESS_MCP_PORT=8000
+CODE_HARNESS_MCP_PATH=/mcp
+CODE_HARNESS_MCP_API_KEY=...
+CODE_HARNESS_MCP_PUBLIC_URL=https://example.com/mcp
+CODE_HARNESS_MCP_ALLOWED_HOSTS=host1,host2
+CODE_HARNESS_MCP_ALLOWED_ORIGINS=https://origin1,https://origin2
+CODE_HARNESS_MCP_DISABLE_DNS_REBINDING=0|1
+CODE_HARNESS_MCP_NO_API_KEY=0|1
+```
+
+`code-harness mcp serve` is an alias with the same transport options.
 
 ## CLI
 

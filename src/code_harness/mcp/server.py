@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -28,7 +29,8 @@ INSTRUCTIONS = (
     "group_id. Reuse that exact group_id for later related changes, and omit it again with "
     "a new group_title only when intentionally starting another group. Never invent group ids. "
     "After any successful change, "
-    "always surface review_url. Do not call OpenPatchReview again unless the URL was "
+    "always surface review_url (stable local portal, usually http://127.0.0.1:8765). "
+    "Do not call OpenPatchReview again unless the URL was "
     "unavailable or the user explicitly asks to reopen a review."
 )
 
@@ -60,18 +62,23 @@ def _guarded[T](call: Callable[[], T]) -> T | str:
         return error.render()
 
 
+async def _run_io[T](call: Callable[[], T]) -> T | str:
+    """Run blocking tool work off the event loop so concurrent MCP calls overlap."""
+    return await asyncio.to_thread(_guarded, call)
+
+
 def register_tools(server: FastMCP, session: Session) -> None:
     guard = session.guard
 
     @server.tool(description="Run a shell command; long commands move to the background.")
-    def Shell(
+    async def Shell(
         command: str,
         working_directory: str | None = None,
         block_until_ms: int = tools.DEFAULT_BLOCK_UNTIL_MS,
         description: str | None = None,
         shell: Literal["auto", "powershell", "cmd", "bash", "sh"] = "auto",
     ) -> Any:
-        return _guarded(
+        return await _run_io(
             lambda: tools.shell(
                 guard,
                 session.jobs,
@@ -84,12 +91,12 @@ def register_tools(server: FastMCP, session: Session) -> None:
         )
 
     @server.tool(description="Inspect or optionally wait for a background shell job.")
-    def GetJobStatus(
+    async def GetJobStatus(
         job_id: str,
         wait_ms: int = 0,
         tail_lines: int = tools.DEFAULT_TAIL_LINES,
     ) -> Any:
-        return _guarded(
+        return await _run_io(
             lambda: tools.get_job_status(
                 session.jobs,
                 job_id=job_id,
@@ -113,7 +120,7 @@ def register_tools(server: FastMCP, session: Session) -> None:
             "more of definition, implementation, instantiation, call, type_use, import, usage."
         )
     )
-    def Grep(
+    async def Grep(
         pattern: str | None = None,
         path: str | None = None,
         glob: str | list[str] | None = None,
@@ -133,7 +140,7 @@ def register_tools(server: FastMCP, session: Session) -> None:
         reference_kind: ReferenceKind | list[ReferenceKind] | None = None,
         exclude_reference_kind: ReferenceKind | list[ReferenceKind] | None = None,
     ) -> str:
-        return _guarded(
+        return await _run_io(
             lambda: tools.grep(
                 guard,
                 pattern=pattern,
@@ -163,13 +170,13 @@ def register_tools(server: FastMCP, session: Session) -> None:
             "pass include_all=true to list everything. Explicit exclude patterns always apply."
         )
     )
-    def Glob(
+    async def Glob(
         glob_pattern: str | list[str],
         target_directory: str | None = None,
         include_all: bool = False,
         exclude: str | list[str] | None = None,
     ) -> str:
-        return _guarded(
+        return await _run_io(
             lambda: tools.glob(
                 guard,
                 glob_pattern=glob_pattern,
@@ -180,26 +187,29 @@ def register_tools(server: FastMCP, session: Session) -> None:
         )
 
     @server.tool(description="Read a file as numbered lines, or an image as visual content.")
-    def Read(path: str, offset: int | None = None, limit: int | None = None) -> Any:
+    async def Read(path: str, offset: int | None = None, limit: int | None = None) -> Any:
         # Annotated as Any because the result is either text or an Image, and a
         # union of the two has no pydantic schema.
-        try:
-            result = tools.read(guard, path=path, offset=offset, limit=limit)
-        except HarnessError as error:
-            return error.render()
+        def _read() -> Any:
+            try:
+                return tools.read(guard, path=path, offset=offset, limit=limit)
+            except HarnessError as error:
+                return error.render()
+
+        result = await asyncio.to_thread(_read)
         if isinstance(result, tools.ImageResult):
             return Image(data=result.data, format=result.mime_type.removeprefix("image/"))
         return result
 
     @server.tool(description="Create a file or overwrite it entirely.")
-    def Write(
+    async def Write(
         path: str,
         contents: str,
         description: str | None = None,
         group_id: str | None = None,
         group_title: str | None = None,
     ) -> Any:
-        return _guarded(
+        return await _run_io(
             lambda: tools.write(
                 guard,
                 session.history,
@@ -213,7 +223,7 @@ def register_tools(server: FastMCP, session: Session) -> None:
         )
 
     @server.tool(description="Replace an exact string inside a file.")
-    def StrReplace(
+    async def StrReplace(
         path: str,
         old_string: str,
         new_string: str,
@@ -226,7 +236,7 @@ def register_tools(server: FastMCP, session: Session) -> None:
         group_id: str | None = None,
         group_title: str | None = None,
     ) -> Any:
-        return _guarded(
+        return await _run_io(
             lambda: tools.str_replace(
                 guard,
                 session.history,
@@ -253,7 +263,7 @@ def register_tools(server: FastMCP, session: Session) -> None:
             "the user can inspect the applied change immediately."
         )
     )
-    def ApplyPatch(
+    async def ApplyPatch(
         patch: str,
         description: str | None = None,
         group_id: str | None = None,
@@ -261,7 +271,7 @@ def register_tools(server: FastMCP, session: Session) -> None:
         dry_run: bool = False,
         expected_hashes: dict[str, str] | None = None,
     ) -> Any:
-        return _guarded(
+        return await _run_io(
             lambda: tools.apply_patch(
                 guard,
                 session.history,
@@ -277,16 +287,17 @@ def register_tools(server: FastMCP, session: Session) -> None:
 
     @server.tool(
         description=(
-            "Open the browser-only local portal for a saved review or update. "
-            "Use 'latest' to inspect the newest applied change."
+            "Open or deep-link the fixed local review portal for a saved review or update. "
+            "The portal stays at http://127.0.0.1:8765 (or CODE_HARNESS_REVIEW_PORT) for the "
+            "whole session; use 'latest' to focus the newest applied change."
         )
     )
-    def OpenPatchReview(
+    async def OpenPatchReview(
         transaction_id: str = "latest",
         group_id: str | None = None,
         open_browser: bool = True,
     ) -> Any:
-        return _guarded(
+        return await _run_io(
             lambda: session.reviews.open(
                 group_id or transaction_id,
                 transaction_id=(transaction_id if group_id else None),
@@ -295,8 +306,8 @@ def register_tools(server: FastMCP, session: Session) -> None:
         )
 
     @server.tool(description="Restore byte snapshots saved by any successful mutating tool.")
-    def RollbackPatch(transaction_id: str, force: bool = False) -> Any:
-        return _guarded(
+    async def RollbackPatch(transaction_id: str, force: bool = False) -> Any:
+        return await _run_io(
             lambda: tools.rollback_patch(
                 session.history,
                 transaction_id=transaction_id,
@@ -305,13 +316,13 @@ def register_tools(server: FastMCP, session: Session) -> None:
         )
 
     @server.tool(description="Delete a file.")
-    def Delete(
+    async def Delete(
         path: str,
         description: str | None = None,
         group_id: str | None = None,
         group_title: str | None = None,
     ) -> Any:
-        return _guarded(
+        return await _run_io(
             lambda: tools.delete(
                 guard,
                 session.history,

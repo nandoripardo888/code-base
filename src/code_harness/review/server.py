@@ -19,12 +19,8 @@ if TYPE_CHECKING:
     from code_harness.review.security import BrowserSession
 
 _STATIC_ROOT = Path(__file__).with_name("static")
-_ASSETS = {
-    "/review.css": ("review.css", "text/css; charset=utf-8"),
-    "/review.js": ("review.js", "text/javascript; charset=utf-8"),
-    "/static/review.css": ("review.css", "text/css; charset=utf-8"),
-    "/static/review.js": ("review.js", "text/javascript; charset=utf-8"),
-}
+_SESSION_COOKIE = "code_harness_review"
+_MAX_BODY = 8192
 _GROUP_API = re.compile(r"^/api/groups/([A-Za-z0-9_-]+)$")
 _PATCH_API = re.compile(
     r"^/api/groups/([A-Za-z0-9_-]+)/patches/([A-Za-z0-9_-]+)$"
@@ -35,33 +31,51 @@ _FILE_API = re.compile(
 _PATCH_ACTION_API = re.compile(
     r"^/api/groups/([A-Za-z0-9_-]+)/patches/([A-Za-z0-9_-]+)/(complete|rollback)$"
 )
-_GROUP_ROLLBACK_API = re.compile(r"^/api/groups/([A-Za-z0-9_-]+)/rollback$")
-_MAX_BODY = 8192
+_GROUP_ACTION_API = re.compile(r"^/api/groups/([A-Za-z0-9_-]+)/(complete|rollback)$")
+_CONTENT_TYPES = {
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".map": "application/json; charset=utf-8",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".ttf": "font/ttf",
+    ".otf": "font/otf",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+}
 
 
 def make_request_handler(manager: ReviewManager) -> type[BaseHTTPRequestHandler]:
     class ReviewRequestHandler(BaseHTTPRequestHandler):
         server_version = "code-harness-review"
         sys_version = ""
+        _set_session_cookie: str | None = None
 
         def do_GET(self) -> None:
+            self._set_session_cookie = None
             if not self._valid_host():
                 self._json_error(HTTPStatus.BAD_REQUEST, "Invalid host.")
                 return
             parsed = urlsplit(self.path)
             path = parsed.path
-            if path.startswith("/r/"):
-                self._establish(path.removeprefix("/r/"))
+            if path in {"/review.css", "/static/review.css"}:
+                self._serve_static_file("review.css")
                 return
-            session = self._browser_session()
-            if session is None:
-                self._json_error(HTTPStatus.UNAUTHORIZED, "Review session is required.")
+            if path in {"/review.js", "/static/review.js"}:
+                self._serve_static_file("review.js")
+                return
+            if path.startswith(("/chunks/", "/assets/", "/fonts/")):
+                self._serve_static_file(path.lstrip("/"))
                 return
             if path == "/":
+                session = self._require_session(create=True)
+                if session is None:
+                    return
                 self._serve_page(session)
                 return
-            if asset := _ASSETS.get(path):
-                self._serve_asset(*asset)
+            session = self._require_session(create=False)
+            if session is None:
                 return
             if path == "/api/groups":
                 limit_values = parse_qs(parsed.query).get("limit", ["50"])
@@ -72,12 +86,19 @@ def make_request_handler(manager: ReviewManager) -> type[BaseHTTPRequestHandler]
                     self._json_error(HTTPStatus.BAD_REQUEST, str(error))
                 return
             if path == "/api/groups/current":
-                self._send_json(
-                    manager.service.get_patch(
-                        session.selected_group_id,
-                        session.selected_transaction_id,
-                    ).to_dict()
-                )
+                try:
+                    selection = manager.service.resolve_selection("latest")
+                    self._send_json(
+                        manager.service.get_patch(
+                            selection.group_id,
+                            selection.transaction_id,
+                        ).to_dict()
+                    )
+                except HarnessError as error:
+                    self._send_json(
+                        {"error": error.message, "code": error.code},
+                        status=HTTPStatus.NOT_FOUND,
+                    )
                 return
             if match := _FILE_API.fullmatch(path):
                 if not self._owns_workspace(session):
@@ -127,12 +148,12 @@ def make_request_handler(manager: ReviewManager) -> type[BaseHTTPRequestHandler]
             self._json_error(HTTPStatus.NOT_FOUND, "Route not found.")
 
         def do_POST(self) -> None:
+            self._set_session_cookie = None
             if not self._valid_host() or self.headers.get("Origin") != manager.origin:
                 self._json_error(HTTPStatus.FORBIDDEN, "Request origin was rejected.")
                 return
-            session = self._browser_session()
+            session = self._require_session(create=False)
             if session is None:
-                self._json_error(HTTPStatus.UNAUTHORIZED, "Review session is required.")
                 return
             if self.headers.get("X-CSRF-Token") != session.csrf_token:
                 self._json_error(HTTPStatus.FORBIDDEN, "CSRF token was rejected.")
@@ -149,15 +170,21 @@ def make_request_handler(manager: ReviewManager) -> type[BaseHTTPRequestHandler]
                 self.rfile.read(length)
             path = urlsplit(self.path).path
             patch_action = _PATCH_ACTION_API.fullmatch(path)
-            group_rollback = _GROUP_ROLLBACK_API.fullmatch(path)
-            if patch_action is None and group_rollback is None:
+            group_action = _GROUP_ACTION_API.fullmatch(path)
+            if patch_action is None and group_action is None:
                 self._json_error(HTTPStatus.NOT_FOUND, "Route not found.")
                 return
             if not self._owns_workspace(session):
                 return
             try:
-                if group_rollback is not None:
-                    payload = manager.service.rollback_group(group_rollback.group(1)).to_dict()
+                if group_action is not None:
+                    group_id, action = group_action.groups()
+                    group_summary = (
+                        manager.service.complete_group(group_id)
+                        if action == "complete"
+                        else manager.service.rollback_group(group_id)
+                    )
+                    payload = group_summary.to_dict()
                 else:
                     assert patch_action is not None
                     group_id, transaction_id, action = patch_action.groups()
@@ -187,41 +214,51 @@ def make_request_handler(manager: ReviewManager) -> type[BaseHTTPRequestHandler]
             self._json_error(HTTPStatus.METHOD_NOT_ALLOWED, "Method not allowed.")
 
         def log_message(self, _format: str, *_args: Any) -> None:
-            # Tokens must never leak through the standard HTTP request log.
             return
-
-        def _establish(self, token: str) -> None:
-            established = manager.security.establish_session(token)
-            if established is None:
-                self._json_error(HTTPStatus.NOT_FOUND, "Review link is invalid or expired.")
-                return
-            session_id, _session = established
-            self.send_response(HTTPStatus.SEE_OTHER)
-            self._security_headers()
-            self.send_header(
-                "Set-Cookie",
-                f"code_harness_review={session_id}; Path=/; HttpOnly; SameSite=Strict",
-            )
-            self.send_header("Location", "/")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
 
         def _serve_page(self, session: BrowserSession) -> None:
             template = (_STATIC_ROOT / "review.html").read_text(encoding="utf-8")
             page = template.replace(
-                "__GROUP_ID__",
-                html.escape(session.selected_group_id, quote=True),
-            ).replace(
-                "__TRANSACTION_ID__",
-                html.escape(session.selected_transaction_id, quote=True),
-            ).replace(
                 "__CSRF_TOKEN__",
                 html.escape(session.csrf_token, quote=True),
             )
             self._send_bytes(page.encode("utf-8"), "text/html; charset=utf-8")
 
-        def _serve_asset(self, filename: str, content_type: str) -> None:
-            self._send_bytes((_STATIC_ROOT / filename).read_bytes(), content_type)
+        def _serve_static_file(self, relative: str) -> None:
+            candidate = self._safe_static_path(relative)
+            if candidate is None:
+                self._json_error(HTTPStatus.NOT_FOUND, "Asset not found.")
+                return
+            content_type = _CONTENT_TYPES.get(
+                candidate.suffix.lower(),
+                "application/octet-stream",
+            )
+            self._send_bytes(candidate.read_bytes(), content_type)
+
+        def _safe_static_path(self, relative: str) -> Path | None:
+            cleaned = relative.replace("\\", "/").lstrip("/")
+            if not cleaned or ".." in cleaned.split("/"):
+                return None
+            root = _STATIC_ROOT.resolve()
+            candidate = (root / cleaned).resolve()
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                return None
+            return candidate if candidate.is_file() else None
+
+        def _require_session(self, *, create: bool) -> BrowserSession | None:
+            session = self._browser_session()
+            if session is not None:
+                return session
+            if not create:
+                self._json_error(HTTPStatus.UNAUTHORIZED, "Review session is required.")
+                return None
+            session_id, session = manager.security.create_session(
+                manager.service.history.workspace_id
+            )
+            self._set_session_cookie = session_id
+            return session
 
         def _browser_session(self) -> BrowserSession | None:
             raw_cookie = self.headers.get("Cookie", "")
@@ -230,7 +267,7 @@ def make_request_handler(manager: ReviewManager) -> type[BaseHTTPRequestHandler]
                 cookie.load(raw_cookie)
             except ValueError:
                 return None
-            morsel = cookie.get("code_harness_review")
+            morsel = cookie.get(_SESSION_COOKIE)
             return manager.security.get_session(morsel.value if morsel else None)
 
         def _owns_workspace(self, session: BrowserSession) -> bool:
@@ -263,6 +300,14 @@ def make_request_handler(manager: ReviewManager) -> type[BaseHTTPRequestHandler]
         ) -> None:
             self.send_response(status)
             self._security_headers()
+            if self._set_session_cookie is not None:
+                self.send_header(
+                    "Set-Cookie",
+                    (
+                        f"{_SESSION_COOKIE}={self._set_session_cookie}; "
+                        "Path=/; HttpOnly; SameSite=Strict"
+                    ),
+                )
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
@@ -277,9 +322,10 @@ def make_request_handler(manager: ReviewManager) -> type[BaseHTTPRequestHandler]
             self.send_header("X-Frame-Options", "DENY")
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'none'; script-src 'self'; style-src 'self'; "
-                "connect-src 'self'; img-src 'self' data:; base-uri 'none'; "
-                "form-action 'none'; frame-ancestors 'none'",
+                "default-src 'none'; script-src 'self' 'wasm-unsafe-eval' blob:; "
+                "worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
+                "font-src 'self' data:; connect-src 'self'; img-src 'self' data:; "
+                "base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
             )
 
     return ReviewRequestHandler

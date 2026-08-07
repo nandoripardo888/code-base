@@ -70,6 +70,42 @@ def test_all_mutating_tools_share_one_group_and_rollback_in_reverse(project: Pat
         session.shutdown()
 
 
+def test_complete_group_marks_every_applied_patch_reviewed(project: Path) -> None:
+    session = Session.create(project)
+    try:
+        created = write(
+            session.guard,
+            session.history,
+            path="reviewed-group.txt",
+            contents="alpha\n",
+            description="Cria arquivo para revisão.",
+            group_title="Review completo",
+        )
+        assert isinstance(created, dict)
+        group_id = str(created["group_id"])
+        replaced = str_replace(
+            session.guard,
+            session.history,
+            path="reviewed-group.txt",
+            old_string="alpha",
+            new_string="beta",
+            description="Atualiza arquivo para revisão.",
+            group_id=group_id,
+        )
+        assert isinstance(replaced, dict)
+
+        completed = session.reviews.service.complete_group(group_id)
+
+        assert completed.reviewed_count == 2
+        assert completed.pending_count == 0
+        assert completed.rolled_back_count == 0
+        assert all(item.review_state == "reviewed" for item in completed.patches)
+        assert session.history.load(str(created["transaction_id"])).review_state == "reviewed"
+        assert session.history.load(str(replaced["transaction_id"])).review_state == "reviewed"
+    finally:
+        session.shutdown()
+
+
 def test_persisted_mutation_requires_note_and_new_group_title(project: Path) -> None:
     session = Session.create(project)
     try:

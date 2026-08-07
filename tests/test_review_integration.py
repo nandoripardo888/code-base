@@ -46,7 +46,9 @@ def test_apply_patch_exposes_optional_local_review(project: Path) -> None:
         assert review["additions"] == 1
         assert review["deletions"] == 1
         assert str(review["url"]).startswith("http://127.0.0.1:")
+        assert "?group=" in str(review["url"])
         assert result["review_url"] == review["url"]
+        assert review["origin"] == f"http://127.0.0.1:{session.reviews.port}"
         assert result["review_message"] == "Abra o portal local para revisar esta alteração."
         assert result["description"] == "Atualiza o retorno de hello para revisão."
         assert result["group_title"] == "Retorno de hello"

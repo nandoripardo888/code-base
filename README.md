@@ -14,7 +14,7 @@ without changing the tool count.
 | `Write` | Create or overwrite a file atomically |
 | `StrReplace` | Guarded substitution, tolerant of LF/CRLF differences |
 | `ApplyPatch` | Apply a unified diff through Git in a temporary workspace |
-| `OpenPatchReview` | Open a secure local review of a saved patch transaction |
+| `OpenPatchReview` | Deep-link the fixed local review portal |
 | `RollbackPatch` | Restore byte snapshots saved by `ApplyPatch` |
 | `Delete` | Delete a file |
 
@@ -105,22 +105,26 @@ in a group also requires `group_title`; later `Write`, `StrReplace`,
 group. Omitting it again starts a new group. Dry runs do not create history and
 do not require group metadata.
 
-Every successful mutation returns `review_url`. The one-use URL opens the local
-portal at the new update. Its tree is grouped as patch group → update → changed
-file, so follow-up patches and direct file edits remain under the same topic.
+Every successful mutation returns `review_url`. That URL points at the fixed
+local portal (`http://127.0.0.1:8765` by default) with optional `group` / `patch`
+query params so the UI focuses the new update. The portal is generic: bookmark
+`http://127.0.0.1:8765` and browse every retained change for the project. Its
+tree is grouped as patch group → update → changed file, so follow-up patches
+and direct file edits remain under the same topic.
 
 The portal compares exact before/after snapshots side by side, supports light
 and dark themes, marks updates reviewed, rolls back one update, or rolls back an
 entire review in reverse order after simulating every snapshot. It binds only to
-`127.0.0.1`, loads no CDN resources, and stops with the owning session. Old URLs
-do not survive a session restart, but retained transactions remain available in
-the next portal opened for the same project.
+`127.0.0.1`, loads no CDN resources, starts with the owning session, and stops
+when that session ends. Retained transactions remain available the next time the
+portal runs for the same project.
 
 Set `CODE_HARNESS_REVIEW_AUTO_OPEN=true` to ask a local installation to open the
 browser automatically after a successful patch. The default is disabled for
-remote, VM, and headless MCP deployments.
+remote, VM, and headless MCP deployments. Override the listen port with
+`CODE_HARNESS_REVIEW_PORT` (default `8765`).
 
-`OpenPatchReview(transaction_id="latest")` reopens the newest applied
+`OpenPatchReview(transaction_id="latest")` deep-links the newest applied
 transaction. From a terminal, `code-harness review latest` keeps the local page
 available until interrupted; add `--no-open` to print the URL without launching
 the browser.
@@ -159,6 +163,8 @@ Defaults can be changed through environment variables:
 | `CODE_HARNESS_PROJECT` | Default project root when `--project` is absent |
 | `CODE_HARNESS_RG` | Full path to the ripgrep executable |
 | `CODE_HARNESS_SHELL` | Shell used by `Shell` in `auto` mode; defaults to PowerShell on Windows and `$SHELL` elsewhere |
+| `CODE_HARNESS_REVIEW_PORT` | Loopback port for the review portal (default `8765`) |
+| `CODE_HARNESS_REVIEW_AUTO_OPEN` | Open the browser after each successful mutation when `true` |
 
 ## Background commands
 

@@ -66,14 +66,16 @@ def test_review_server_serves_summary_file_and_security_headers(
         history,
         description="Ajusta o arquivo de exemplo.",
     )
-    manager = ReviewManager(history)
+    manager = ReviewManager(history, port=0)
     try:
         opener, page, _csrf = _open_review(manager, transaction_id)
         group_id = f"legacy-group-{transaction_id}"
-        assert f'<meta name="group-id" content="{group_id}">' in page
         assert "Revisão de alterações" in page
+        assert 'name="review-csrf"' in page
+        assert 'name="group-id"' not in page
         assert 'href="./review.css"' in page
-        assert 'id="review-tree"' in page
+        assert 'id="root"' in page
+        assert 'src="./review.js"' in page
         assert 'id="review-select"' not in page
         assert (
             opener.open(f"{manager.origin}/review.css")
@@ -118,7 +120,7 @@ def test_review_portal_lists_and_opens_transactions_from_previous_session(
         after=b"first\n",
         description="Primeira alteração.",
     )
-    first_manager = ReviewManager(first_history)
+    first_manager = ReviewManager(first_history, port=0)
     first_manager.shutdown()
 
     second_history = HistoryManager(project, history_root=history_root)
@@ -129,10 +131,13 @@ def test_review_portal_lists_and_opens_transactions_from_previous_session(
         after=b"second\n",
         description="Segunda alteração.",
     )
-    second_manager = ReviewManager(second_history)
+    second_manager = ReviewManager(second_history, port=0)
     try:
         opener, page, _csrf = _open_review(second_manager, second_id)
-        assert f'content="{second_id}"' in page
+        assert "review-csrf" in page
+        assert f"group=legacy-group-{second_id}" in str(
+            second_manager.open(second_id)["url"]
+        )
 
         listing = json.loads(opener.open(f"{second_manager.origin}/api/groups").read())
         assert listing["total"] == 2
@@ -155,17 +160,34 @@ def test_review_portal_lists_and_opens_transactions_from_previous_session(
         second_manager.shutdown()
 
 
-def test_review_page_token_is_single_use(project: Path, tmp_path: Path) -> None:
+def test_review_root_is_stable_without_one_use_token(project: Path, tmp_path: Path) -> None:
     history = HistoryManager(project, history_root=tmp_path / "history")
     transaction_id = _applied_transaction(project, history)
-    manager = ReviewManager(history)
+    manager = ReviewManager(history, port=0)
     try:
-        result = manager.open(transaction_id)
+        origin = manager.ensure_started()
         opener = build_opener(HTTPCookieProcessor(CookieJar()))
-        opener.open(str(result["url"])).read()
+        first = opener.open(f"{origin}/").read().decode()
+        second = opener.open(f"{origin}/").read().decode()
+        assert 'name="review-csrf"' in first
+        assert 'name="review-csrf"' in second
+        result = manager.open(transaction_id)
+        assert str(result["url"]).startswith(f"{origin}/?")
+        assert "group=" in str(result["url"])
+        assert "patch=" in str(result["url"])
+        assert result["origin"] == origin
+    finally:
+        manager.shutdown()
+
+
+def test_review_api_requires_session_cookie(project: Path, tmp_path: Path) -> None:
+    history = HistoryManager(project, history_root=tmp_path / "history")
+    _applied_transaction(project, history)
+    manager = ReviewManager(history, port=0)
+    try:
         with pytest.raises(HTTPError) as raised:
-            opener.open(str(result["url"]))
-        assert raised.value.code == 404
+            build_opener().open(f"{manager.origin}/api/groups")
+        assert raised.value.code == 401
     finally:
         manager.shutdown()
 
@@ -176,11 +198,21 @@ def test_review_complete_and_rollback_restore_snapshot(
 ) -> None:
     history = HistoryManager(project, history_root=tmp_path / "history")
     transaction_id = _applied_transaction(project, history)
-    manager = ReviewManager(history)
+    manager = ReviewManager(history, port=0)
     try:
         opener, _page, csrf = _open_review(manager, transaction_id)
         group_id = f"legacy-group-{transaction_id}"
         headers = {"Origin": manager.origin, "X-CSRF-Token": csrf}
+        complete_group = Request(
+            f"{manager.origin}/api/groups/{group_id}/complete",
+            data=b"{}",
+            headers=headers,
+            method="POST",
+        )
+        completed_group = json.loads(opener.open(complete_group).read())
+        assert completed_group["reviewed_count"] == 1
+        assert completed_group["pending_count"] == 0
+
         complete = Request(
             f"{manager.origin}/api/groups/{group_id}/patches/{transaction_id}/complete",
             data=b"{}",
@@ -204,7 +236,7 @@ def test_review_complete_and_rollback_restore_snapshot(
 def test_review_rollback_rejects_later_file_changes(project: Path, tmp_path: Path) -> None:
     history = HistoryManager(project, history_root=tmp_path / "history")
     transaction_id = _applied_transaction(project, history)
-    manager = ReviewManager(history)
+    manager = ReviewManager(history, port=0)
     try:
         opener, _page, csrf = _open_review(manager, transaction_id)
         group_id = f"legacy-group-{transaction_id}"

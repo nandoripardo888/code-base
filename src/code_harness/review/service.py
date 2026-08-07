@@ -170,6 +170,14 @@ class ReviewService:
         self.history.mark_reviewed(transaction_id)
         return self.get_patch(group_id, transaction_id)
 
+    def complete_group(self, group_id: str) -> PatchGroupSummary:
+        group = self._load_group(group_id)
+        for manifest in group.transactions:
+            if manifest.status != "applied" or manifest.review_state == "reviewed":
+                continue
+            self.history.mark_reviewed(manifest.transaction_id)
+        return self.get_group(group_id)
+
     def rollback(self, group_id: str, transaction_id: str) -> PatchSummary:
         group = self._load_group(group_id)
         self._transaction_in_group(group, transaction_id)

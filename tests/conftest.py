@@ -36,6 +36,8 @@ requires_parsers = pytest.mark.skipif(
 @pytest.fixture(autouse=True)
 def isolated_history(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CODE_HARNESS_HISTORY_DIR", str(tmp_path / "history"))
+    # Ephemeral ports avoid collisions when multiple Session/ReviewManager instances run.
+    monkeypatch.setenv("CODE_HARNESS_REVIEW_PORT", "0")
 
 
 @pytest.fixture

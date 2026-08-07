@@ -46,7 +46,7 @@ flowchart TB
 | `symbols/` | Language extractors, optional parsers, symbols, and syntactic references |
 | `shell/environment.py` | Shell discovery, argv construction, syntax diagnostics |
 | `shell/background.py` | Job registry, process lifecycle, bounded log tails |
-| `mcp/server.py` | FastMCP registration over stdio |
+| `mcp/server.py` | FastMCP registration over stdio; tool bodies run via `asyncio.to_thread` so concurrent MCP calls overlap |
 | `cli.py` | The same tools behind typer commands |
 
 There is no index or database in v1. `Grep` and `Glob` remain the MCP surface.

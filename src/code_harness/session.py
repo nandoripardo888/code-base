@@ -31,6 +31,7 @@ class Session:
         guard = PathGuard(resolve_project_root(project))
         history = HistoryManager(guard.root)
         reviews = ReviewManager(history)
+        reviews.ensure_started()
         return cls(guard, jobs, history, reviews)
 
     @property

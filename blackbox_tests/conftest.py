@@ -29,6 +29,7 @@ def run_with_mcp[T](
             **os.environ,
             "PYTHONPATH": python_path,
             "CODE_HARNESS_HISTORY_DIR": str(history),
+            "CODE_HARNESS_REVIEW_PORT": "0",
         }
         parameters = StdioServerParameters(
             command=sys.executable,

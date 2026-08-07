@@ -283,20 +283,20 @@ after applying a patch. It is disabled by default for headless and remote hosts.
 | `group_id` | string | optional patch group; transaction must belong to it |
 | `open_browser` | bool | default `true` |
 
-Starts the review server lazily on an ephemeral `127.0.0.1` port and returns a
-one-use browser URL together with the stored `group_id` and
-`transaction_id`. The page establishes a workspace-scoped session, selects
-the requested transaction, and lists every retained `applied` or `rolled_back`
-review for the same project, including updates created by earlier MCP sessions.
-It reads only saved snapshots, never arbitrary paths or the live project. The
-left-side tree groups patch group → described update → changed files. The portal
-also provides side-by-side and unified views, collapsed context, change
-navigation, light/dark themes, per-update completion and rollback, and safe
-whole-review rollback in reverse order.
+Starts the review portal on fixed `127.0.0.1:8765` (or `CODE_HARNESS_REVIEW_PORT`)
+if it is not already running, and returns a stable URL with optional `group` /
+`patch` query params together with the stored `group_id` and `transaction_id`.
+Visiting the portal root establishes a workspace-scoped session cookie; the page
+lists every retained `applied` or `rolled_back` review for the same project,
+including updates created by earlier MCP sessions. It reads only saved
+snapshots, never arbitrary paths or the live project. The left-side tree groups
+patch group → described update → changed files. The portal also provides
+side-by-side and unified views, collapsed context, change navigation, light/dark
+themes, per-update completion and rollback, and safe whole-review rollback in
+reverse order.
 
-The URL exchanges its one-use token for an HttpOnly, SameSite session cookie.
-POST actions also require CSRF and same-origin checks. The server is stopped by
-the owning MCP or CLI session.
+POST actions require CSRF and same-origin checks. The server starts with the
+owning MCP or CLI session and stops when that session ends.
 
 ## RollbackPatch
 

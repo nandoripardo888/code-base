@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import time
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
+from code_harness import tools as tools_module
 from code_harness.cli import app
 from code_harness.errors import PathOutsideProjectError
 from code_harness.mcp.server import create_server
@@ -34,6 +37,39 @@ def test_server_exposes_shell_status_and_file_tools(session: Session) -> None:
     server = create_server(session=session)
     names = {tool.name for tool in asyncio.run(server.list_tools())}
     assert names == EXPECTED_TOOLS
+
+
+@requires_ripgrep
+def test_mcp_grep_calls_overlap(session: Session, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Read tools run in worker threads so concurrent MCP Grep calls overlap."""
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+    original = tools_module.grep
+
+    def slow_grep(*args: object, **kwargs: object) -> str:
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.2)
+        try:
+            return original(*args, **kwargs)
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(tools_module, "grep", slow_grep)
+    server = create_server(session=session)
+
+    async def exercise() -> None:
+        await asyncio.gather(
+            server.call_tool("Grep", {"pattern": "hello"}),
+            server.call_tool("Grep", {"pattern": "world"}),
+        )
+
+    asyncio.run(exercise())
+    assert max_active >= 2
 
 
 def test_tool_schemas_match_the_cursor_contract(session: Session) -> None:

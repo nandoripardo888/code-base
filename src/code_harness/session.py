@@ -8,7 +8,7 @@ from pathlib import Path
 
 from code_harness.history import HistoryManager
 from code_harness.paths import PathGuard
-from code_harness.review import ReviewManager
+from code_harness.review import ReviewHub, ReviewManager
 from code_harness.shell.background import JobRegistry
 
 
@@ -26,11 +26,17 @@ class Session:
     reviews: ReviewManager
 
     @classmethod
-    def create(cls, project: Path | str | None = None) -> Session:
+    def create(
+        cls,
+        project: Path | str | None = None,
+        *,
+        review_port: int | None = None,
+        review_hub: ReviewHub | None = None,
+    ) -> Session:
         jobs = JobRegistry()
         guard = PathGuard(resolve_project_root(project))
         history = HistoryManager(guard.root)
-        reviews = ReviewManager(history)
+        reviews = ReviewManager(history, port=review_port, hub=review_hub)
         reviews.ensure_started()
         return cls(guard, jobs, history, reviews)
 

@@ -6,6 +6,15 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- One MCP process can host multiple named project roots through `ProjectRegistry`;
+  project-aware tools accept an optional alias while omitted aliases preserve the
+  configured default behavior.
+- `ListProjects` and `ProjectInfo` expose safe alias/default context without
+  returning filesystem roots.
+- Persistent TOML project configuration supports `allowed_project_roots` plus
+  transactional `ReloadProjects()` without restarting the MCP endpoint/tunnel.
+- Named project sessions share one loopback review portal while keeping separate
+  path guards, job registries, histories, and rollback workspaces.
 - `Grep` accepts `output_mode=references` for on-demand syntactic references in
   Python, Java, JavaScript, JSX, TypeScript, and TSX through the optional
   `parsers` dependency extra.
@@ -16,6 +25,11 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- Legacy single-project startup remains compatible, while `serve` / `mcp serve`
+  also accept repeatable `alias=path`, `--default-project`, or `--project-config`.
+- Background jobs, patch history, rollback, and review routing are isolated per
+  selected project; structured execution/mutation results include the resolved
+  project alias.
 - `Grep.pattern` may be omitted for a `symbols` outline scoped to one file.
 - `Grep` `count` mode now reports total matches, total files, and a deterministic
   per-file ranking before paginating the file list.

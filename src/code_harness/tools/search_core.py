@@ -39,6 +39,7 @@ OUTPUT_MODES: tuple[OutputMode, ...] = (
 
 # Ripgrep can emit millions of lines; keep responses bounded even without head_limit.
 MATCH_CAP = 1_000
+GLOB_CAP = 1_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,7 +176,17 @@ def grep_content(
         include_all=include_all,
         exclude=exclude,
     )
-    output = ripgrep.run(arguments, cwd=guard.root)
+    # Stop ripgrep once we have enough rows so broad searches on large trees
+    # (e.g. network drives) do not wait for a full scan and hit the 60s timeout.
+    # Fetch one extra row so renderers can still emit the "more matches" hint.
+    page_size = min(head_limit or MATCH_CAP, MATCH_CAP) + (offset or 0)
+    fetch_limit = page_size + 1
+    if output_mode == "content":
+        output = ripgrep.run(arguments, cwd=guard.root, max_json_matches=fetch_limit)
+    elif output_mode == "files_with_matches":
+        output = ripgrep.run(arguments, cwd=guard.root, max_stdout_lines=fetch_limit)
+    else:
+        output = ripgrep.run(arguments, cwd=guard.root)
 
     if output_mode == "content":
         has_context = any(
@@ -241,8 +252,15 @@ def list_files(
         arguments.extend(["--glob", pattern])
     arguments.extend(exclusion_glob_flags(exclude))
     arguments.extend(["--", "."])
-    output = ripgrep.run(arguments, cwd=directory)
+    # Glob has no paging arguments, so cap the ripgrep stream before a broad
+    # pattern on a large/network tree can accumulate an unbounded file list in
+    # the MCP process. Fetch one extra row so callers can be told to narrow the
+    # search when the result was truncated.
+    output = ripgrep.run(arguments, cwd=directory, max_stdout_lines=GLOB_CAP + 1)
     paths = [line.strip() for line in output.splitlines() if line.strip()]
+    truncated = len(paths) > GLOB_CAP
+    if truncated:
+        paths = paths[:GLOB_CAP]
     if paths:
         # Dedupe while preserving ripgrep order before mtime sort.
         absolute: list[Path] = []
@@ -257,6 +275,13 @@ def list_files(
 
         listing = "\n".join(f"- {guard.relative(entry)}" for entry in absolute)
         location = guard.relative(directory)
+        if truncated:
+            return (
+                f"Result of search in '{location}' (showing {len(absolute)} files; "
+                f"more matches exist):\n{listing}\n\n"
+                f"Result capped at {GLOB_CAP} files. Narrow glob_pattern or target_directory "
+                "to search beyond the cap."
+            )
         return f"Result of search in '{location}' (total {len(absolute)} files):\n{listing}"
 
     message = f"No files found matching '{label}'."
@@ -350,7 +375,7 @@ def _grep_has_matches_without_harness_ignores(
         include_all=True,
         exclude=exclude,
     )
-    output = ripgrep.run(arguments, cwd=guard.root)
+    output = ripgrep.run(arguments, cwd=guard.root, max_stdout_lines=1)
     return bool(output.strip())
 
 
@@ -366,7 +391,7 @@ def _glob_has_files_without_harness_ignores(
         arguments.extend(["--glob", pattern])
     arguments.extend(exclusion_glob_flags(exclude))
     arguments.extend(["--", "."])
-    output = ripgrep.run(arguments, cwd=directory)
+    output = ripgrep.run(arguments, cwd=directory, max_stdout_lines=1)
     return bool(output.strip())
 
 

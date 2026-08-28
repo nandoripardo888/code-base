@@ -11,7 +11,7 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener
 import pytest
 
 from code_harness.history import FileSnapshot, HistoryManager
-from code_harness.review import ReviewManager
+from code_harness.review import ReviewHub, ReviewManager
 
 
 def _applied_transaction(
@@ -256,3 +256,62 @@ def test_review_rollback_rejects_later_file_changes(project: Path, tmp_path: Pat
         assert (project / "sample.txt").read_bytes() == b"later\n"
     finally:
         manager.shutdown()
+
+
+def test_shared_review_hub_routes_two_workspaces_without_leakage(tmp_path: Path) -> None:
+    crm = tmp_path / "crm"
+    banco = tmp_path / "banco"
+    crm.mkdir()
+    banco.mkdir()
+    history_root = tmp_path / "history"
+    crm_history = HistoryManager(crm, history_root=history_root)
+    banco_history = HistoryManager(banco, history_root=history_root)
+    crm_id = _applied_transaction(crm, crm_history, after=b"crm\n", description="CRM")
+    banco_id = _applied_transaction(
+        banco,
+        banco_history,
+        after=b"banco\n",
+        description="Banco",
+    )
+    hub = ReviewHub(port=0)
+    crm_reviews = ReviewManager(crm_history, hub=hub)
+    banco_reviews = ReviewManager(banco_history, hub=hub)
+    try:
+        crm_review = crm_reviews.open(crm_id)
+        banco_review = banco_reviews.open(banco_id)
+        assert crm_review["origin"] == banco_review["origin"] == hub.origin
+
+        opener = build_opener(HTTPCookieProcessor(CookieJar()))
+        page = opener.open(str(crm_review["url"])).read().decode()
+        csrf_match = re.search(r'name="review-csrf" content="([^"]+)"', page)
+        assert csrf_match is not None
+        csrf = html.unescape(csrf_match.group(1))
+
+        listing = json.loads(opener.open(f"{hub.origin}/api/groups").read())
+        group_ids = {item["group_id"] for item in listing["items"]}
+        crm_group = f"legacy-group-{crm_id}"
+        banco_group = f"legacy-group-{banco_id}"
+        assert {crm_group, banco_group} <= group_ids
+
+        crm_summary = json.loads(opener.open(f"{hub.origin}/api/groups/{crm_group}").read())
+        banco_summary = json.loads(opener.open(f"{hub.origin}/api/groups/{banco_group}").read())
+        assert crm_summary["group_title"] == "CRM"
+        assert banco_summary["group_title"] == "Banco"
+
+        with pytest.raises(HTTPError) as raised:
+            opener.open(f"{hub.origin}/api/groups/{crm_group}/patches/{banco_id}")
+        assert raised.value.code == 404
+
+        rollback = Request(
+            f"{hub.origin}/api/groups/{crm_group}/rollback",
+            data=b"{}",
+            headers={"Origin": hub.origin, "X-CSRF-Token": csrf},
+            method="POST",
+        )
+        assert json.loads(opener.open(rollback).read())["rolled_back_count"] == 1
+        assert (crm / "sample.txt").read_bytes() == b"before\n"
+        assert (banco / "sample.txt").read_bytes() == b"banco\n"
+    finally:
+        crm_reviews.shutdown()
+        banco_reviews.shutdown()
+        hub.shutdown()

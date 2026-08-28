@@ -12,6 +12,7 @@ import typer
 
 from code_harness import tools
 from code_harness.errors import HarnessError
+from code_harness.projects import parse_project_specs
 from code_harness.session import Session
 from code_harness.version import __version__
 
@@ -20,6 +21,22 @@ mcp_app = typer.Typer(help="MCP server commands.")
 app.add_typer(mcp_app, name="mcp")
 
 _ROOT = typer.Option(None, "--project", "-p", help="Project root; defaults to the current dir.")
+_MCP_PROJECTS = typer.Option(
+    None,
+    "--project",
+    "-p",
+    help="Project root (legacy) or alias=path; repeatable for named projects.",
+)
+_MCP_DEFAULT_PROJECT = typer.Option(
+    None,
+    "--default-project",
+    help="Default alias when multiple named projects are configured.",
+)
+_MCP_PROJECT_CONFIG = typer.Option(
+    None,
+    "--project-config",
+    help="Persistent TOML project registry; also supports CODE_HARNESS_PROJECT_CONFIG.",
+)
 _MCP_TRANSPORT = typer.Option(
     None,
     "--transport",
@@ -28,11 +45,34 @@ _MCP_TRANSPORT = typer.Option(
 _MCP_HOST = typer.Option(None, "--host", help="HTTP listen host.")
 _MCP_PORT = typer.Option(None, "--port", help="HTTP listen port.")
 _MCP_PATH = typer.Option(None, "--path", help="Streamable HTTP endpoint path.")
+_MCP_AUTH = typer.Option(
+    None,
+    "--auth",
+    help="HTTP auth mode: none, api-key, or oauth. Defaults from flags/env.",
+)
 _MCP_API_KEY = typer.Option(None, "--api-key", help="API key required by the HTTP endpoint.")
 _MCP_NO_API_KEY = typer.Option(
     False,
     "--no-api-key",
     help="Disable API-key auth, overriding CODE_HARNESS_MCP_API_KEY.",
+)
+_MCP_TOOL_ALLOWLIST = typer.Option(
+    None,
+    "--tool-allowlist",
+    help="Tool name to expose; repeatable or comma-separated.",
+)
+_MCP_OAUTH_ISSUER_URL = typer.Option(None, "--oauth-issuer-url", help="OAuth issuer URL.")
+_MCP_OAUTH_JWKS_URL = typer.Option(None, "--oauth-jwks-url", help="OAuth JWKS endpoint URL.")
+_MCP_OAUTH_AUDIENCE = typer.Option(None, "--oauth-audience", help="Expected JWT audience.")
+_MCP_OAUTH_RESOURCE_URL = typer.Option(
+    None,
+    "--oauth-resource-url",
+    help="OAuth protected resource URL; defaults to --public-url.",
+)
+_MCP_OAUTH_SCOPES = typer.Option(
+    None,
+    "--oauth-scope",
+    help="Globally required OAuth scope; repeatable or comma-separated.",
 )
 _MCP_PUBLIC_URL = typer.Option(
     None,
@@ -89,14 +129,23 @@ def _run(project: Path | None, action: Callable[[Session], Any]) -> None:
 
 
 def _serve(
-    project: Path | None,
+    project_specs: list[str] | None,
     *,
+    default_project: str | None,
+    project_config: Path | None,
     transport: str | None,
     host: str | None,
     port: int | None,
     path: str | None,
+    auth: str | None,
     api_key: str | None,
     no_api_key: bool,
+    tool_allowlist: list[str] | None,
+    oauth_issuer_url: str | None,
+    oauth_jwks_url: str | None,
+    oauth_audience: str | None,
+    oauth_resource_url: str | None,
+    oauth_scopes: list[str] | None,
     public_url: str | None,
     allowed_hosts: list[str] | None,
     allowed_origins: list[str] | None,
@@ -105,19 +154,33 @@ def _serve(
     from code_harness.mcp.server import run_server
 
     try:
+        startup = parse_project_specs(project_specs, default_project=default_project)
         run_server(
-            project,
+            startup.legacy_project,
+            projects=startup.projects if startup.uses_registry else None,
+            default_project=startup.default_project,
+            project_config=project_config,
             transport=transport,
             host=host,
             port=port,
             path=path,
+            auth=auth,
             api_key=api_key,
             no_api_key=no_api_key,
+            tool_allowlist=tool_allowlist,
+            oauth_issuer_url=oauth_issuer_url,
+            oauth_jwks_url=oauth_jwks_url,
+            oauth_audience=oauth_audience,
+            oauth_resource_url=oauth_resource_url,
+            oauth_scopes=oauth_scopes,
             public_url=public_url,
             allowed_hosts=allowed_hosts,
             allowed_origins=allowed_origins,
             disable_dns_rebinding=disable_dns_rebinding,
         )
+    except HarnessError as error:
+        typer.echo(error.render(), err=True)
+        raise typer.Exit(code=1) from error
     except ValueError as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(code=1) from error
@@ -131,13 +194,22 @@ def version() -> None:
 
 @app.command()
 def serve(
-    project: Path | None = _ROOT,
+    project: list[str] | None = _MCP_PROJECTS,
+    default_project: str | None = _MCP_DEFAULT_PROJECT,
+    project_config: Path | None = _MCP_PROJECT_CONFIG,
     transport: str | None = _MCP_TRANSPORT,
     host: str | None = _MCP_HOST,
     port: int | None = _MCP_PORT,
     path: str | None = _MCP_PATH,
+    auth: str | None = _MCP_AUTH,
     api_key: str | None = _MCP_API_KEY,
     no_api_key: bool = _MCP_NO_API_KEY,
+    tool_allowlist: list[str] | None = _MCP_TOOL_ALLOWLIST,
+    oauth_issuer_url: str | None = _MCP_OAUTH_ISSUER_URL,
+    oauth_jwks_url: str | None = _MCP_OAUTH_JWKS_URL,
+    oauth_audience: str | None = _MCP_OAUTH_AUDIENCE,
+    oauth_resource_url: str | None = _MCP_OAUTH_RESOURCE_URL,
+    oauth_scopes: list[str] | None = _MCP_OAUTH_SCOPES,
     public_url: str | None = _MCP_PUBLIC_URL,
     allowed_hosts: list[str] | None = _MCP_ALLOWED_HOSTS,
     allowed_origins: list[str] | None = _MCP_ALLOWED_ORIGINS,
@@ -146,12 +218,21 @@ def serve(
     """Run the MCP server over stdio or Streamable HTTP."""
     _serve(
         project,
+        default_project=default_project,
+        project_config=project_config,
         transport=transport,
         host=host,
         port=port,
         path=path,
+        auth=auth,
         api_key=api_key,
         no_api_key=no_api_key,
+        tool_allowlist=tool_allowlist,
+        oauth_issuer_url=oauth_issuer_url,
+        oauth_jwks_url=oauth_jwks_url,
+        oauth_audience=oauth_audience,
+        oauth_resource_url=oauth_resource_url,
+        oauth_scopes=oauth_scopes,
         public_url=public_url,
         allowed_hosts=allowed_hosts,
         allowed_origins=allowed_origins,
@@ -161,13 +242,22 @@ def serve(
 
 @mcp_app.command("serve")
 def mcp_serve(
-    project: Path | None = _ROOT,
+    project: list[str] | None = _MCP_PROJECTS,
+    default_project: str | None = _MCP_DEFAULT_PROJECT,
+    project_config: Path | None = _MCP_PROJECT_CONFIG,
     transport: str | None = _MCP_TRANSPORT,
     host: str | None = _MCP_HOST,
     port: int | None = _MCP_PORT,
     path: str | None = _MCP_PATH,
+    auth: str | None = _MCP_AUTH,
     api_key: str | None = _MCP_API_KEY,
     no_api_key: bool = _MCP_NO_API_KEY,
+    tool_allowlist: list[str] | None = _MCP_TOOL_ALLOWLIST,
+    oauth_issuer_url: str | None = _MCP_OAUTH_ISSUER_URL,
+    oauth_jwks_url: str | None = _MCP_OAUTH_JWKS_URL,
+    oauth_audience: str | None = _MCP_OAUTH_AUDIENCE,
+    oauth_resource_url: str | None = _MCP_OAUTH_RESOURCE_URL,
+    oauth_scopes: list[str] | None = _MCP_OAUTH_SCOPES,
     public_url: str | None = _MCP_PUBLIC_URL,
     allowed_hosts: list[str] | None = _MCP_ALLOWED_HOSTS,
     allowed_origins: list[str] | None = _MCP_ALLOWED_ORIGINS,
@@ -176,12 +266,21 @@ def mcp_serve(
     """Run the MCP server (alias for ``serve``)."""
     _serve(
         project,
+        default_project=default_project,
+        project_config=project_config,
         transport=transport,
         host=host,
         port=port,
         path=path,
+        auth=auth,
         api_key=api_key,
         no_api_key=no_api_key,
+        tool_allowlist=tool_allowlist,
+        oauth_issuer_url=oauth_issuer_url,
+        oauth_jwks_url=oauth_jwks_url,
+        oauth_audience=oauth_audience,
+        oauth_resource_url=oauth_resource_url,
+        oauth_scopes=oauth_scopes,
         public_url=public_url,
         allowed_hosts=allowed_hosts,
         allowed_origins=allowed_origins,

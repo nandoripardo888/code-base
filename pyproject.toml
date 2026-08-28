@@ -11,6 +11,7 @@ requires-python = ">=3.12"
 authors = [{ name = "code-harness contributors" }]
 dependencies = [
   "mcp>=1.9,<2",
+  "PyJWT[crypto]>=2.8,<3",
   "typer>=0.16,<1",
 ]
 

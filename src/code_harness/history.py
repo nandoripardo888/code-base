@@ -459,7 +459,13 @@ class HistoryManager:
             raise PatchHistoryError(f"Patch transaction was not found: {transaction_id}") from error
         if not isinstance(value, dict):
             raise PatchHistoryError(f"Patch transaction is invalid: {transaction_id}")
-        return TransactionManifest.from_dict(value)
+        manifest = TransactionManifest.from_dict(value)
+        manifest_root = Path(manifest.workspace_root).resolve(strict=False)
+        if manifest.workspace_id != self.workspace_id or manifest_root != self.project_root:
+            raise PatchHistoryError(
+                f"Patch transaction belongs to another workspace: {transaction_id}"
+            )
+        return manifest
 
     def list_transactions(self, *, status: str | None = None) -> tuple[TransactionManifest, ...]:
         """Return this workspace's transactions, newest first."""

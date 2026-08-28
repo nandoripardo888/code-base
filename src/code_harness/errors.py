@@ -55,10 +55,13 @@ class InvalidPathKindError(HarnessError):
 class RipgrepUnavailableError(HarnessError):
     code = "ripgrep_unavailable"
 
-    def __init__(self, detail: str) -> None:
-        super().__init__(
-            f"{detail} Install ripgrep or set CODE_HARNESS_RG to the full path of the executable."
-        )
+    def __init__(self, detail: str, *, hint_install: bool = True) -> None:
+        if hint_install:
+            super().__init__(
+                f"{detail} Install ripgrep or set CODE_HARNESS_RG to the full path of the executable."
+            )
+        else:
+            super().__init__(detail)
 
 
 class ParserSupportUnavailableError(HarnessError):

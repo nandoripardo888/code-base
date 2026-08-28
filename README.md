@@ -1,11 +1,15 @@
 # code-harness
 
-A local MCP server with a compact Cursor-like tool set. Eleven tools, no index,
+A local MCP server with a compact Cursor-like tool set. Fifteen tools, no index,
 embeddings, or SQLite. Optional on-demand parsers add syntactic references
 without changing the tool count.
 
 | Tool | Purpose |
 |------|---------|
+| `ServerInfo` | Return non-sensitive server metadata |
+| `ListProjects` | Discover configured project aliases without exposing roots |
+| `ProjectInfo` | Confirm the selected/default project context |
+| `ReloadProjects` | Reload a persistent project registry without restarting MCP |
 | `Shell` | Run a shell command; long ones return a `job_id` |
 | `GetJobStatus` | Follow a background shell job and its trailing output |
 | `Grep` | Regex search over file contents (ripgrep) |
@@ -61,26 +65,113 @@ current directory. An entry for a stdio client config looks like this:
 }
 ```
 
+### Multiple projects in one MCP process
+
+For named projects, repeat `--project alias=path` and choose a default alias:
+
+```bash
+code-harness serve \
+  --project crmservice=/projects/crmservice \
+  --project banco=/projects/banco \
+  --project ear=/projects/ear \
+  --default-project crmservice
+```
+
+All project-aware tools accept an optional `project` alias. Omitting it uses the
+configured default; an explicit unknown alias fails without fallback. `ListProjects`
+discovers valid aliases and `ProjectInfo` confirms the selected context.
+
+For a persistent registry, use a TOML control file instead of repeating flags:
+
+```toml
+default_project = "crmservice"
+allowed_project_roots = ["/projects"]
+
+[projects.crmservice]
+path = "/projects/crmservice"
+
+[projects.banco]
+path = "/projects/banco"
+
+[projects.ear]
+path = "/projects/ear"
+```
+
+Start with `code-harness serve --project-config /secure/code-harness-projects.toml`
+or set `CODE_HARNESS_PROJECT_CONFIG`. After editing that same file,
+`ReloadProjects()` validates and applies the new registry without restarting the
+MCP endpoint or tunnel. The tool never accepts a caller-supplied config path.
+Keep the TOML outside registered project roots when possible because it is the
+control-plane for `allowed_project_roots`.
+
 To run the same MCP server over Streamable HTTP:
 
 ```bash
 code-harness serve --transport streamable-http --project /path/to/project
 ```
 
-The defaults are `127.0.0.1:8000` with the MCP endpoint at `/mcp`. A non-loopback
-listen address requires an API key:
+The defaults are `127.0.0.1:8000` with the MCP endpoint at `/mcp`. HTTP supports
+three authentication modes: `none`, `api-key`, and `oauth`. Existing `--api-key`
+usage remains compatible and implicitly selects API-key authentication:
 
 ```bash
 code-harness serve \
   --transport streamable-http \
   --host 0.0.0.0 \
   --port 8000 \
+  --auth api-key \
   --api-key "change-me"
 ```
 
-HTTP authentication accepts either `Authorization: Bearer <key>` or
-`X-Api-Key: <key>`. For a tunnel or public connector, pass `--public-url` so the
-public Host and Origin are added to the FastMCP transport-security allowlists.
+API-key authentication accepts either `Authorization: Bearer <key>` or
+`X-Api-Key: <key>`.
+
+Tool exposure can be restricted independently of authentication. The option is
+repeatable and also accepts comma-separated names:
+
+```bash
+code-harness serve \
+  --transport streamable-http \
+  --tool-allowlist Grep,Glob,Read
+```
+
+For an unauthenticated public endpoint, code-harness requires an explicit
+allowlist containing only public-safe tools. Currently the only public-safe tool
+is `ServerInfo`; code/file access and shell execution cannot be exposed publicly
+without authentication:
+
+```bash
+code-harness serve \
+  --transport streamable-http \
+  --auth none \
+  --tool-allowlist ServerInfo \
+  --public-url https://example.com/mcp
+```
+
+For OAuth, code-harness acts as an OAuth resource server. The external
+authorization server must issue asymmetric JWT access tokens and expose JWKS.
+The MCP SDK publishes Protected Resource Metadata automatically so remote clients
+such as Claude can discover the authorization server:
+
+```bash
+code-harness serve \
+  --transport streamable-http \
+  --auth oauth \
+  --public-url https://mcp.example.com/mcp \
+  --oauth-issuer-url https://auth.example.com \
+  --oauth-jwks-url https://auth.example.com/.well-known/jwks.json \
+  --oauth-audience code-harness \
+  --tool-allowlist Grep,Glob,Read
+```
+
+OAuth tool calls enforce these scopes: `code.read` for `ListProjects`,
+`ProjectInfo`, `Grep`, `Glob`, and `Read`; `code.write` for `ReloadProjects` and
+mutation/review tools; and `code.exec` for `Shell` and `GetJobStatus`.
+`ServerInfo` has no tool-specific scope. `--oauth-scope` can be used when the
+authorization server should require additional scopes globally.
+
+For a tunnel or public connector, pass `--public-url` so the public Host and
+Origin are added to the FastMCP transport-security allowlists.
 
 The HTTP settings can also be supplied through environment variables. Explicit
 CLI options take precedence:
@@ -90,7 +181,14 @@ CODE_HARNESS_MCP_TRANSPORT=stdio|streamable-http
 CODE_HARNESS_MCP_HOST=127.0.0.1
 CODE_HARNESS_MCP_PORT=8000
 CODE_HARNESS_MCP_PATH=/mcp
+CODE_HARNESS_MCP_AUTH=none|api-key|oauth
 CODE_HARNESS_MCP_API_KEY=...
+CODE_HARNESS_MCP_TOOL_ALLOWLIST=Grep,Glob,Read
+CODE_HARNESS_MCP_OAUTH_ISSUER_URL=https://auth.example.com
+CODE_HARNESS_MCP_OAUTH_JWKS_URL=https://auth.example.com/.well-known/jwks.json
+CODE_HARNESS_MCP_OAUTH_AUDIENCE=code-harness
+CODE_HARNESS_MCP_OAUTH_RESOURCE_URL=https://mcp.example.com/mcp
+CODE_HARNESS_MCP_OAUTH_SCOPES=scope1,scope2
 CODE_HARNESS_MCP_PUBLIC_URL=https://example.com/mcp
 CODE_HARNESS_MCP_ALLOWED_HOSTS=host1,host2
 CODE_HARNESS_MCP_ALLOWED_ORIGINS=https://origin1,https://origin2
@@ -98,7 +196,8 @@ CODE_HARNESS_MCP_DISABLE_DNS_REBINDING=0|1
 CODE_HARNESS_MCP_NO_API_KEY=0|1
 ```
 
-`code-harness mcp serve` is an alias with the same transport options.
+`code-harness mcp serve` is an alias with the same transport, authentication,
+and tool-policy options.
 
 ## CLI
 
@@ -155,9 +254,9 @@ and direct file edits remain under the same topic.
 The portal compares exact before/after snapshots side by side, supports light
 and dark themes, marks updates reviewed, rolls back one update, or rolls back an
 entire review in reverse order after simulating every snapshot. It binds only to
-`127.0.0.1`, loads no CDN resources, starts with the owning session, and stops
-when that session ends. Retained transactions remain available the next time the
-portal runs for the same project.
+`127.0.0.1`, loads no CDN resources, and a named `ProjectRegistry` shares one
+`ReviewHub` across all registered workspaces. Retained transactions remain
+workspace-scoped and become available again whenever that project is registered.
 
 Set `CODE_HARNESS_REVIEW_AUTO_OPEN=true` to ask a local installation to open the
 browser automatically after a successful patch. The default is disabled for
@@ -200,7 +299,8 @@ Defaults can be changed through environment variables:
 
 | Variable | Effect |
 |----------|--------|
-| `CODE_HARNESS_PROJECT` | Default project root when `--project` is absent |
+| `CODE_HARNESS_PROJECT` | Default project root when `--project` is absent in legacy mode |
+| `CODE_HARNESS_PROJECT_CONFIG` | Persistent TOML registry used by named multi-project startup/reload |
 | `CODE_HARNESS_RG` | Full path to the ripgrep executable |
 | `CODE_HARNESS_SHELL` | Shell used by `Shell` in `auto` mode; defaults to PowerShell on Windows and `$SHELL` elsewhere |
 | `CODE_HARNESS_REVIEW_PORT` | Loopback port for the review portal (default `8765`) |

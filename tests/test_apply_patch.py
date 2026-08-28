@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ import pytest
 from code_harness.errors import (
     InvalidArgumentError,
     PatchConflictError,
+    PatchHistoryError,
     PatchInvalidError,
     PatchRollbackConflictError,
 )
@@ -187,6 +189,29 @@ def test_rollback_patch_restores_byte_snapshots(project: Path) -> None:
 
     assert rollback["status"] == "rolled_back"
     assert (project / "src" / "hello.py").read_bytes() == original
+
+
+@requires_git
+def test_rollback_rejects_transaction_manifest_from_another_workspace(project: Path) -> None:
+    other_project = project.parent / "other-project"
+    shutil.copytree(project, other_project)
+    first = Session.create(project)
+    second = Session.create(other_project, review_port=0)
+    try:
+        result = apply_patch(first.guard, first.history, patch=MODIFY_PATCH, **TRACKING)
+        transaction_id = str(result["transaction_id"])
+        source = first.history.transactions_dir / transaction_id
+        target = second.history.transactions_dir / transaction_id
+        shutil.copytree(source, target)
+
+        with pytest.raises(PatchHistoryError, match="belongs to another workspace"):
+            rollback_patch(second.history, transaction_id=transaction_id)
+
+        assert "terra" in (project / "src" / "hello.py").read_text(encoding="utf-8")
+        assert "world" in (other_project / "src" / "hello.py").read_text(encoding="utf-8")
+    finally:
+        first.shutdown()
+        second.shutdown()
 
 
 @requires_git

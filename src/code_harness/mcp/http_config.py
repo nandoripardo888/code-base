@@ -87,6 +87,11 @@ class HttpServeConfig:
         return self.host.lower() in _LOOPBACK_HOSTS
 
     @property
+    def is_public(self) -> bool:
+        """Whether this endpoint is intended to be reachable beyond loopback."""
+        return self.public_url is not None or not self.is_loopback
+
+    @property
     def connector_url(self) -> str:
         """URL to paste into a remote MCP client (Claude custom connector)."""
         if self.public_url:
@@ -139,6 +144,7 @@ def resolve_http_config(
     allowed_origins: list[str] | None = None,
     disable_dns_rebinding: bool | None = None,
     no_api_key: bool = False,
+    allow_public_without_api_key: bool = False,
 ) -> HttpServeConfig:
     """Merge CLI overrides with ``CODE_HARNESS_MCP_*`` environment variables."""
     resolved_host = host or _env("CODE_HARNESS_MCP_HOST") or DEFAULT_HTTP_HOST
@@ -199,13 +205,20 @@ def resolve_http_config(
         allowed_origins=() if resolved_disable else origins,
         disable_dns_rebinding=resolved_disable,
     )
-    validate_http_config(config)
+    validate_http_config(
+        config,
+        allow_public_without_api_key=allow_public_without_api_key,
+    )
     return config
 
 
-def validate_http_config(config: HttpServeConfig) -> None:
-    """Refuse non-loopback HTTP without an API key."""
-    if not config.is_loopback and not config.api_key:
+def validate_http_config(
+    config: HttpServeConfig,
+    *,
+    allow_public_without_api_key: bool = False,
+) -> None:
+    """Refuse public HTTP without API-key protection unless explicitly allowed."""
+    if config.is_public and not config.api_key and not allow_public_without_api_key:
         raise ValueError(
             "Non-loopback MCP HTTP requires an API key. Pass --api-key or set "
             "CODE_HARNESS_MCP_API_KEY."

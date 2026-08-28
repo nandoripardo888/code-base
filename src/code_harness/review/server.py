@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 from code_harness.errors import HarnessError, PatchRollbackConflictError
 
 if TYPE_CHECKING:
-    from code_harness.review.manager import ReviewManager
+    from code_harness.review.manager import ReviewHub
     from code_harness.review.security import BrowserSession
 
 _STATIC_ROOT = Path(__file__).with_name("static")
@@ -46,7 +46,7 @@ _CONTENT_TYPES = {
 }
 
 
-def make_request_handler(manager: ReviewManager) -> type[BaseHTTPRequestHandler]:
+def make_request_handler(manager: ReviewHub) -> type[BaseHTTPRequestHandler]:
     class ReviewRequestHandler(BaseHTTPRequestHandler):
         server_version = "code-harness-review"
         sys_version = ""
@@ -254,9 +254,7 @@ def make_request_handler(manager: ReviewManager) -> type[BaseHTTPRequestHandler]
             if not create:
                 self._json_error(HTTPStatus.UNAUTHORIZED, "Review session is required.")
                 return None
-            session_id, session = manager.security.create_session(
-                manager.service.history.workspace_id
-            )
+            session_id, session = manager.security.create_session(manager.security_scope)
             self._set_session_cookie = session_id
             return session
 
@@ -271,7 +269,7 @@ def make_request_handler(manager: ReviewManager) -> type[BaseHTTPRequestHandler]
             return manager.security.get_session(morsel.value if morsel else None)
 
         def _owns_workspace(self, session: BrowserSession) -> bool:
-            if session.workspace_id == manager.service.history.workspace_id:
+            if session.workspace_id == manager.security_scope:
                 return True
             self._json_error(HTTPStatus.FORBIDDEN, "Review access was rejected.")
             return False

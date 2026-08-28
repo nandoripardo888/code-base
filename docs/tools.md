@@ -1,12 +1,47 @@
 # Tool reference
 
-Most tools return plain text. `Shell` and `GetJobStatus` return structured JSON
-so exit codes, job ids, and environment metadata stay unambiguous. Failures come
-back as `code: message`, for example
+Read/search tools return compact text while execution, mutation, project discovery,
+review, rollback, and reload operations use structured JSON where context must stay
+unambiguous. Failures come back as `code: message`, for example
 `path_outside_project: Path resolves outside the project root: '../etc'`.
 
-Paths may be relative to the project root or absolute, but must resolve inside
-it. Reported paths use forward slashes on every platform.
+Paths may be relative to the selected project root or absolute, but must resolve
+inside it. Reported paths use forward slashes on every platform. In named mode,
+`Shell`, `GetJobStatus`, `Grep`, `Glob`, `Read`, `Write`, `StrReplace`, `ApplyPatch`,
+`OpenPatchReview`, `RollbackPatch`, and `Delete` accept optional `project`; omitting
+it uses the configured default and an unknown alias fails without fallback. In
+legacy single-project mode, omit `project`.
+
+## ServerInfo
+
+Returns non-sensitive server name/version/platform metadata. It has no project
+selector and is the only tool currently allowed on an unauthenticated public MCP.
+
+## ListProjects
+
+Returns the configured aliases and default without exposing absolute roots or
+workspace ids. A legacy server reports one logical `default` context, but that
+label is not a selectable alias in legacy mode.
+
+## ProjectInfo
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `project` | string | optional alias; omitted means the configured default |
+
+Returns the selected alias, whether it is the default, and `named` / `legacy`
+mode. Unknown aliases return structured `invalid_argument` metadata without a
+filesystem root.
+
+## ReloadProjects
+
+Takes no arguments. It is available only when the server started from
+`--project-config` or `CODE_HARNESS_PROJECT_CONFIG`, rereads that exact TOML, and
+never accepts a caller-controlled path. The reload is transactional: unchanged
+alias/root sessions are reused, new sessions are prepared before swap, and an
+invalid candidate leaves the existing registry untouched. Removing or repointing
+a session is blocked while it has an active MCP lease, a running shell job, or an
+applied transaction still awaiting review. OAuth requires `code.write`.
 
 ## Shell
 
@@ -283,20 +318,19 @@ after applying a patch. It is disabled by default for headless and remote hosts.
 | `group_id` | string | optional patch group; transaction must belong to it |
 | `open_browser` | bool | default `true` |
 
-Starts the review portal on fixed `127.0.0.1:8765` (or `CODE_HARNESS_REVIEW_PORT`)
-if it is not already running, and returns a stable URL with optional `group` /
-`patch` query params together with the stored `group_id` and `transaction_id`.
-Visiting the portal root establishes a workspace-scoped session cookie; the page
-lists every retained `applied` or `rolled_back` review for the same project,
-including updates created by earlier MCP sessions. It reads only saved
-snapshots, never arbitrary paths or the live project. The left-side tree groups
-patch group → described update → changed files. The portal also provides
-side-by-side and unified views, collapsed context, change navigation, light/dark
-themes, per-update completion and rollback, and safe whole-review rollback in
-reverse order.
+Uses the fixed loopback review portal on `127.0.0.1:8765` (or
+`CODE_HARNESS_REVIEW_PORT`) and returns a stable URL with optional `group` / `patch`
+query params together with the stored `group_id` and `transaction_id`. A named
+registry has one shared `ReviewHub`; identifiers are resolved to exactly one
+workspace, and cross-workspace or ambiguous group/transaction combinations fail
+instead of choosing silently. The page aggregates retained reviews from registered
+workspaces but reads only saved snapshots, never arbitrary live paths. The tree
+groups patch group → described update → changed files and provides side-by-side /
+unified views, completion, and safe rollback.
 
-POST actions require CSRF and same-origin checks. The server starts with the
-owning MCP or CLI session and stops when that session ends.
+POST actions require CSRF and same-origin checks. Standalone legacy sessions can
+still own a private review hub; named registries keep one hub for the registry
+lifetime and unregister workspace services as projects are safely retired.
 
 ## RollbackPatch
 

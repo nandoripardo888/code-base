@@ -184,6 +184,13 @@ class JobRegistry:
         threading.Thread(target=self._watch, args=(job,), daemon=True).start()
         return job_id
 
+    def has_running_jobs(self) -> bool:
+        """Return whether this registry still owns at least one running process."""
+
+        with self._lock:
+            jobs = tuple(self._jobs.values())
+        return any(job.status == "running" for job in jobs)
+
     def get(self, job_id: str) -> ShellJob | None:
         with self._lock:
             return self._jobs.get(job_id)

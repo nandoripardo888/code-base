@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -19,9 +20,17 @@ from code_harness.mcp.http_config import (
     validate_http_config,
 )
 from code_harness.mcp.server import create_server
+from code_harness.projects import ProjectRegistry
 from code_harness.session import Session
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _clear_mcp_http_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in tuple(os.environ):
+        if name.startswith("CODE_HARNESS_MCP_"):
+            monkeypatch.delenv(name, raising=False)
 
 
 def _app_with_key(api_key: str) -> Starlette:
@@ -127,6 +136,23 @@ def test_validate_http_config_allows_loopback_without_key() -> None:
     validate_http_config(config)
 
 
+def test_public_url_counts_as_public_even_on_loopback() -> None:
+    with pytest.raises(ValueError, match="API key"):
+        resolve_http_config(
+            transport="streamable-http",
+            host="127.0.0.1",
+            public_url="https://mcp.example.com/mcp",
+        )
+
+    config = resolve_http_config(
+        transport="streamable-http",
+        host="127.0.0.1",
+        public_url="https://mcp.example.com/mcp",
+        allow_public_without_api_key=True,
+    )
+    assert config.is_public is True
+
+
 def test_create_server_applies_http_settings(session: Session) -> None:
     config = resolve_http_config(
         transport="streamable-http",
@@ -175,12 +201,86 @@ def test_streamable_http_initialize_handshake(session: Session) -> None:
     assert '"code-harness"' in response.text
 
 
+def test_one_streamable_http_session_routes_multiple_projects(tmp_path: Path) -> None:
+    crm = tmp_path / "crm"
+    banco = tmp_path / "banco"
+    crm.mkdir()
+    banco.mkdir()
+    (crm / "same.txt").write_text("crm", encoding="utf-8")
+    (banco / "same.txt").write_text("banco", encoding="utf-8")
+    registry = ProjectRegistry.create({"crm": crm, "banco": banco}, default_project="crm")
+    try:
+        config = resolve_http_config(transport="streamable-http", no_api_key=True)
+        server = create_server(registry=registry, http_config=config)
+        base_headers = {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+        }
+        initialize = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "phase9-client", "version": "1.0"},
+            },
+        }
+
+        with TestClient(server.streamable_http_app(), base_url="http://localhost:8000") as client:
+            initialized = client.post("/mcp", json=initialize, headers=base_headers)
+            assert initialized.status_code == 200
+            session_id = initialized.headers.get("mcp-session-id")
+            assert session_id
+            session_headers = {
+                **base_headers,
+                "mcp-session-id": session_id,
+                "mcp-protocol-version": "2025-06-18",
+            }
+            notification = {
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+                "params": {},
+            }
+            notified = client.post("/mcp", json=notification, headers=session_headers)
+            assert notified.status_code == 202
+
+            def call_tool(request_id: int, name: str, arguments: dict[str, object]) -> str:
+                response = client.post(
+                    "/mcp",
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": "tools/call",
+                        "params": {"name": name, "arguments": arguments},
+                    },
+                    headers=session_headers,
+                )
+                assert response.status_code == 200
+                return response.text
+
+            projects = call_tool(2, "ListProjects", {})
+            crm_read = call_tool(3, "Read", {"path": "same.txt", "project": "crm"})
+            banco_read = call_tool(4, "Read", {"path": "same.txt", "project": "banco"})
+
+        assert '\\\"default\\\": \\\"crm\\\"' in projects
+        assert '\\\"name\\\": \\\"banco\\\"' in projects
+        assert "1|crm" in crm_read
+        assert "1|banco" in banco_read
+    finally:
+        registry.shutdown()
+
+
 def test_cli_serve_help_lists_http_options() -> None:
     result = runner.invoke(app, ["serve", "--help"])
     assert result.exit_code == 0
     assert "--transport" in result.stdout
     assert "streamable-http" in result.stdout
     assert "--api-key" in result.stdout
+    assert "--auth" in result.stdout
+    assert "--tool-allowlist" in result.stdout
+    assert "--oauth-issuer-url" in result.stdout
+    assert "--project-config" in result.stdout
 
 
 def test_cli_mcp_serve_help_lists_same_http_options() -> None:
@@ -189,9 +289,13 @@ def test_cli_mcp_serve_help_lists_same_http_options() -> None:
     assert "--transport" in result.stdout
     assert "streamable-http" in result.stdout
     assert "--api-key" in result.stdout
+    assert "--auth" in result.stdout
+    assert "--tool-allowlist" in result.stdout
+    assert "--oauth-issuer-url" in result.stdout
+    assert "--project-config" in result.stdout
 
 
-def test_cli_rejects_non_loopback_without_key(project: Path) -> None:
+def test_cli_rejects_public_no_auth_without_safe_allowlist(project: Path) -> None:
     result = runner.invoke(
         app,
         [
@@ -205,4 +309,5 @@ def test_cli_rejects_non_loopback_without_key(project: Path) -> None:
         ],
     )
     assert result.exit_code == 1
-    assert "API key" in result.stderr
+    assert "Public MCP without authentication" in result.stderr
+    assert "ServerInfo" in result.stderr

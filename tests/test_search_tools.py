@@ -148,6 +148,35 @@ def test_glob_sorts_by_modification_time(guard: PathGuard, project: Path) -> Non
     assert listing.index("src/util.py") < listing.index("src/hello.py")
 
 
+def test_glob_caps_ripgrep_output(guard: PathGuard, monkeypatch: pytest.MonkeyPatch) -> None:
+    from code_harness.tools import search_core
+
+    seen_limit: int | None = None
+
+    def fake_run(
+        arguments: list[str],
+        *,
+        cwd: Path,
+        max_stdout_lines: int | None = None,
+        **_kwargs: object,
+    ) -> str:
+        nonlocal seen_limit
+        seen_limit = max_stdout_lines
+        assert "--files" in arguments
+        assert cwd == guard.root
+        return "\n".join(f"file-{index:04d}.txt" for index in range(search_core.GLOB_CAP + 1))
+
+    monkeypatch.setattr(search_core.ripgrep, "run", fake_run)
+
+    result = glob(guard, glob_pattern="*.txt", include_all=True)
+
+    assert seen_limit == search_core.GLOB_CAP + 1
+    assert f"showing {search_core.GLOB_CAP} files; more matches exist" in result
+    assert f"Result capped at {search_core.GLOB_CAP} files." in result
+    assert "file-0999.txt" in result
+    assert "file-1000.txt" not in result
+
+
 def test_glob_without_matches(guard: PathGuard) -> None:
     result = glob(guard, glob_pattern="*.nope")
     assert result.startswith("No files found matching '*.nope'.")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import BinaryIO, Self
 
 import pytest
 
@@ -11,6 +12,7 @@ from code_harness.errors import (
 )
 from code_harness.paths import PathGuard
 from code_harness.tools import ImageResult, delete, read, str_replace, write
+from code_harness.tools.read import MAX_IMAGE_BYTES, MAX_TEXT_BYTES
 
 # Smallest valid 1x1 PNG.
 PNG_BYTES = (
@@ -65,6 +67,107 @@ def test_read_image(guard: PathGuard, project: Path) -> None:
     assert isinstance(result, ImageResult)
     assert result.mime_type == "image/png"
     assert result.data == PNG_BYTES
+
+
+def test_read_preserves_small_text_encodings_and_line_endings(
+    guard: PathGuard, project: Path
+) -> None:
+    cases = {
+        "utf8.txt": ("café\nfinal".encode(), "     1|café\n     2|final"),
+        "bom.txt": (b"\xef\xbb\xbfalpha\nbeta", "     1|alpha\n     2|beta"),
+        "crlf.txt": (b"alpha\r\nbeta\r\n", "     1|alpha\n     2|beta"),
+        "cp1252.txt": ("configuração".encode("cp1252"), "     1|configuração"),
+    }
+    for name, (raw, expected) in cases.items():
+        (project / name).write_bytes(raw)
+        assert read(guard, path=name) == expected
+
+
+def test_read_large_text_reports_truncation_without_splitting_utf8(
+    guard: PathGuard, project: Path
+) -> None:
+    target = project / "large.txt"
+    target.write_bytes(b"a" * (MAX_TEXT_BYTES - 1) + "é\ntail".encode())
+
+    result = read(guard, path="large.txt")
+
+    assert isinstance(result, str)
+    assert "Output truncated" in result
+    assert f"{MAX_TEXT_BYTES:,}-byte text limit" in result
+    assert "\ufffd" not in result
+
+
+def test_read_negative_offset_uses_real_end_of_large_crlf_file(
+    guard: PathGuard, project: Path
+) -> None:
+    target = project / "large-crlf.txt"
+    target.write_bytes(b"bulk\r\n" * 333_334 + b"tail-one\r\ntail-two")
+
+    result = read(guard, path="large-crlf.txt", offset=-2)
+
+    assert result == "333335|tail-one\n333336|tail-two"
+
+
+def test_read_large_range_with_limit_does_not_claim_complete_file(
+    guard: PathGuard, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = project / "many-lines.txt"
+    target.write_bytes(b"first\n" + b"next\n" * 400_000)
+    observed = 0
+    original_open = Path.open
+
+    class CountingReader:
+        def __init__(self, stream: BinaryIO) -> None:
+            self.stream = stream
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            self.stream.close()
+
+        def read(self, size: int = -1) -> bytes:
+            nonlocal observed
+            data = self.stream.read(size)
+            observed += len(data)
+            return data
+
+    def tracked_open(path: Path, *args: object, **kwargs: object) -> object:
+        stream = original_open(path, *args, **kwargs)
+        return CountingReader(stream) if path == target else stream
+
+    monkeypatch.setattr(Path, "open", tracked_open)
+
+    result = read(guard, path="many-lines.txt", limit=1)
+
+    assert result == "     1|first\n\n(More lines available; pass offset=2)"
+    assert observed < target.stat().st_size
+
+
+def test_read_rejects_oversized_image_before_path_read_bytes(
+    guard: PathGuard, project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = project / "large.png"
+    with target.open("wb") as stream:
+        stream.seek(MAX_IMAGE_BYTES)
+        stream.write(b"x")
+
+    def fail_read_bytes(_path: Path) -> bytes:
+        raise AssertionError("read_bytes must not be called for an oversized image")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
+    with pytest.raises(
+        InvalidArgumentError,
+        match=rf"observed {MAX_IMAGE_BYTES + 1} bytes; maximum is {MAX_IMAGE_BYTES} bytes",
+    ):
+        read(guard, path="large.png")
+
+
+def test_read_rejects_unknown_binary_content(guard: PathGuard, project: Path) -> None:
+    (project / "payload.bin").write_bytes(b"header\x00\x01\x02payload")
+
+    with pytest.raises(InvalidArgumentError, match="Unsupported binary file"):
+        read(guard, path="payload.bin")
 
 
 def test_write_creates_file(guard: PathGuard, project: Path) -> None:

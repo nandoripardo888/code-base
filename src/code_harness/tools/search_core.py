@@ -247,22 +247,29 @@ def list_files(
     arguments = [
         *base_rg_arguments(guard.root, include_all=include_all, exclude=exclude),
         "--files",
+        "--sortr",
+        "modified",
     ]
     for pattern in patterns:
         arguments.extend(["--glob", pattern])
     arguments.extend(exclusion_glob_flags(exclude))
     arguments.extend(["--", "."])
-    # Glob has no paging arguments, so cap the ripgrep stream before a broad
-    # pattern on a large/network tree can accumulate an unbounded file list in
-    # the MCP process. Fetch one extra row so callers can be told to narrow the
-    # search when the result was truncated.
-    output = ripgrep.run(arguments, cwd=directory, max_stdout_lines=GLOB_CAP + 1)
+    # Ripgrep performs the global mtime sort before emitting paths. Its sort is
+    # stable but does not define an order for equal mtimes, so the bounded
+    # collector applies the path as a deterministic secondary key. Fetch one
+    # extra row so callers can be told to narrow the search when truncated.
+    output = ripgrep.run(
+        arguments,
+        cwd=directory,
+        max_stdout_lines=GLOB_CAP + 1,
+        stdout_line_key=lambda entry: _glob_rank(directory, entry),
+    )
     paths = [line.strip() for line in output.splitlines() if line.strip()]
     truncated = len(paths) > GLOB_CAP
     if truncated:
         paths = paths[:GLOB_CAP]
     if paths:
-        # Dedupe while preserving ripgrep order before mtime sort.
+        # Dedupe while preserving the globally ranked order.
         absolute: list[Path] = []
         seen: set[str] = set()
         for entry in paths:
@@ -271,8 +278,6 @@ def list_files(
                 continue
             seen.add(key)
             absolute.append(directory / entry)
-        absolute.sort(key=_modified_at, reverse=True)
-
         listing = "\n".join(f"- {guard.relative(entry)}" for entry in absolute)
         location = guard.relative(directory)
         if truncated:
@@ -599,8 +604,10 @@ def summary_matches(data: dict[str, Any]) -> int:
     return 0
 
 
-def _modified_at(path: Path) -> float:
+def _glob_rank(directory: Path, entry: str) -> tuple[int, str]:
+    path = directory / entry
     try:
-        return path.stat().st_mtime
+        modified_ns = path.stat().st_mtime_ns
     except OSError:
-        return 0.0
+        modified_ns = 0
+    return (-modified_ns, normalize_path(entry))

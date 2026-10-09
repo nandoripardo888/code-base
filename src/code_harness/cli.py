@@ -517,6 +517,23 @@ def rollback_patch_command(
     )
 
 
+@app.command(name="list-patch-reviews")
+def list_patch_reviews_command(
+    limit: int = typer.Option(tools.DEFAULT_REVIEW_LIMIT, "--limit"),
+    status: str = typer.Option("all", "--status"),
+    project: Path | None = _ROOT,
+) -> None:
+    """List retained review groups without opening the review portal."""
+    _run(
+        project,
+        lambda session: tools.list_patch_reviews(
+            session.reviews.service,
+            limit=limit,
+            status=status,
+        ),
+    )
+
+
 @app.command()
 def delete(
     path: str,

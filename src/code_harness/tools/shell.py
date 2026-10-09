@@ -62,42 +62,43 @@ def _launch(
     cwd: Path,
     environment: ShellEnvironment,
 ) -> ShellJob:
-    output_path = registry.prepare_output_path()
-    started_at = time.monotonic()
-    try:
-        with output_path.open("wb") as output_file:
-            process = subprocess.Popen(
-                build_shell_argv(command, environment),
-                cwd=str(cwd),
-                stdout=output_file,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                creationflags=(
-                    subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-                ),
-                start_new_session=os.name != "nt",
-            )
-    except OSError as error:
-        output_path.unlink(missing_ok=True)
-        raise ExecutionError(f"Could not start the shell: {error}") from error
+    with registry.reserve_launch() as reservation:
+        output_path = reservation.output_path
+        started_at = time.monotonic()
+        try:
+            with output_path.open("wb") as output_file:
+                process = subprocess.Popen(
+                    build_shell_argv(command, environment),
+                    cwd=str(cwd),
+                    stdout=output_file,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                    creationflags=(
+                        subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+                    ),
+                    start_new_session=os.name != "nt",
+                )
+        except OSError as error:
+            output_path.unlink(missing_ok=True)
+            raise ExecutionError(f"Could not start the shell: {error}") from error
 
-    job = ShellJob(
-        job_id="",
-        process=process,
-        command=command,
-        working_directory=cwd,
-        shell_name=environment.shell_name,
-        shell_executable=environment.shell_executable,
-        started_at=started_at,
-        output_path=output_path,
-    )
-    try:
-        registry.register(job)
-    except ExecutionError:
-        job.terminate()
-        output_path.unlink(missing_ok=True)
-        raise
-    return job
+        job = ShellJob(
+            job_id="",
+            process=process,
+            command=command,
+            working_directory=cwd,
+            shell_name=environment.shell_name,
+            shell_executable=environment.shell_executable,
+            started_at=started_at,
+            output_path=output_path,
+        )
+        try:
+            reservation.register(job)
+        except ExecutionError:
+            job.terminate()
+            output_path.unlink(missing_ok=True)
+            raise
+        return job
 
 
 def _completed(

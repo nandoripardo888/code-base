@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prévia de imagens</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: transparent; color: light-dark(#202123, #f5f5f5); }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  button:focus-visible { outline: 2px solid #57a9aa; outline-offset: -3px; }
+  [hidden] { display: none !important; }
+  #gallery { padding: 2px; }
+  #toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; }
+  #heading { margin: 0; font-size: 15px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #rail { display: flex; gap: 12px; overflow-x: auto; scroll-snap-type: x mandatory;
+    scrollbar-width: none; overscroll-behavior-x: contain; border-radius: 20px; }
+  #rail::-webkit-scrollbar { display: none; }
+  figure { flex: 0 0 100%; min-width: 0; margin: 0; scroll-snap-align: start; }
+  .multiple figure { flex-basis: 200px; }
+  .picture { display: block; border: 0; padding: 0; width: 100%; border-radius: 20px;
+    overflow: hidden; background: light-dark(#f5f5f3, #242424); cursor: zoom-in; }
+  .image { display: block; width: 100%; height: auto; max-height: 520px; object-fit: contain; }
+  .multiple .image { height: 240px; }
+  .multiple .picture { border-radius: 16px; }
+  .multiple figcaption { padding: 8px 2px 2px; }
+  .multiple .title { font-size: 14px; line-height: 1.35; display: -webkit-box;
+    -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .multiple .details { font-size: 11px; margin-top: 3px; }
+  figcaption { padding: 13px 2px 4px; }
+  .title { margin: 0; font-size: 17px; line-height: 1.4; font-weight: 550; overflow-wrap: anywhere; }
+  .details { margin: 4px 0 0; font-size: 12px; opacity: .55; }
+  #navigation { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 0 2px; }
+  #navigation > div { display: flex; align-items: center; gap: 8px; }
+  .pill { display: inline-flex; align-items: center; justify-content: center; border: 0;
+    border-radius: 24px; background: light-dark(#f1f1ef, #2b2b2b); min-width: 40px; min-height: 40px; padding: 8px 14px; }
+  .pill:disabled { opacity: .25; cursor: default; }
+  .arrow { font-size: 23px; padding: 0; }
+  #dots { display: flex; justify-content: center; gap: 2px; }
+  .dot { width: 24px; height: 32px; padding: 0; border: 0; background: none; }
+  .dot::after { content: ''; display: block; width: 6px; height: 6px; margin: auto; border-radius: 6px;
+    background: currentColor; opacity: .22; transition: width .18s, opacity .18s; }
+  .dot[aria-current="true"]::after { width: 18px; opacity: .9; }
+  #counter { font-size: 12px; opacity: .65; margin: 0; text-align: center; }
+  #status, #notice { padding: 16px 8px; margin: 0; font-size: 13px; opacity: .65; }
+  #notice:empty { display: none; }
+  html.fullscreen, html.fullscreen body { height: 100%; overflow: hidden; }
+  .fullscreen body { background: light-dark(#fafaf8, #171717); }
+  .fullscreen #gallery { height: 100dvh; display: flex; flex-direction: column;
+    padding: var(--safe-top, 0px) var(--safe-right, 0px) var(--safe-bottom, 0px) var(--safe-left, 0px); }
+  .fullscreen #rail { flex: 1; min-height: 0; border-radius: 0; }
+  .fullscreen figure { flex-basis: 100%; display: flex; flex-direction: column; height: 100%; }
+  .fullscreen .picture { flex: 1; min-height: 0; border-radius: 0; background: transparent; cursor: default; }
+  .fullscreen .image { width: 100%; height: 100%; max-height: none; object-fit: contain; }
+  .fullscreen .multiple figcaption, .fullscreen figcaption { padding: 10px 18px; }
+  .fullscreen .title { font-size: 14px; }
+  .fullscreen #navigation { padding: 6px 18px 12px; }
+  dialog { width: calc(100% - 16px); max-width: none; max-height: calc(100% - 16px);
+    padding: 52px 8px 8px; border: 0; border-radius: 16px;
+    background: light-dark(#fff, #171717); color: inherit; }
+  dialog::backdrop { background: #0009; }
+  #large { display: block; width: 100%; height: auto; }
+  #close-local { position: absolute; right: 8px; top: 8px; }
+  @media (max-width: 420px) {
+    .image { max-height: 440px; }
+    .multiple figure { flex-basis: 180px; }
+    .multiple .image { height: 220px; }
+    .fullscreen figure { flex-basis: 100%; }
+    .picture, #rail { border-radius: 16px; }
+    .fullscreen .image { height: 100%; max-height: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { .dot::after { transition: none; } }
+</style>
+</head>
+<body>
+<p id="status" role="status">Carregando imagem…</p>
+<main id="gallery" hidden aria-label="Galeria de imagens">
+  <header id="toolbar" hidden><h1 id="heading"></h1><button id="close" class="pill" type="button">Voltar</button></header>
+  <div id="rail" role="region" aria-roledescription="carrossel" aria-label="Imagens" tabindex="0"></div>
+  <nav id="navigation" hidden aria-label="Navegação de imagens">
+    <button id="previous" class="pill arrow" aria-label="Imagem anterior" type="button">‹</button>
+    <div><div id="dots"></div><p id="counter" aria-live="polite" aria-atomic="true"></p></div>
+    <button id="next" class="pill arrow" aria-label="Próxima imagem" type="button">›</button>
+  </nav>
+  <p id="notice" role="status"></p>
+</main>
+<dialog id="zoom" aria-label="Ampliação neste cartão">
+  <button id="close-local" class="pill" type="button">Fechar</button><img id="large" alt="">
+</dialog>
+<script>
+(() => {
+  const el = id => document.getElementById(id);
+  const rail = el('rail');
+  let ready = false, lastSize = '', signature = '', active = 0, sequence = 0, busy = false;
+  let items = [], mode = 'inline', context = {}, scrollTarget = null;
+  const pending = new Map();
+  const send = message => { if (parent !== window) parent.postMessage({jsonrpc: '2.0', ...message}, '*'); };
+  function request(method, params) {
+    return new Promise((resolve, reject) => {
+      const id = `image-card-${++sequence}`;
+      const timer = setTimeout(() => { pending.delete(id); reject(new Error('Host timeout')); }, 4000);
+      pending.set(id, {resolve, reject, timer});
+      send({id, method, params});
+    });
+  }
+  function resize() {
+    if (mode === 'fullscreen') return;
+    const size = {width: document.documentElement.clientWidth, height: Math.ceil(document.body.getBoundingClientRect().height)};
+    const key = JSON.stringify(size);
+    if (ready && key !== lastSize) { lastSize = key; send({method: 'ui/notifications/size-changed', params: size}); }
+    window.openai?.notifyIntrinsicHeight?.(size.height);
+  }
+  function position(index) {
+    const slide = rail.children[index];
+    return slide ? slide.getBoundingClientRect().left - rail.getBoundingClientRect().left + rail.scrollLeft : 0;
+  }
+  function indicator() {
+    el('previous').disabled = active === 0;
+    el('next').disabled = active === items.length - 1;
+    el('counter').textContent = `${active + 1} / ${items.length}`;
+    [...el('dots').children].forEach((dot, index) => dot.setAttribute('aria-current', String(index === active)));
+  }
+  function go(index, smooth = true) {
+    active = Math.max(0, Math.min(items.length - 1, index));
+    const left = Math.min(position(active), Math.max(0, rail.scrollWidth - rail.clientWidth));
+    scrollTarget = {left, index: active};
+    rail.scrollTo({left, behavior: smooth && !matchMedia('(prefers-reduced-motion: reduce)').matches ? 'smooth' : 'instant'});
+    indicator();
+  }
+  function setMode(next) {
+    if (!['inline', 'fullscreen'].includes(next) || next === mode) return;
+    const selected = active;
+    mode = next;
+    document.documentElement.classList.toggle('fullscreen', mode === 'fullscreen');
+    el('toolbar').hidden = mode !== 'fullscreen';
+    if (el('zoom').open) el('zoom').close();
+    el('notice').textContent = '';
+    lastSize = '';
+    requestAnimationFrame(() => { go(selected, false); resize(); });
+  }
+  function hostContext(update) {
+    context = {...context, ...update};
+    if (['dark', 'light'].includes(context.theme)) document.documentElement.style.colorScheme = context.theme;
+    if (update?.displayMode) setMode(update.displayMode);
+    const safe = update?.safeAreaInsets || update?.safeArea?.insets;
+    if (safe) for (const edge of ['top', 'right', 'bottom', 'left']) {
+      const value = Number(safe[edge]);
+      if (Number.isFinite(value)) document.documentElement.style.setProperty(`--safe-${edge}`, `${Math.max(0, value)}px`);
+    }
+  }
+  async function changeMode(target) {
+    if (ready && context.availableDisplayModes?.includes(target)) {
+      try {
+        const result = await request('ui/request-display-mode', {mode: target});
+        setMode(result.mode);
+        return mode === target;
+      } catch { /* Try the ChatGPT compatibility bridge when available. */ }
+    }
+    if (typeof window.openai?.requestDisplayMode === 'function') {
+      try {
+        const result = await window.openai.requestDisplayMode({mode: target});
+        setMode(result?.mode || window.openai.displayMode);
+        return mode === target;
+      } catch { return false; }
+    }
+    return false;
+  }
+  async function expand(index) {
+    go(index, false);
+    if (busy || mode === 'fullscreen') return;
+    busy = true;
+    try {
+      if (!(await changeMode('fullscreen')) && mode !== 'fullscreen') {
+        el('notice').textContent = 'Tela inteira indisponível neste cliente. Ampliando no cartão.';
+        el('large').src = items[active].dataUrl; el('large').alt = items[active].title;
+        el('zoom').showModal(); resize();
+      }
+    } finally { busy = false; }
+  }
+  function fail(text) {
+    el('gallery').hidden = true; el('status').hidden = false; el('status').textContent = text; resize();
+  }
+  function render(result) {
+    if (result?.isError) { fail('Não foi possível abrir esta imagem.'); return; }
+    const data = result?._meta?.imageCard;
+    if (!data) return;
+    const incoming = data.images || (data.dataUrl ? [data] : []);
+    if (!Array.isArray(incoming) || !incoming.length || incoming.length > 8 || incoming.some(item =>
+      !item || typeof item.dataUrl !== 'string' || !/^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(item.dataUrl))) {
+      fail('Formato de imagem não suportado.'); return;
+    }
+    const key = JSON.stringify(data);
+    if (key === signature) return;
+    signature = key;
+    items = incoming.map(item => ({...item, title: typeof item.title === 'string' ? item.title.slice(0, 160) : 'Imagem'}));
+    active = 0;
+    el('heading').textContent = typeof data.title === 'string' ? data.title.slice(0, 160) : 'Imagens';
+    el('gallery').classList.toggle('multiple', items.length > 1);
+    el('navigation').hidden = items.length < 2;
+    rail.replaceChildren(); el('dots').replaceChildren();
+    items.forEach((item, index) => {
+      const figure = document.createElement('figure');
+      figure.setAttribute('aria-label', `${index + 1} de ${items.length}`);
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'picture';
+      button.setAttribute('aria-label', `Ampliar imagem: ${item.title}`);
+      button.onclick = () => expand(index);
+      const img = document.createElement('img'); img.className = 'image'; img.alt = item.title;
+      const caption = document.createElement('figcaption');
+      const title = document.createElement('h2'); title.className = 'title'; title.textContent = item.title;
+      const details = document.createElement('p'); details.className = 'details'; details.textContent = 'Carregando…';
+      img.onload = () => { details.textContent = `${img.naturalWidth} × ${img.naturalHeight} · Toque para ampliar`; resize(); };
+      img.onerror = () => { details.textContent = 'Esta imagem não carregou.'; button.disabled = true; resize(); };
+      img.src = item.dataUrl;
+      button.append(img); caption.append(title, details); figure.append(button, caption); rail.append(figure);
+      const dot = document.createElement('button'); dot.type = 'button'; dot.className = 'dot';
+      dot.setAttribute('aria-label', `Ir para imagem ${index + 1}`); dot.onclick = () => go(index);
+      el('dots').append(dot);
+    });
+    el('gallery').hidden = false; el('status').hidden = true;
+    go(0, false); resize();
+  }
+  function legacy(event) {
+    const bridge = window.openai;
+    if (!bridge) return;
+    hostContext(event?.detail?.globals || {theme: bridge.theme, displayMode: bridge.displayMode, safeArea: bridge.safeArea});
+    render({_meta: bridge.toolResponseMetadata});
+  }
+  window.addEventListener('message', event => {
+    if (event.source !== parent || !event.data || event.data.jsonrpc !== '2.0') return;
+    const m = event.data;
+    if (pending.has(m.id)) {
+      const p = pending.get(m.id); clearTimeout(p.timer); pending.delete(m.id);
+      if (m.error) p.reject(new Error('Host rejected request')); else p.resolve(m.result || {});
+    } else if (m.id === 'image-card-init' && m.result) {
+      ready = true; hostContext(m.result.hostContext || {});
+      send({method: 'ui/notifications/initialized', params: {}}); resize();
+    } else if (m.method === 'ui/notifications/tool-result') render(m.params);
+    else if (m.method === 'ui/notifications/host-context-changed') hostContext(m.params || {});
+    else if (m.method === 'ui/notifications/tool-cancelled') fail('Carregamento cancelado.');
+    else if (m.method === 'ping' || m.method === 'ui/resource-teardown') send({id: m.id, result: {}});
+  });
+  window.addEventListener('openai:set_globals', legacy);
+  rail.addEventListener('scroll', () => {
+    if (!items.length) return;
+    if (scrollTarget) {
+      if (Math.abs(scrollTarget.left - rail.scrollLeft) < 1) {
+        active = scrollTarget.index; scrollTarget = null; indicator();
+      }
+      return;
+    }
+    const maxScroll = Math.max(0, rail.scrollWidth - rail.clientWidth);
+    if (maxScroll < 1) return;
+    let nearest = 0;
+    const distance = index => Math.abs(Math.min(position(index), maxScroll) - rail.scrollLeft);
+    items.forEach((_, index) => { if (distance(index) <= distance(nearest)) nearest = index; });
+    if (nearest !== active) { active = nearest; indicator(); }
+  }, {passive: true});
+  rail.addEventListener('pointerdown', () => { scrollTarget = null; }, {passive: true});
+  rail.addEventListener('wheel', () => { scrollTarget = null; }, {passive: true});
+  el('previous').onclick = () => go(active - 1);
+  el('next').onclick = () => go(active + 1);
+  document.addEventListener('keydown', event => {
+    if (el('zoom').open) return;
+    if (event.key === 'ArrowRight') { event.preventDefault(); go(active + 1); }
+    if (event.key === 'ArrowLeft') { event.preventDefault(); go(active - 1); }
+    if (event.key === 'Escape' && mode === 'fullscreen') el('close').click();
+  });
+  el('close').onclick = async () => {
+    if (!(await changeMode('inline'))) el('notice').textContent = 'Use o controle do ChatGPT para voltar à conversa.';
+    else rail.children[active]?.querySelector('button').focus({preventScroll: true});
+  };
+  el('close-local').onclick = () => el('zoom').close();
+  new ResizeObserver(resize).observe(document.body);
+  window.addEventListener('resize', () => { go(active, false); resize(); });
+  send({id: 'image-card-init', method: 'ui/initialize', params: {
+    appInfo: {name: 'code-harness-image-card', version: '3.0.0'},
+    appCapabilities: {availableDisplayModes: ['inline', 'fullscreen']}, protocolVersion: '2026-01-26'
+  }});
+  legacy();
+})();
+</script>
+</body>
+</html>

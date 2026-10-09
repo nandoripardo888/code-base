@@ -19,6 +19,7 @@ from code_harness.review.models import (
 
 _VISIBLE_STATUSES = {"applied", "rolled_back"}
 _LEGACY_PREFIX = "legacy-group-"
+REVIEW_FILTER_STATUSES = frozenset({"all", "pending", "reviewed", "rolled_back"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,10 +79,17 @@ class ReviewService:
     def resolve_transaction_id(self, transaction_id: str) -> str:
         return self.resolve_selection(transaction_id).transaction_id
 
-    def list_groups(self, *, limit: int = 50) -> PatchGroupList:
+    def list_groups(self, *, limit: int = 50, status: str = "all") -> PatchGroupList:
         if limit < 1 or limit > 200:
             raise ValueError("Review list limit must be between 1 and 200.")
+        if status not in REVIEW_FILTER_STATUSES:
+            choices = ", ".join(sorted(REVIEW_FILTER_STATUSES))
+            raise ValueError(f"Review status must be one of: {choices}.")
         groups = self._groups()
+        if status != "all":
+            groups = tuple(
+                group for group in groups if self._group_matches_status(group, status)
+            )
         return PatchGroupList(
             items=tuple(self._list_item(item) for item in groups[:limit]),
             total=len(groups),
@@ -211,7 +219,13 @@ class ReviewService:
             if transactions:
                 groups.append(self._stored_group(stored_group, transactions))
         groups.extend(legacy)
-        return tuple(sorted(groups, key=lambda item: item.updated_at, reverse=True))
+        return tuple(
+            sorted(
+                groups,
+                key=lambda item: (item.updated_at, item.group_id),
+                reverse=True,
+            )
+        )
 
     def _load_group(self, group_id: str) -> _PatchGroup:
         group = next((item for item in self._groups() if item.group_id == group_id), None)
@@ -357,6 +371,15 @@ class ReviewService:
             for item in transactions
         )
         return reviewed, pending, rolled_back
+
+    @classmethod
+    def _group_matches_status(cls, group: _PatchGroup, status: str) -> bool:
+        reviewed, pending, rolled_back = cls._state_counts(group.transactions)
+        return {
+            "pending": pending,
+            "reviewed": reviewed,
+            "rolled_back": rolled_back,
+        }[status] > 0
 
     @staticmethod
     def _stored_group(

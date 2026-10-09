@@ -69,7 +69,11 @@ def test_tool_allowlist_limits_tools_list(session: Session) -> None:
     assert names == {"ServerInfo", "ListProjects", "ProjectInfo", "Read"}
     assert policy.required_scope("ListProjects") == "code.read"
     assert policy.required_scope("ProjectInfo") == "code.read"
+    assert resolve_tool_policy(["ListPatchReviews"]).required_scope(
+        "ListPatchReviews"
+    ) == "code.read"
     assert resolve_tool_policy(["ReloadProjects"]).required_scope("ReloadProjects") == "code.write"
+    assert resolve_tool_policy(["CancelJob"]).required_scope("CancelJob") == "code.exec"
 
 
 def test_tool_allowlist_rejects_unknown_tool() -> None:

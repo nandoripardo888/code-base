@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -27,12 +29,15 @@ EXPECTED_TOOLS = {
     "ReloadProjects",
     "Shell",
     "GetJobStatus",
+    "CancelJob",
     "Grep",
     "Glob",
     "Read",
+    "ShowImage",
     "Write",
     "StrReplace",
     "ApplyPatch",
+    "ListPatchReviews",
     "OpenPatchReview",
     "RollbackPatch",
     "Delete",
@@ -492,6 +497,7 @@ def test_get_job_status_routes_to_selected_project_registry(
     banco.mkdir()
     registry = ProjectRegistry.create({"crm": crm, "banco": banco}, default_project="crm")
     seen_directories: list[Path] = []
+    seen_cursors: list[str | None] = []
     active = 0
     max_active = 0
     lock = threading.Lock()
@@ -502,6 +508,7 @@ def test_get_job_status_routes_to_selected_project_registry(
             active += 1
             max_active = max(max_active, active)
             seen_directories.append(job_registry.directory)
+            seen_cursors.append(kwargs.get("cursor"))
         time.sleep(0.1)
         with lock:
             active -= 1
@@ -516,7 +523,11 @@ def test_get_job_status_routes_to_selected_project_registry(
                 server.call_tool("GetJobStatus", {"job_id": "job-crm"}),
                 server.call_tool(
                     "GetJobStatus",
-                    {"job_id": "job-banco", "project": "banco"},
+                    {
+                        "job_id": "job-banco",
+                        "cursor": "start",
+                        "project": "banco",
+                    },
                 ),
             )
 
@@ -527,6 +538,7 @@ def test_get_job_status_routes_to_selected_project_registry(
             registry.resolve("crm").jobs.directory,
             registry.resolve("banco").jobs.directory,
         }
+        assert set(seen_cursors) == {None, "start"}
         assert max_active >= 2
     finally:
         registry.shutdown()
@@ -561,6 +573,86 @@ def test_get_job_status_wrong_project_does_not_search_other_registries(
         registry.shutdown()
 
 
+def test_cancel_job_routes_only_to_selected_project_registry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    crm = tmp_path / "crm"
+    banco = tmp_path / "banco"
+    crm.mkdir()
+    banco.mkdir()
+    registry = ProjectRegistry.create({"crm": crm, "banco": banco}, default_project="crm")
+    seen_directories: list[Path] = []
+
+    def fake_cancel_job(job_registry: Any, **kwargs: Any) -> dict[str, Any]:
+        seen_directories.append(job_registry.directory)
+        return {
+            "job_id": kwargs["job_id"],
+            "status": "unknown",
+            "exit_code": None,
+            "elapsed_ms": 0,
+            "already_finished": False,
+        }
+
+    monkeypatch.setattr(tools_module, "cancel_job", fake_cancel_job)
+    try:
+        server = create_server(registry=registry)
+        result = _tool_json(
+            asyncio.run(
+                server.call_tool(
+                    "CancelJob",
+                    {"job_id": "job-owned-by-banco", "project": "banco"},
+                )
+            )
+        )
+        assert result["project"] == "banco"
+        assert result["status"] == "unknown"
+        assert seen_directories == [registry.resolve("banco").jobs.directory]
+    finally:
+        registry.shutdown()
+
+
+def test_cancel_job_cannot_cancel_job_owned_by_another_project(tmp_path: Path) -> None:
+    crm = tmp_path / "crm"
+    banco = tmp_path / "banco"
+    crm.mkdir()
+    banco.mkdir()
+    registry = ProjectRegistry.create({"crm": crm, "banco": banco}, default_project="crm")
+    shell_name = "cmd" if os.name == "nt" else "sh"
+    command = f'"{sys.executable}" -c "import time; time.sleep(30)"'
+    try:
+        launched = tools_module.shell(
+            registry.resolve("banco").guard,
+            registry.resolve("banco").jobs,
+            command=command,
+            block_until_ms=0,
+            shell=shell_name,
+        )
+        job_id = str(launched["job_id"])
+        server = create_server(registry=registry)
+
+        wrong_project = _tool_json(
+            asyncio.run(
+                server.call_tool("CancelJob", {"job_id": job_id, "project": "crm"})
+            )
+        )
+        still_running = tools_module.get_job_status(
+            registry.resolve("banco").jobs,
+            job_id=job_id,
+        )
+        owner = _tool_json(
+            asyncio.run(
+                server.call_tool("CancelJob", {"job_id": job_id, "project": "banco"})
+            )
+        )
+
+        assert wrong_project["status"] == "unknown"
+        assert still_running["status"] == "running"
+        assert owner["status"] == "cancelled"
+    finally:
+        registry.shutdown()
+
+
 def test_open_patch_review_routes_to_selected_project_on_shared_hub(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -590,6 +682,60 @@ def test_open_patch_review_routes_to_selected_project_on_shared_hub(
         assert _tool_json(result)["project"] == "banco"
         assert registry.resolve("crm").reviews.origin == registry.resolve("banco").reviews.origin
         assert "tx-banco" in str(result)
+    finally:
+        registry.shutdown()
+
+
+def test_list_patch_reviews_is_isolated_to_selected_project(tmp_path: Path) -> None:
+    crm = tmp_path / "crm"
+    banco = tmp_path / "banco"
+    crm.mkdir()
+    banco.mkdir()
+    registry = ProjectRegistry.create({"crm": crm, "banco": banco}, default_project="crm")
+    try:
+        crm_session = registry.resolve("crm")
+        banco_session = registry.resolve("banco")
+        crm_review = tools_module.write(
+            crm_session.guard,
+            crm_session.history,
+            path="crm.txt",
+            contents="crm",
+            description="Cria revisão CRM.",
+            group_title="Review CRM",
+        )
+        banco_review = tools_module.write(
+            banco_session.guard,
+            banco_session.history,
+            path="banco.txt",
+            contents="banco",
+            description="Cria revisão banco.",
+            group_title="Review banco",
+        )
+        assert isinstance(crm_review, dict)
+        assert isinstance(banco_review, dict)
+        server = create_server(registry=registry)
+
+        crm_result = _tool_json(
+            asyncio.run(server.call_tool("ListPatchReviews", {"project": "crm"}))
+        )
+        banco_result = _tool_json(
+            asyncio.run(server.call_tool("ListPatchReviews", {"project": "banco"}))
+        )
+
+        assert crm_result["project"] == "crm"
+        assert banco_result["project"] == "banco"
+        assert [item["group_id"] for item in crm_result["items"]] == [
+            crm_review["group_id"]
+        ]
+        assert [item["group_id"] for item in banco_result["items"]] == [
+            banco_review["group_id"]
+        ]
+        rendered_crm = json.dumps(crm_result, ensure_ascii=False)
+        rendered_banco = json.dumps(banco_result, ensure_ascii=False)
+        assert "Review banco" not in rendered_crm
+        assert "Review CRM" not in rendered_banco
+        assert str(crm.resolve(strict=False)) not in rendered_crm
+        assert str(banco.resolve(strict=False)) not in rendered_banco
     finally:
         registry.shutdown()
 
@@ -714,7 +860,9 @@ def test_mcp_grep_calls_overlap(session: Session, monkeypatch: pytest.MonkeyPatc
 
 def test_tool_schemas_match_the_cursor_contract(session: Session) -> None:
     server = create_server(session=session)
-    schemas = {tool.name: tool.inputSchema for tool in asyncio.run(server.list_tools())}
+    listed_tools = asyncio.run(server.list_tools())
+    schemas = {tool.name: tool.inputSchema for tool in listed_tools}
+    tools_by_name = {tool.name: tool for tool in listed_tools}
 
     assert schemas["ListProjects"].get("properties", {}) == {}
     assert "project" in schemas["ProjectInfo"]["properties"]
@@ -734,8 +882,11 @@ def test_tool_schemas_match_the_cursor_contract(session: Session) -> None:
         "job_id",
         "wait_ms",
         "tail_lines",
+        "cursor",
         "project",
     }
+    assert schemas["CancelJob"]["required"] == ["job_id"]
+    assert set(schemas["CancelJob"]["properties"]) == {"job_id", "project"}
     assert "required" not in schemas["Grep"] or "pattern" not in schemas["Grep"]["required"]
     assert "type" in schemas["Grep"]["properties"]
     assert "exclude" in schemas["Grep"]["properties"]
@@ -782,6 +933,20 @@ def test_tool_schemas_match_the_cursor_contract(session: Session) -> None:
         "expected_hashes",
         "project",
     }
+    assert set(schemas["ListPatchReviews"]["properties"]) == {
+        "limit",
+        "status",
+        "project",
+    }
+    assert schemas["ListPatchReviews"]["properties"]["limit"]["default"] == 20
+    assert schemas["ListPatchReviews"]["properties"]["status"]["enum"] == [
+        "all",
+        "pending",
+        "reviewed",
+        "rolled_back",
+    ]
+    assert tools_by_name["ListPatchReviews"].annotations is not None
+    assert tools_by_name["ListPatchReviews"].annotations.readOnlyHint is True
     assert schemas["OpenPatchReview"]["properties"]["transaction_id"]["default"] == "latest"
     assert schemas["OpenPatchReview"]["properties"]["open_browser"]["default"] is True
     assert "project" in schemas["OpenPatchReview"]["properties"]
@@ -1030,6 +1195,44 @@ def test_cli_write_and_delete(project: Path) -> None:
     )
     assert removed.exit_code == 0
     assert not (project / "tmp.txt").exists()
+
+
+def test_cli_lists_patch_reviews_from_a_previous_session(project: Path) -> None:
+    written = runner.invoke(
+        app,
+        [
+            "write",
+            "discover-cli.txt",
+            "body",
+            "--description",
+            "Cria revisão para o CLI",
+            "--group-title",
+            "Descoberta CLI",
+            "--project",
+            str(project),
+        ],
+    )
+    assert written.exit_code == 0
+    created = json.loads(written.stdout)
+
+    listed = runner.invoke(
+        app,
+        [
+            "list-patch-reviews",
+            "--status",
+            "pending",
+            "--limit",
+            "1",
+            "--project",
+            str(project),
+        ],
+    )
+
+    assert listed.exit_code == 0
+    listing = json.loads(listed.stdout)
+    assert listing["total"] == 1
+    assert listing["items"][0]["group_id"] == created["group_id"]
+    assert listing["items"][0]["last_transaction_id"] == created["transaction_id"]
 
 
 def test_cli_str_replace(project: Path) -> None:

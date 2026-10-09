@@ -16,7 +16,7 @@ from code_harness.errors import (
 from code_harness.history import HistoryManager, HistoryPolicy
 from code_harness.paths import PathGuard
 from code_harness.session import Session
-from code_harness.tools import delete, str_replace, write
+from code_harness.tools import delete, list_patch_reviews, str_replace, write
 
 
 def test_all_mutating_tools_share_one_group_and_rollback_in_reverse(project: Path) -> None:
@@ -240,6 +240,186 @@ def test_patch_group_survives_session_restart(project: Path) -> None:
         assert group.patches[0].description == "Persiste atualização."
     finally:
         second_session.shutdown()
+
+
+def test_list_patch_reviews_recovers_compact_review_after_session_restart(
+    project: Path,
+) -> None:
+    first_session = Session.create(project)
+    try:
+        changed = write(
+            first_session.guard,
+            first_session.history,
+            path="discoverable.txt",
+            contents="saved\n",
+            description="Cria revisão recuperável.",
+            group_title="Revisão recuperável",
+        )
+        assert isinstance(changed, dict)
+        group_id = str(changed["group_id"])
+        transaction_id = str(changed["transaction_id"])
+    finally:
+        first_session.shutdown()
+
+    second_session = Session.create(project)
+    try:
+        listing = list_patch_reviews(second_session.reviews.service)
+        reopened = second_session.reviews.open(group_id, open_browser=False)
+
+        assert listing["total"] == 1
+        assert listing["returned"] == 1
+        item = listing["items"][0]
+        assert set(item) == {
+            "group_id",
+            "group_title",
+            "created_at",
+            "updated_at",
+            "patches_count",
+            "files_changed",
+            "pending_count",
+            "reviewed_count",
+            "rolled_back_count",
+            "last_transaction_id",
+        }
+        assert item["group_id"] == group_id
+        assert item["group_title"] == "Revisão recuperável"
+        assert item["last_transaction_id"] == transaction_id
+        assert item["pending_count"] == 1
+        assert reopened["group_id"] == group_id
+        assert reopened["transaction_id"] == transaction_id
+        rendered = json.dumps(listing, ensure_ascii=False)
+        assert str(project.resolve(strict=False)) not in rendered
+        assert "discoverable.txt" not in rendered
+        assert "Cria revisão recuperável." not in rendered
+    finally:
+        second_session.shutdown()
+
+
+def test_list_patch_reviews_filters_before_limit_and_reports_state_counts(
+    project: Path,
+) -> None:
+    session = Session.create(project)
+    try:
+        pending = write(
+            session.guard,
+            session.history,
+            path="pending.txt",
+            contents="pending\n",
+            description="Cria revisão pendente.",
+            group_title="Pendente",
+        )
+        reviewed = write(
+            session.guard,
+            session.history,
+            path="reviewed.txt",
+            contents="reviewed\n",
+            description="Cria revisão concluída.",
+            group_title="Revisada",
+        )
+        rolled_back = write(
+            session.guard,
+            session.history,
+            path="rolled-back.txt",
+            contents="rolled back\n",
+            description="Cria revisão revertida.",
+            group_title="Revertida",
+        )
+        assert isinstance(pending, dict)
+        assert isinstance(reviewed, dict)
+        assert isinstance(rolled_back, dict)
+        session.reviews.service.complete_group(str(reviewed["group_id"]))
+        session.reviews.service.rollback_group(str(rolled_back["group_id"]))
+
+        pending_only = list_patch_reviews(
+            session.reviews.service,
+            status="pending",
+            limit=1,
+        )
+        reviewed_only = list_patch_reviews(
+            session.reviews.service,
+            status="reviewed",
+            limit=1,
+        )
+        rolled_back_only = list_patch_reviews(
+            session.reviews.service,
+            status="rolled_back",
+            limit=1,
+        )
+        all_groups = list_patch_reviews(session.reviews.service, limit=2)
+
+        assert pending_only["total"] == 1
+        assert pending_only["items"][0]["group_id"] == pending["group_id"]
+        assert pending_only["items"][0]["pending_count"] == 1
+        assert reviewed_only["total"] == 1
+        assert reviewed_only["items"][0]["group_id"] == reviewed["group_id"]
+        assert reviewed_only["items"][0]["reviewed_count"] == 1
+        assert rolled_back_only["total"] == 1
+        assert rolled_back_only["items"][0]["group_id"] == rolled_back["group_id"]
+        assert rolled_back_only["items"][0]["rolled_back_count"] == 1
+        assert all_groups["total"] == 3
+        assert all_groups["returned"] == 2
+    finally:
+        session.shutdown()
+
+
+def test_list_patch_reviews_uses_group_id_as_deterministic_time_tie_breaker(
+    project: Path,
+) -> None:
+    session = Session.create(project)
+    try:
+        first = write(
+            session.guard,
+            session.history,
+            path="tie-first.txt",
+            contents="first\n",
+            description="Cria primeiro empate.",
+            group_title="Primeiro empate",
+        )
+        second = write(
+            session.guard,
+            session.history,
+            path="tie-second.txt",
+            contents="second\n",
+            description="Cria segundo empate.",
+            group_title="Segundo empate",
+        )
+        assert isinstance(first, dict)
+        assert isinstance(second, dict)
+        tied_at = datetime.now(UTC).isoformat()
+        for changed in (first, second):
+            group = session.history.load_group(str(changed["group_id"]))
+            manifest = session.history.load(str(changed["transaction_id"]))
+            session.history.save_group(replace(group, updated_at=tied_at))
+            session.history.save(replace(manifest, updated_at=tied_at))
+
+        listing = list_patch_reviews(session.reviews.service)
+
+        expected = sorted(
+            [str(first["group_id"]), str(second["group_id"])],
+            reverse=True,
+        )
+        assert [item["group_id"] for item in listing["items"]] == expected
+    finally:
+        session.shutdown()
+
+
+@pytest.mark.parametrize("limit", [0, 101])
+def test_list_patch_reviews_rejects_invalid_limit(project: Path, limit: int) -> None:
+    session = Session.create(project)
+    try:
+        with pytest.raises(InvalidArgumentError, match="limit must be between"):
+            list_patch_reviews(session.reviews.service, limit=limit)
+    finally:
+        session.shutdown()
+
+
+def test_list_patch_reviews_rejects_invalid_status(project: Path) -> None:
+    session = Session.create(project)
+    try:
+        with pytest.raises(InvalidArgumentError, match="status must be one of"):
+            list_patch_reviews(session.reviews.service, status="missing")
+    finally:
+        session.shutdown()
 
 
 def test_legacy_review_manifest_is_read_as_patch_group(project: Path) -> None:

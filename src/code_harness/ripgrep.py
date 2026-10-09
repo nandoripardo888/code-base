@@ -12,6 +12,8 @@ import shutil
 import subprocess
 import threading
 import time
+from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 
 from code_harness.encoding import decode_bytes
@@ -55,13 +57,24 @@ def run(
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     max_stdout_lines: int | None = None,
     max_json_matches: int | None = None,
+    stdout_line_key: Callable[[str], tuple[int, str]] | None = None,
 ) -> str:
     """Run ripgrep and return stdout, raising on anything but success/no-match.
 
     When ``max_stdout_lines`` or ``max_json_matches`` is set, ripgrep is stopped
     as soon as enough output is collected so broad searches on large trees do
     not wait for a full scan (and hit the process timeout).
+
+    ``stdout_line_key`` changes the line limit into a bounded top-N collector.
+    The complete stream is consumed, but only the best ``max_stdout_lines``
+    lines are retained in this process. This is useful when ripgrep must finish
+    a global sort before emitting output and a deterministic secondary key is
+    required.
     """
+    if stdout_line_key is not None and max_stdout_lines is None:
+        raise ValueError("stdout_line_key requires max_stdout_lines")
+    if stdout_line_key is not None and max_json_matches is not None:
+        raise ValueError("stdout_line_key cannot be combined with max_json_matches")
     binary = executable or resolve_executable()
     bounded = max_stdout_lines is not None or max_json_matches is not None
     try:
@@ -73,6 +86,7 @@ def run(
                 timeout_seconds=timeout_seconds,
                 max_stdout_lines=max_stdout_lines,
                 max_json_matches=max_json_matches,
+                stdout_line_key=stdout_line_key,
             )
         completed = subprocess.run(
             [binary, *arguments],
@@ -104,6 +118,7 @@ def _run_bounded(
     timeout_seconds: float,
     max_stdout_lines: int | None,
     max_json_matches: int | None,
+    stdout_line_key: Callable[[str], tuple[int, str]] | None,
 ) -> str:
     try:
         process = subprocess.Popen(
@@ -118,6 +133,9 @@ def _run_bounded(
 
     assert process.stdout is not None
     assert process.stderr is not None
+    stdout_pipe = process.stdout
+    stderr_pipe = process.stderr
+    ranked_limit = max_stdout_lines if stdout_line_key is not None else None
 
     stdout_chunks: list[bytes] = []
     stderr_chunks: list[bytes] = []
@@ -125,13 +143,26 @@ def _run_bounded(
     line_count = 0
     match_count = 0
     read_error: Exception | None = None
+    ranked_lines: list[tuple[tuple[int, str], str]] = []
+
+    def _trim_ranked_lines() -> None:
+        assert ranked_limit is not None
+        ranked_lines.sort(key=lambda item: item[0])
+        del ranked_lines[ranked_limit:]
 
     def _read_stdout() -> None:
         nonlocal stopped_early, line_count, match_count, read_error
         try:
-            for line in process.stdout:
-                stdout_chunks.append(line)
+            for line in stdout_pipe:
                 line_count += 1
+                if stdout_line_key is not None:
+                    assert ranked_limit is not None
+                    text = decode_bytes(line).text.rstrip("\r\n")
+                    ranked_lines.append((stdout_line_key(text), text))
+                    if len(ranked_lines) >= 2 * ranked_limit:
+                        _trim_ranked_lines()
+                    continue
+                stdout_chunks.append(line)
                 if max_stdout_lines is not None and line_count >= max_stdout_lines:
                     stopped_early = True
                     _terminate(process)
@@ -142,17 +173,17 @@ def _run_bounded(
                         stopped_early = True
                         _terminate(process)
                         return
-        except Exception as error:  # noqa: BLE001 - surface via parent thread
+        except Exception as error:
             read_error = error
 
     def _read_stderr() -> None:
         try:
             while True:
-                chunk = process.stderr.read(65_536)
+                chunk = stderr_pipe.read(65_536)
                 if not chunk:
                     break
                 stderr_chunks.append(chunk)
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             nonlocal read_error
             if read_error is None:
                 read_error = error
@@ -202,7 +233,16 @@ def _run_bounded(
     returncode = process.returncode if process.returncode is not None else -1
     if returncode not in (0, _NO_MATCH_EXIT_CODE):
         detail = decode_bytes(stderr).text.strip() or f"exit code {returncode}"
+        if "--sortr" in arguments and "sortr" in detail.lower():
+            raise RipgrepUnavailableError(
+                "installed ripgrep does not support '--sortr modified'; "
+                "upgrade ripgrep to use Glob.",
+                hint_install=False,
+            )
         raise RipgrepUnavailableError(f"ripgrep failed: {detail}.")
+    if stdout_line_key is not None:
+        _trim_ranked_lines()
+        return "\n".join(line for _, line in ranked_lines)
     return decode_bytes(stdout).text
 
 
@@ -221,10 +261,8 @@ def _terminate(process: subprocess.Popen[bytes]) -> None:
         process.kill()
     except OSError:
         return
-    try:
+    with suppress(subprocess.TimeoutExpired):
         process.wait(timeout=_TERMINATE_GRACE_SECONDS)
-    except subprocess.TimeoutExpired:
-        pass
 
 
 def _decode_completed(completed: subprocess.CompletedProcess[bytes]) -> str:

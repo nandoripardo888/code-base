@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from code_harness import ripgrep
 from code_harness.errors import InvalidArgumentError
 from code_harness.paths import PathGuard
 from code_harness.tools import glob, grep
@@ -148,6 +149,19 @@ def test_glob_sorts_by_modification_time(guard: PathGuard, project: Path) -> Non
     assert listing.index("src/util.py") < listing.index("src/hello.py")
 
 
+def test_glob_breaks_equal_modification_times_by_path(guard: PathGuard, project: Path) -> None:
+    import os
+    import time
+
+    stamp = time.time() - 500
+    os.utime(project / "src" / "util.py", (stamp, stamp))
+    os.utime(project / "src" / "hello.py", (stamp, stamp))
+
+    listing = glob(guard, glob_pattern="*.py")
+
+    assert listing.index("src/hello.py") < listing.index("src/util.py")
+
+
 def test_glob_caps_ripgrep_output(guard: PathGuard, monkeypatch: pytest.MonkeyPatch) -> None:
     from code_harness.tools import search_core
 
@@ -158,11 +172,17 @@ def test_glob_caps_ripgrep_output(guard: PathGuard, monkeypatch: pytest.MonkeyPa
         *,
         cwd: Path,
         max_stdout_lines: int | None = None,
+        stdout_line_key: object = None,
         **_kwargs: object,
     ) -> str:
         nonlocal seen_limit
         seen_limit = max_stdout_lines
         assert "--files" in arguments
+        assert arguments[arguments.index("--sortr") : arguments.index("--sortr") + 2] == [
+            "--sortr",
+            "modified",
+        ]
+        assert callable(stdout_line_key)
         assert cwd == guard.root
         return "\n".join(f"file-{index:04d}.txt" for index in range(search_core.GLOB_CAP + 1))
 
@@ -175,6 +195,53 @@ def test_glob_caps_ripgrep_output(guard: PathGuard, monkeypatch: pytest.MonkeyPa
     assert f"Result capped at {search_core.GLOB_CAP} files." in result
     assert "file-0999.txt" in result
     assert "file-1000.txt" not in result
+
+
+def test_glob_selects_recent_file_beyond_initial_candidates(guard: PathGuard) -> None:
+    from code_harness.tools import search_core
+
+    old_paths = [f"old-{index:04d}.txt" for index in range(search_core.GLOB_CAP + 1)]
+    newest_path = "newest.txt"
+    for path in [*old_paths, newest_path]:
+        (guard.root / path).write_text(path, encoding="utf-8")
+
+    import os
+    import time
+
+    old_stamp = time.time() - 500
+    for path in old_paths:
+        os.utime(guard.root / path, (old_stamp, old_stamp))
+
+    result = glob(guard, glob_pattern="*.txt", include_all=True)
+
+    assert newest_path in result
+    assert old_paths[-1] not in result
+    assert f"showing {search_core.GLOB_CAP} files; more matches exist" in result
+
+
+def test_ranked_ripgrep_collector_reads_past_line_limit(project: Path) -> None:
+    from code_harness.tools import search_core
+
+    directory = project / "ranked"
+    directory.mkdir()
+    for name in ["a.rank", "b.rank", "c.rank"]:
+        (directory / name).write_text(name, encoding="utf-8")
+
+    priority = {"a.rank": 2, "b.rank": 1, "c.rank": 0}
+    output = ripgrep.run(
+        ["--files", "--sort", "path", "--glob", "*.rank", "--", "."],
+        cwd=directory,
+        max_stdout_lines=2,
+        stdout_line_key=lambda entry: (
+            priority[search_core.normalize_path(entry)],
+            search_core.normalize_path(entry),
+        ),
+    )
+
+    assert [search_core.normalize_path(entry) for entry in output.splitlines()] == [
+        "c.rank",
+        "b.rank",
+    ]
 
 
 def test_glob_without_matches(guard: PathGuard) -> None:

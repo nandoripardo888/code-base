@@ -1,0 +1,8 @@
+﻿default_project = "code-base"
+
+allowed_project_roots = [
+    'C:\CAMINHO\DOS\PROJETOS'
+]
+
+[projects.code-base]
+path = 'C:\CAMINHO\DOS\PROJETOS\code-base'

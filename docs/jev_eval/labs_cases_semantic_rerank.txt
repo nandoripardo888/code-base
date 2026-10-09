@@ -1,0 +1,362 @@
+CASOS CRM PARA AVALIACAO DO JEV — COLETA VIA @labs
+Data: 2026-09-25
+Projeto MCP: crmservice
+Fonte: @labs Grep e Read. Não há credenciais nem dados reais de clientes nos trechos selecionados.
+Este arquivo contém apenas ENTRADAS e GABARITOS locais; nenhum desses blocos foi enviado ao Jev por esta subtarefa.
+
+============================================================
+BUSCA ORIGINAL DO LABS
+============================================================
+Ferramenta: Grep
+pattern: filtrarTotalHojeAtrasado|HOJE_ATRASADO|AGENDADA_HOJE
+output_mode: content
+context_lines: 2
+head_limit: 40
+
+19 matches in 7 files
+
+src/main/java/freedom/util/CrmServiceAgendaFiltro.java
+215-    }
+216-
+217:    public void filtrarTotalHojeAtrasado(TOTALIZAR_AGENDADOS tbTotalizarAgendados,
+218-                                         int codEmpresa, String usuario, String placa, EnStatusAgenda statusAgenda,
+219-                                         String nomeCliente, int codTecnico) throws DataException {
+--
+221-        tbTotalizarAgendados.close();
+222-        tbTotalizarAgendados.clearFilters();
+223:        //tbTotalizarAgendados.addFilter("HOJE_ATRASADO");
+224:        tbTotalizarAgendados.addFilter("AGENDADA_HOJE");
+225-        tbTotalizarAgendados.addParam("COD_EMPRESA", codEmpresa);
+226-        filtroComumAgenda(tbTotalizarAgendados, codEmpresa, usuario, placa, statusAgenda,
+--
+240-     * @throws DataException
+241-     */
+242:    public void filtrarTotalHojeAtrasado(TOTALIZAR_AGENDADOS tbTotalizarAgendados,
+243-                                         String codEmpresas, String usuario, String placa, EnStatusAgenda statusAgenda,
+244-                                         String nomeCliente, int codTecnico) throws DataException {
+--
+246-        tbTotalizarAgendados.close();
+247-        tbTotalizarAgendados.clearFilters();
+248:        //tbTotalizarAgendados.addFilter("HOJE_ATRASADO");
+249:        tbTotalizarAgendados.addFilter("AGENDADA_HOJE");
+250-        //tbTotalizarAgendados.addParam("COD_EMPRESA", codEmpresa);
+251-        filtroComumAgenda(tbTotalizarAgendados, codEmpresas, usuario, placa, statusAgenda,
+
+src/main/java/freedom/bytecode/rn/enun/EnProgramacaoForaPrometidoFiltro.java
+5-
+6-public enum EnProgramacaoForaPrometidoFiltro {
+7:    HOJE_ATRASADO("H"),
+8-    ONTEM_ATRASADO("O"),
+9-    TRINTA_DIAS_ATRASADO("30"),
+
+src/main/java/freedom/bytecode/rn/PainelRNA.java
+50-    public void filtrarHojeAtrasado(int codEmpresa, String usuario) throws DataException {
+51-        /*Atrasados Hoje*/
+52:        agenda.filtrarTotalHojeAtrasado(tbTotalizarAgendadosAtrasadosHj, codEmpresa, usuario, "",
+53-                EnStatusAgenda.TODOS, "", 0);
+54-    }
+
+src/main/java/freedom/bytecode/rn/PainelNewRNA.java
+250-        }
+251-        if (tipo.equals("HOJE")) {
+252:            tbTotalizarAgendados.addFilter("AGENDADA_HOJE");
+253-            tbTotalizarAgendados.addParam("COD_EMPRESA", codEmpresa);
+254-        }
+
+src/main/java/freedom/bytecode/rn/RecepcaoRNA.java
+200-                        break;
+201-                    case HOJEATRASADO:
+202:                        tbServAgenda.addFilter("AGENDADA_HOJE");
+203-                        break;
+204-                    case HOJENOHORARIO:
+205:                        tbServAgenda.addFilter("AGENDADA_HOJE_NO_HORARIO");
+206-                        break;
+207-                    case AMANHA:
+--
+312-    }
+313-
+314:    public void filtrarTotalHojeAtrasado(String codEmpresas, String usuario, String placa,
+315-                                         EnStatusAgenda statusAgenda, String nomeCliente, int codTecnico) throws DataException {
+316-        /*Atrasados Hoje*/
+317:        agenda.filtrarTotalHojeAtrasado(tbTotalizarAgendados, codEmpresas, usuario,
+318-                placa, statusAgenda, nomeCliente, codTecnico);
+319-    }
+
+src/main/java/freedom/bytecode/form/FrmAgendaProgramacaoForaPrometidoA.java
+26-    private final CrmServiceUtil util = new CrmServiceUtil();
+27-    private final CrmServiceComponent serviceComponent = new CrmServiceComponent();
+28:    private EnProgramacaoForaPrometidoFiltro programacaoForaPrometidoFiltro = EnProgramacaoForaPrometidoFiltro.HOJE_ATRASADO;
+29-    private final String COLOR_DESTAQUE = "clSilver";
+30-    private final String COLOR_DEFAULT = "#FFFFFF";
+--
+81-    private void atualizarTotaisForaPrometido() {
+82-        try {
+83:            Integer totalHoje = rn.countProgramacaoForaPrometido(this.codEmpresa, this.dataAgenda, EnProgramacaoForaPrometidoFiltro.HOJE_ATRASADO,
+84-                    this.codPainel);
+85-            lblPrometidoHj.setValue("Hoje(" + totalHoje + ")");
+--
+97-
+98-            if (totalHoje > 0) {
+99:                configurarBackGroundFiltroAtrasado(EnProgramacaoForaPrometidoFiltro.HOJE_ATRASADO, false);
+100-            } else if (totalOntem > 0) {
+101-                configurarBackGroundFiltroAtrasado(EnProgramacaoForaPrometidoFiltro.ONTEM_ATRASADO, false);
+--
+508-    @Override
+509-    public void hbPrometidoHojeClick(Event<Object> event) {
+510:        configurarBackGroundFiltroAtrasado(EnProgramacaoForaPrometidoFiltro.HOJE_ATRASADO, true);
+511-    }
+512-
+--
+543-        hbPrometido30DiasAtrasado.setColor(COLOR_DEFAULT);
+544-        switch (programacaoForaPrometidoFiltro) {
+545:            case HOJE_ATRASADO:
+546-                hbPrometidoHoje.setColor(COLOR_DESTAQUE);
+547-                break;
+
+src/main/java/freedom/bytecode/form/FrmRecepcaoA.java
+670-    private void filtrarTotalAgendaHojeAtrasado() {
+671-        try {
+672:            rn.filtrarTotalHojeAtrasado(codEmpresasSel, consultorSel, placaVeiculoSel, statusAgenda, nomeCliente,
+673-                    codTecnicoSel);
+674-            lblAgendaHojeAtrasado.setCaption(tbTotalizarAgendados.getTOTAL().asString());
+
+============================================================
+CASO A — BUSCA SEMANTICA DENTRO DE UM ARQUIVO
+============================================================
+Ferramenta: Read
+Arquivo: src/main/java/freedom/util/CrmServiceAgendaFiltro.java
+Intervalo lido: 204–301
+Pergunta proposta ao Jev: "No contador de agendamentos atrasados de hoje da recepção, quando há múltiplas empresas selecionadas, qual rotina prepara a consulta e qual filtro está ativo?"
+Resposta esperada: S3, linhas 242–254, sobrecarga cujo parâmetro codEmpresas é String. O filtro ativo é AGENDADA_HOJE; HOJE_ATRASADO está comentado. S2 é a sobrecarga para uma empresa int, não para a lista String. A chamada em RecepcaoRNA.java:314–319 fornece a assinatura String que desambigua.
+
+[S1] src/main/java/freedom/util/CrmServiceAgendaFiltro.java:204-215
+   204|    public void filtrarTotalAgendaOntem(TOTALIZAR_AGENDADOS tbTotalizarAgendados,
+   205|                                        int codEmpresa, String usuario, String placa, EnStatusAgenda statusAgenda,
+   206|                                        String nomeCliente, int codTecnico) throws DataException {
+   207|        /*Ontem*/
+   208|        tbTotalizarAgendados.close();
+   209|        tbTotalizarAgendados.clearFilters();
+   210|        tbTotalizarAgendados.addFilter("AGENDADA_ONTEM");
+   211|
+   212|        filtroComumAgenda(tbTotalizarAgendados, codEmpresa, usuario, placa, statusAgenda,
+   213|                nomeCliente, codTecnico);
+   214|        tbTotalizarAgendados.open();
+   215|    }
+
+[S2] src/main/java/freedom/util/CrmServiceAgendaFiltro.java:217-229
+   217|    public void filtrarTotalHojeAtrasado(TOTALIZAR_AGENDADOS tbTotalizarAgendados,
+   218|                                         int codEmpresa, String usuario, String placa, EnStatusAgenda statusAgenda,
+   219|                                         String nomeCliente, int codTecnico) throws DataException {
+   220|        /*Atrasados Hoje*/
+   221|        tbTotalizarAgendados.close();
+   222|        tbTotalizarAgendados.clearFilters();
+   223|        //tbTotalizarAgendados.addFilter("HOJE_ATRASADO");
+   224|        tbTotalizarAgendados.addFilter("AGENDADA_HOJE");
+   225|        tbTotalizarAgendados.addParam("COD_EMPRESA", codEmpresa);
+   226|        filtroComumAgenda(tbTotalizarAgendados, codEmpresa, usuario, placa, statusAgenda,
+   227|                nomeCliente, codTecnico);
+   228|        tbTotalizarAgendados.open();
+   229|    }
+
+[S3] src/main/java/freedom/util/CrmServiceAgendaFiltro.java:231-254
+   231|    /**
+   232|     * Sobrecarga para Empresas Multi-Seleção
+   233|     * @param tbTotalizarAgendados
+   234|     * @param codEmpresas
+   235|     * @param usuario
+   236|     * @param placa
+   237|     * @param statusAgenda
+   238|     * @param nomeCliente
+   239|     * @param codTecnico
+   240|     * @throws DataException
+   241|     */
+   242|    public void filtrarTotalHojeAtrasado(TOTALIZAR_AGENDADOS tbTotalizarAgendados,
+   243|                                         String codEmpresas, String usuario, String placa, EnStatusAgenda statusAgenda,
+   244|                                         String nomeCliente, int codTecnico) throws DataException {
+   245|        /*Atrasados Hoje*/
+   246|        tbTotalizarAgendados.close();
+   247|        tbTotalizarAgendados.clearFilters();
+   248|        //tbTotalizarAgendados.addFilter("HOJE_ATRASADO");
+   249|        tbTotalizarAgendados.addFilter("AGENDADA_HOJE");
+   250|        //tbTotalizarAgendados.addParam("COD_EMPRESA", codEmpresa);
+   251|        filtroComumAgenda(tbTotalizarAgendados, codEmpresas, usuario, placa, statusAgenda,
+   252|                nomeCliente, codTecnico);
+   253|        tbTotalizarAgendados.open();
+   254|    }
+
+[S4] src/main/java/freedom/util/CrmServiceAgendaFiltro.java:256-266
+   256|    public void filtrarTotalHojeNoHorario(TOTALIZAR_AGENDADOS tbTotalizarAgendados,
+   257|                                          int codEmpresa, String usuario, String placa, EnStatusAgenda statusAgenda,
+   258|                                          String nomeCliente, int codTecnico) throws DataException {
+   259|        tbTotalizarAgendados.close();
+   260|        tbTotalizarAgendados.clearFilters();
+   261|        tbTotalizarAgendados.addFilter("HOJE_NO_HORARIO");
+   262|        tbTotalizarAgendados.addParam("COD_EMPRESA", codEmpresa);
+   263|        filtroComumAgenda(tbTotalizarAgendados, codEmpresa, usuario, placa, statusAgenda,
+   264|                nomeCliente, codTecnico);
+   265|        tbTotalizarAgendados.open();
+   266|    }
+
+[S5] src/main/java/freedom/util/CrmServiceAgendaFiltro.java:268-277
+   268|    public void filtrarTotalEntrouHoje(TOTALIZAR_AGENDADOS tbTotalizarAgendados,
+   269|                                       int codEmpresa, String usuario, String placa, String nomeCliente,
+   270|                                       int codTecnico) throws DataException {
+   271|        tbTotalizarAgendados.close();
+   272|        tbTotalizarAgendados.clearFilters();
+   273|        tbTotalizarAgendados.addFilter("ENTROU_HOJE");
+   274|        filtroComumAgenda(tbTotalizarAgendados, codEmpresa, usuario, placa, EnStatusAgenda.ENTROUHOJE,
+   275|                nomeCliente, codTecnico);
+   276|        tbTotalizarAgendados.open();
+   277|    }
+
+[S6] src/main/java/freedom/util/CrmServiceAgendaFiltro.java:279-288
+   279|    public void filtrarTotalAgendadaAmanha(TOTALIZAR_AGENDADOS tbTotalizarAgendados,
+   280|                                           String codEmpresas, String usuario, String placa, EnStatusAgenda statusAgenda,
+   281|                                           String nomeCliente, int codTecnico) throws DataException {
+   282|        tbTotalizarAgendados.close();
+   283|        tbTotalizarAgendados.clearFilters();
+   284|        tbTotalizarAgendados.addFilter("AGENDADA_AMANHA");
+   285|        filtroComumAgenda(tbTotalizarAgendados, codEmpresas, usuario, placa, statusAgenda,
+   286|                nomeCliente, codTecnico);
+   287|        tbTotalizarAgendados.open();
+   288|    }
+
+[S7] src/main/java/freedom/util/CrmServiceAgendaFiltro.java:290-301
+   290|    public void filtrarTotalAgendadaAtrasados(TOTALIZAR_AGENDADOS tbTotalizarAgendados,
+   291|                                              String codEmpresas, String usuario, String placa, EnStatusAgenda statusAgenda,
+   292|                                              String nomeCliente, int codTecnico) throws DataException {
+   293|        tbTotalizarAgendados.close();
+   294|        tbTotalizarAgendados.clearFilters();
+   295|
+   296|        tbTotalizarAgendados.addFilter("ATRASADOS");
+   297|
+   298|        filtroComumAgenda(tbTotalizarAgendados, codEmpresas, usuario, placa, statusAgenda,
+   299|                nomeCliente, codTecnico);
+   300|        tbTotalizarAgendados.open();
+   301|    }
+
+============================================================
+CASO B — RE-RANKING DE SETE ARQUIVOS / METODOS
+============================================================
+Ferramentas: Grep (acima), depois Read dos métodos completos
+Pergunta proposta ao Jev: "Como o contador lblAgendaHojeAtrasado da recepção é atualizado e qual filtro ele usa?"
+Resposta esperada: F1→F2→F3. F1 atualiza o rótulo lendo tbTotalizarAgendados.getTOTAL(); F2 encaminha a chamada para agenda; F3 (sobrecarga String) ativa AGENDADA_HOJE. F4–F7 são pistas relacionadas ou casos de outra tela, mas não comprovam essa cadeia.
+Nota: não se deve converter o ranking em filtro rígido que descarte F2 ou F3.
+
+[F1] src/main/java/freedom/bytecode/form/FrmRecepcaoA.java:670-679
+   670|    private void filtrarTotalAgendaHojeAtrasado() {
+   671|        try {
+   672|            rn.filtrarTotalHojeAtrasado(codEmpresasSel, consultorSel, placaVeiculoSel, statusAgenda, nomeCliente,
+   673|                    codTecnicoSel);
+   674|            lblAgendaHojeAtrasado.setCaption(tbTotalizarAgendados.getTOTAL().asString());
+   675|            vBoxAgendaHojeAtrasado.invalidate();
+   676|        } catch (DataException ex) {
+   677|            CrmServiceUtil.showError(ex);
+   678|        }
+   679|    }
+
+[F2] src/main/java/freedom/bytecode/rn/RecepcaoRNA.java:314-319
+   314|    public void filtrarTotalHojeAtrasado(String codEmpresas, String usuario, String placa,
+   315|                                         EnStatusAgenda statusAgenda, String nomeCliente, int codTecnico) throws DataException {
+   316|        /*Atrasados Hoje*/
+   317|        agenda.filtrarTotalHojeAtrasado(tbTotalizarAgendados, codEmpresas, usuario,
+   318|                placa, statusAgenda, nomeCliente, codTecnico);
+   319|    }
+
+[F3] src/main/java/freedom/util/CrmServiceAgendaFiltro.java:242-254
+   242|    public void filtrarTotalHojeAtrasado(TOTALIZAR_AGENDADOS tbTotalizarAgendados,
+   243|                                         String codEmpresas, String usuario, String placa, EnStatusAgenda statusAgenda,
+   244|                                         String nomeCliente, int codTecnico) throws DataException {
+   245|        /*Atrasados Hoje*/
+   246|        tbTotalizarAgendados.close();
+   247|        tbTotalizarAgendados.clearFilters();
+   248|        //tbTotalizarAgendados.addFilter("HOJE_ATRASADO");
+   249|        tbTotalizarAgendados.addFilter("AGENDADA_HOJE");
+   250|        //tbTotalizarAgendados.addParam("COD_EMPRESA", codEmpresa);
+   251|        filtroComumAgenda(tbTotalizarAgendados, codEmpresas, usuario, placa, statusAgenda,
+   252|                nomeCliente, codTecnico);
+   253|        tbTotalizarAgendados.open();
+   254|    }
+
+[F4] src/main/java/freedom/bytecode/rn/PainelRNA.java:50-54
+    50|    public void filtrarHojeAtrasado(int codEmpresa, String usuario) throws DataException {
+    51|        /*Atrasados Hoje*/
+    52|        agenda.filtrarTotalHojeAtrasado(tbTotalizarAgendadosAtrasadosHj, codEmpresa, usuario, "",
+    53|                EnStatusAgenda.TODOS, "", 0);
+    54|    }
+
+[F5] src/main/java/freedom/bytecode/rn/PainelNewRNA.java:233-268
+   233|    public int filtrarTotalIndRecepcao(String tipo,
+   234|                                       Double codEmpresa, String consultor) throws DataException {
+   235|        int count = 0;
+   236|
+   237|        tbTotalizarAgendados.close();
+   238|        tbTotalizarAgendados.clearFilters();
+   239|        tbTotalizarAgendados.clearParams();
+   240|        tbTotalizarAgendados.addFilter("COD_EMPRESA");
+   241|        tbTotalizarAgendados.addParam("COD_EMPRESA", codEmpresa);
+   242|        tbTotalizarAgendados.addFilter("STATUS_AGENDA_C_A");
+   243|        if (!consultor.trim().isEmpty()){
+   244|            tbTotalizarAgendados.setFilterCONSULTOR(consultor);
+   245|        }
+   246|
+   247|        if (tipo.equals("ATRASADOS")) {
+   248|            tbTotalizarAgendados.addFilter("ATRASADOS");
+   249|            tbTotalizarAgendados.addParam("COD_EMPRESA", codEmpresa);
+   250|        }
+   251|        if (tipo.equals("HOJE")) {
+   252|            tbTotalizarAgendados.addFilter("AGENDADA_HOJE");
+   253|            tbTotalizarAgendados.addParam("COD_EMPRESA", codEmpresa);
+   254|        }
+   255|        if (tipo.equals("PROXIMO")) {
+   256|            Date dataServ = new Date();
+   257|            Calendar c = Calendar.getInstance();
+   258|            c.setTime(dataServ);
+   259|            c.add(Calendar.DATE, 1);
+   260|            dataServ = c.getTime();
+   261|            tbTotalizarAgendados.addFilter("AGENDA_PERIODO");
+   262|            tbTotalizarAgendados.addParam("DATAINICIAL", dataServ);
+   263|            tbTotalizarAgendados.addParam("DATAFINAL", dataServ);
+   264|        }
+   265|        count = tbTotalizarAgendados.sqlCompute("COUNT", "*").asInteger();
+   266|
+   267|        return count;
+   268|    }
+
+[F6] src/main/java/freedom/bytecode/form/FrmAgendaProgramacaoForaPrometidoA.java:81-109
+    81|    private void atualizarTotaisForaPrometido() {
+    82|        try {
+    83|            Integer totalHoje = rn.countProgramacaoForaPrometido(this.codEmpresa, this.dataAgenda, EnProgramacaoForaPrometidoFiltro.HOJE_ATRASADO,
+    84|                    this.codPainel);
+    85|            lblPrometidoHj.setValue("Hoje(" + totalHoje + ")");
+    86|            hbPrometidoHoje.invalidate();
+    87|
+    88|            Integer totalOntem = rn.countProgramacaoForaPrometido(this.codEmpresa, this.dataAgenda, EnProgramacaoForaPrometidoFiltro.ONTEM_ATRASADO,
+    89|                    this.codPainel);
+    90|            lblPrometidoOntem.setValue("Ontem(" + totalOntem + ")");
+    91|            hbPrometidoOntem.invalidate();
+    92|
+    93|            Integer total30Dias = rn.countProgramacaoForaPrometido(this.codEmpresa, this.dataAgenda, EnProgramacaoForaPrometidoFiltro.TRINTA_DIAS_ATRASADO,
+    94|                    this.codPainel);
+    95|            lblPrometido30DiasAtrasado.setValue("Últimos 30 Dias(" + total30Dias + ")");
+    96|            hbPrometido30DiasAtrasado.invalidate();
+    97|
+    98|            if (totalHoje > 0) {
+    99|                configurarBackGroundFiltroAtrasado(EnProgramacaoForaPrometidoFiltro.HOJE_ATRASADO, false);
+   100|            } else if (totalOntem > 0) {
+   101|                configurarBackGroundFiltroAtrasado(EnProgramacaoForaPrometidoFiltro.ONTEM_ATRASADO, false);
+   102|            } else if (total30Dias > 0) {
+   103|                configurarBackGroundFiltroAtrasado(EnProgramacaoForaPrometidoFiltro.TRINTA_DIAS_ATRASADO, false);
+   104|            }
+   105|
+   106|        } catch (DataException e) {
+   107|            CrmServiceUtil.showError(e);
+   108|        }
+   109|    }
+
+[F7] src/main/java/freedom/bytecode/rn/enun/EnProgramacaoForaPrometidoFiltro.java:6-10
+     6|public enum EnProgramacaoForaPrometidoFiltro {
+     7|    HOJE_ATRASADO("H"),
+     8|    ONTEM_ATRASADO("O"),
+     9|    TRINTA_DIAS_ATRASADO("30"),
+    10|    TODOS_ATRASADO("T");

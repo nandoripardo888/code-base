@@ -27,24 +27,32 @@ flowchart TB
     subgraph Tools [tools/]
         Shell
         GetJobStatus
+        CancelJob
         Grep
         Glob
         Read
         Write
         StrReplace
         ApplyPatch
+        ListPatchReviews
+        OpenPatchReview
         RollbackPatch
         Delete
     end
     Shell --> Env[shell/environment.py]
     Shell --> Jobs[shell/background.py]
     GetJobStatus --> Jobs
+    CancelJob --> Jobs
     Grep --> Core[search_core.py]
     Glob --> Core
     Core --> RG[ripgrep.py]
     Grep --> Symbols[symbols/]
     Symbols --> RG
     Symbols --> Parsers[optional Tree-sitter parsers]
+    ListPatchReviews --> ReviewService[workspace ReviewService]
+    OpenPatchReview --> Hub
+    ReviewService --> HistoryA
+    ReviewService --> HistoryB
 ```
 
 | Module | Responsibility |
@@ -62,13 +70,17 @@ flowchart TB
 | `tools/search_hints.py` | Generic suggestions when Grep/Glob find nothing |
 | `symbols/` | Language extractors, optional parsers, symbols, and syntactic references |
 | `shell/environment.py` | Shell discovery, argv construction, syntax diagnostics |
-| `shell/background.py` | Per-session job registry, process lifecycle, bounded log tails, and reload-safe running-job checks |
+| `shell/background.py` | Per-session job registry, concurrency reservations, process-tree cancellation, retention, bounded log tails, and reload-safe running-job checks |
 | `review/` | Workspace review services behind one loopback `ReviewHub` when a named registry is active |
 | `mcp/server.py` | FastMCP registration over stdio or Streamable HTTP; resolves project aliases per request and uses session leases during reload |
 | `cli.py` | The same tools behind typer commands plus legacy/named/persistent MCP startup options |
 
 There is no index or database in v1. `Grep` and `Glob` remain the MCP surface.
-Content search shells out to ripgrep via `search_core`. `output_mode=symbols`
+Content search shells out to ripgrep via `search_core`. `Glob` asks ripgrep for a
+global reverse modification-time sort and retains a bounded top set with path as
+the deterministic tie-breaker. The complete match stream is consumed, so global
+ordering trades tree-scan latency for correct selection without unbounded MCP
+memory. `output_mode=symbols`
 uses on-demand extractors behind a `SymbolStore` facade (replaceable by an
 index later). `output_mode=references` uses ripgrep to preselect candidates and
 optional in-process Tree-sitter parsers to classify identifiers; it creates no
@@ -94,12 +106,30 @@ All named sessions share one loopback review HTTP server, but keep separate
 Streamable HTTP MCP endpoint—and consequently one tunnel to that endpoint—can
 serve every configured project without broadening any individual filesystem root.
 
-## Why paths are confined
+## Path and process boundaries
 
-`Write`, `StrReplace`, `ApplyPatch`, and `Delete` mutate the filesystem, so `PathGuard`
-resolves each path and requires the result to sit under an allowed root. Shell
-job logs live in a scratch directory outside the project and are never exposed
-as readable paths; agents follow them only through `GetJobStatus`.
+`Read`, `Grep`, `Glob`, `Write`, `StrReplace`, `ApplyPatch`, and `Delete` receive
+paths through a project `PathGuard`, which resolves them and requires the result
+to sit under an allowed root. Rollback and review operations use retained
+manifests and snapshots tied to that same workspace rather than caller-supplied
+live paths.
+
+`Shell` uses `PathGuard` only to select an initial working directory inside the
+project. The spawned process intentionally retains the host user's permissions,
+so it can access paths outside the project, launch subprocesses, and use the
+network. Authentication, the `code.exec` scope, and the MCP tool allowlist decide
+who receives that capability. Deployments that need an operating-system boundary
+must run the server under a dedicated account or inside a suitable container.
+
+Shell job logs live in a scratch directory outside the project and are never
+exposed as readable paths; agents follow them through `GetJobStatus` and stop
+their process trees through `CancelJob`. Status polling can use bounded tails or
+an opaque, job-bound cursor that advances by consumed UTF-8 bytes and returns at
+most 64 KiB per call without repeating earlier output. Completed entries and
+logs are pruned by age and count; running jobs are excluded from retention, and
+pruning invalidates their cursors. Tool
+output, filenames, and file contents cross a trust boundary and are treated as
+data rather than instructions.
 
 ## Shell lifecycle
 
@@ -109,7 +139,7 @@ sequenceDiagram
     participant Shell
     participant Registry as JobRegistry
     participant Process
-    participant Status as GetJobStatus
+    participant Status as GetJobStatus / CancelJob
 
     Agent->>Shell: command, block_until_ms, shell
     Shell->>Registry: launch + register
@@ -119,8 +149,8 @@ sequenceDiagram
         Shell-->>Agent: status, exit_code, output, environment
     else still running
         Shell-->>Agent: status=running, job_id, last_output
-        Agent->>Status: job_id, wait_ms, tail_lines
-        Status-->>Agent: running | completed | failed
+        Agent->>Status: job_id, wait, cursor or cancel
+        Status-->>Agent: state + tail or new output + next_cursor
     end
 ```
 

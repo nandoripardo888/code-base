@@ -5,10 +5,13 @@ review, rollback, and reload operations use structured JSON where context must s
 unambiguous. Failures come back as `code: message`, for example
 `path_outside_project: Path resolves outside the project root: '../etc'`.
 
-Paths may be relative to the selected project root or absolute, but must resolve
-inside it. Reported paths use forward slashes on every platform. In named mode,
-`Shell`, `GetJobStatus`, `Grep`, `Glob`, `Read`, `Write`, `StrReplace`, `ApplyPatch`,
-`OpenPatchReview`, `RollbackPatch`, and `Delete` accept optional `project`; omitting
+Filesystem paths accepted directly by tools may be relative to the selected
+project root or absolute, but must resolve inside it.
+`Shell.working_directory` follows the same rule; the command itself retains the
+host user's permissions and may access paths outside the project. Reported paths
+use forward slashes on every platform. In named mode,
+`Shell`, `GetJobStatus`, `CancelJob`, `Grep`, `Glob`, `Read`, `Write`, `StrReplace`, `ApplyPatch`,
+`ListPatchReviews`, `OpenPatchReview`, `RollbackPatch`, and `Delete` accept optional `project`; omitting
 it uses the configured default and an unknown alias fails without fallback. In
 legacy single-project mode, omit `project`.
 
@@ -44,6 +47,19 @@ a session is blocked while it has an active MCP lease, a running shell job, or a
 applied transaction still awaiting review. OAuth requires `code.write`.
 
 ## Shell
+
+`Shell` is intentionally a host-level development capability. The selected
+project confines its initial working directory and chooses the owning job
+registry; it does not sandbox the spawned process. The command can read, write,
+launch processes, or use the network wherever the host user has permission.
+
+For Streamable HTTP, protect this capability with authentication and grant
+`code.exec` only to trusted callers. Omit `Shell`, `GetJobStatus`, and `CancelJob` from
+`--tool-allowlist` for a read-only profile. Use a dedicated operating-system
+account or container when an actual filesystem boundary is required.
+
+Treat command output, filenames, and file contents as untrusted data rather than
+instructions to execute.
 
 | Parameter | Type | Notes |
 |-----------|------|-------|
@@ -108,7 +124,11 @@ mismatches (for example a Bash heredoc under PowerShell) fail with
 |-----------|------|-------|
 | `job_id` | string | required; opaque id returned by `Shell` |
 | `wait_ms` | int | default `0`, max `30000`; how long the query may wait |
-| `tail_lines` | int | default `50`, max `500`; trailing lines of output |
+| `tail_lines` | int | default `50`, max `500`; trailing lines in legacy mode |
+| `cursor` | string | optional; pass `start` once, then reuse each `next_cursor` |
+| `project` | string | optional alias; omitted means the configured default |
+
+Without `cursor`, the response preserves the trailing-output contract:
 
 ```json
 {
@@ -122,9 +142,53 @@ mismatches (for example a Bash heredoc under PowerShell) fail with
 }
 ```
 
-Allowed statuses: `running`, `completed`, `failed`, `unknown`. An unknown id
-returns `status: "unknown"` with `exit_code: null`. There is no cancel API in
-this version.
+For incremental output, begin with `cursor: "start"`. Each response contains at
+most 64 KiB of new log bytes. Pass its opaque `next_cursor` to the next call:
+
+```json
+{
+  "job_id": "job-123",
+  "status": "running",
+  "pid": 18420,
+  "exit_code": null,
+  "elapsed_ms": 31000,
+  "output": "only bytes not returned by earlier cursors",
+  "next_cursor": "v1.opaque-value",
+  "has_more_output": true
+}
+```
+
+Continue immediately while `has_more_output` is `true`; otherwise poll later
+with the returned cursor. Cursor mode never splits a UTF-8 character between
+responses. Invalid bytes are replaced with the Unicode replacement character.
+`tail_lines` cannot be changed in cursor mode. Cursors are bound to one job and
+one server session, detect modification, and become invalid when retention
+removes the job or the server restarts.
+
+Allowed statuses: `running`, `completed`, `failed`, `cancelled`, `unknown`. An
+unknown id returns `status: "unknown"` with `exit_code: null`. A cancelled job
+keeps `exit_code: null`.
+
+## CancelJob
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `job_id` | string | required; opaque id returned by `Shell` |
+| `project` | string | optional alias; omitted means the configured default |
+
+`CancelJob` stops the complete process tree owned by the selected project. The
+first successful cancellation returns `status: "cancelled"` and
+`already_finished: false`. Repeating it is idempotent and returns
+`already_finished: true`. A job that already completed or failed keeps that
+terminal status and exit code; an unknown or expired id returns `status:
+"unknown"`.
+
+Each project accepts at most eight concurrent jobs by default. Completed entries
+are retained for at most 24 hours and capped at 100; pruning removes the private
+log with the registry entry and never removes a running job. Configure these
+limits with `CODE_HARNESS_JOBS_MAX_RUNNING`,
+`CODE_HARNESS_JOBS_MAX_RETAINED`, and
+`CODE_HARNESS_JOBS_RETENTION_SECONDS`. Every value must be a positive integer.
 
 ## Grep
 
@@ -230,8 +294,13 @@ Result of search in '.' (total 2 files):
 - src/hello.py
 ```
 
-Sorted by modification time, newest first. An empty result starts with
-`No files found matching '...'` and appends generic `Suggestions:`.
+The result contains the globally newest matching files, sorted by modification
+time descending and then by path for deterministic ties. At most 1,000 files are
+returned; an explicit note reports when more matches exist. Global ordering makes
+ripgrep scan and sort the complete matching tree, so a very large tree can take
+longer even though the MCP process retains only a bounded candidate set. An empty
+result starts with `No files found matching '...'` and appends generic
+`Suggestions:`.
 
 ## Read
 
@@ -242,9 +311,15 @@ Sorted by modification time, newest first. An empty result starts with
 | `limit` | int | how many lines to return |
 
 Text files come back as `     1|content`, with a trailing note giving the next
-offset when lines remain. An empty file answers `File is empty.` Files ending in
-`.jpg`, `.jpeg`, `.png`, `.gif`, or `.webp` are returned as MCP image content
-instead, so the model can look at them. Files are clipped at 2 MB.
+offset when lines remain. Each response retains at most 2,000,000 source bytes;
+if this byte limit cuts the requested window, the response says that it was
+truncated. Large files are read incrementally, and a negative offset counts from
+the real end of the file. An empty file answers `File is empty.` Content detected
+as an unsupported binary file is rejected.
+
+Files ending in `.jpg`, `.jpeg`, `.png`, `.gif`, or `.webp` are returned as MCP
+image content instead, so the model can inspect them. One image may contain at
+most 4 MiB; larger images are rejected before their complete contents are loaded.
 
 Encoding is UTF-8 first (BOM-aware). If that fails, windows-1252 is used as a
 fixed fallback, so accented Brazilian Portuguese sources read correctly.
@@ -309,6 +384,24 @@ group; unknown non-empty ids are rejected.
 
 Set `CODE_HARNESS_REVIEW_AUTO_OPEN=true` to open the local browser automatically
 after applying a patch. It is disabled by default for headless and remote hosts.
+
+## ListPatchReviews
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `limit` | int | default `20`; minimum `1`, maximum `100` |
+| `status` | string | `all`, `pending`, `reviewed`, or `rolled_back`; default `all` |
+| `project` | string | optional alias; omitted means the configured default |
+
+Returns retained groups ordered by `updated_at` descending with `group_id` as a
+deterministic tie-breaker. A status filter includes groups containing at least
+one update in that state and is applied before `limit`.
+
+Each item contains only the group id and title, creation/update timestamps,
+patch and file counts, state counts, and `last_transaction_id`. It does not
+return changed paths, descriptions, diffs, snapshot content, history roots, or
+workspace ids. Use `group_id` and `last_transaction_id` with
+`OpenPatchReview`. OAuth requires `code.read`.
 
 ## OpenPatchReview
 

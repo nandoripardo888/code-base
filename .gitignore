@@ -10,3 +10,10 @@ htmlcov/
 build/
 dist/
 .code-harness/
+
+# Local tools / environment
+.tools/
+.venv/
+
+# Local project registry
+config/code-harness.toml

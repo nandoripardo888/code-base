@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- `ListPatchReviews` discovers retained review groups after context or process
+  changes. It supports state filtering, returns compact counts and the latest
+  transaction id, remains isolated by project, and requires OAuth `code.read`.
+- `CancelJob` stops an opaque background job and its process tree within the
+  selected project, with idempotent terminal responses and OAuth scope
+  `code.exec`.
 - One MCP process can host multiple named project roots through `ProjectRegistry`;
   project-aware tools accept an optional alias while omitted aliases preserve the
   configured default behavior.
@@ -25,6 +31,20 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- `GetJobStatus` accepts an optional opaque cursor for lossless incremental log
+  reads of up to 64 KiB without repeating earlier output. Its existing trailing
+  output response remains unchanged when the cursor is omitted.
+- Shell registries now enforce configurable per-project concurrency, completed
+  job count, and retention age limits. Pruning removes the associated private
+  log and never removes running jobs.
+- `Read` now scans large text incrementally, reports its 2,000,000-byte output
+  limit, resolves negative offsets from the real end, rejects likely binary
+  content, and limits recognized images to 4 MiB before loading them completely.
+- `Glob` now selects the globally newest 1,000 matches and uses the normalized
+  path as a deterministic tie-breaker while keeping MCP candidate memory bounded.
+- Clarified the security contract: direct file-tool paths are project-confined,
+  while `Shell` intentionally retains the host user's permissions and is governed
+  by authentication, the `code.exec` scope, and the tool allowlist.
 - Legacy single-project startup remains compatible, while `serve` / `mcp serve`
   also accept repeatable `alias=path`, `--default-project`, or `--project-config`.
 - Background jobs, patch history, rollback, and review routing are isolated per

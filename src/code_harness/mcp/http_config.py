@@ -188,7 +188,7 @@ def resolve_http_config(
     public_host = host_header_from_url(resolved_public) if resolved_public else None
     public_origin = origin_from_url(resolved_public) if resolved_public else None
     if not resolved_disable and (public_host or hosts or origins or public_origin):
-        # Override FastMCP's localhost-only default so tunnels (Cloudflare, etc.) work.
+        # Override MCPServer's localhost-only default so tunnels (Cloudflare, etc.) work.
         host_extras = (public_host, f"{public_host}:*") if public_host else ()
         origin_extras = ((public_origin,) if public_origin else ()) + _DEFAULT_REMOTE_ORIGINS
         hosts = merge_unique(_LOOPBACK_ALLOWED_HOSTS, hosts, host_extras)

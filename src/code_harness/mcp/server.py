@@ -12,9 +12,11 @@ from typing import Any, Literal
 
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings
-from mcp.server.fastmcp import FastMCP, Image
+from mcp.server.mcpserver import Image, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
+from starlette.applications import Starlette
 
 from code_harness import tools
 from code_harness.errors import HarnessError, InvalidArgumentError
@@ -100,10 +102,9 @@ def create_server(
     *,
     session: Session | None = None,
     registry: ProjectRegistry | None = None,
-    http_config: HttpServeConfig | None = None,
     tool_policy: ToolPolicy | None = None,
     oauth_config: OAuthConfig | None = None,
-) -> FastMCP:
+) -> MCPServer:
     if registry is not None and (session is not None or project is not None):
         raise ValueError("registry cannot be combined with project or session.")
 
@@ -113,7 +114,7 @@ def create_server(
     policy = tool_policy or ToolPolicy()
 
     @asynccontextmanager
-    async def lifespan(_server: FastMCP) -> AsyncIterator[dict[str, Any]]:
+    async def lifespan(_server: MCPServer) -> AsyncIterator[dict[str, Any]]:
         try:
             if registry is not None:
                 for project_session in registry.projects.values():
@@ -129,13 +130,6 @@ def create_server(
                 active_session.shutdown()
 
     server_kwargs: dict[str, Any] = {}
-    if http_config is not None:
-        server_kwargs.update(
-            host=http_config.host,
-            port=http_config.port,
-            streamable_http_path=http_config.path,
-            transport_security=_transport_security(http_config),
-        )
     if oauth_config is not None:
         server_kwargs.update(
             token_verifier=JwtTokenVerifier(oauth_config),
@@ -144,11 +138,12 @@ def create_server(
                     "issuer_url": oauth_config.issuer_url,
                     "resource_server_url": oauth_config.resource_server_url,
                     "required_scopes": list(oauth_config.scopes),
+                    "validate_token_resource": False,  # JwtTokenVerifier checks audience itself.
                 }
             ),
         )
 
-    server = FastMCP(
+    server = MCPServer(
         "code-harness",
         instructions=INSTRUCTIONS,
         lifespan=lifespan,
@@ -156,6 +151,15 @@ def create_server(
     )
     register_tools(server, active_session, registry=registry, policy=policy)
     return server
+
+
+def _streamable_http_app(server: MCPServer, config: HttpServeConfig) -> Starlette:
+    """Apply the HTTP transport settings at app creation (MCP SDK 2.x)."""
+    return server.streamable_http_app(
+        host=config.host,
+        streamable_http_path=config.path,
+        transport_security=_transport_security(config),
+    )
 
 
 def run_server(
@@ -192,7 +196,7 @@ def run_server(
     ):
         raise ValueError("--project-config cannot be combined with --project or --default-project.")
 
-    def configured_server(**kwargs: Any) -> FastMCP:
+    def configured_server(**kwargs: Any) -> MCPServer:
         if resolved_project_config is not None:
             registry = ProjectRegistry.from_config(resolved_project_config)
         elif projects is not None:
@@ -240,18 +244,23 @@ def run_server(
     )
     _validate_public_security(config, auth_mode=auth_mode, tool_policy=policy)
     server = configured_server(
-        http_config=config,
         tool_policy=policy,
         oauth_config=oauth_config,
     )
     if auth_mode != "api-key":
-        server.run(transport="streamable-http")
+        server.run(
+            transport="streamable-http",
+            host=config.host,
+            port=config.port,
+            streamable_http_path=config.path,
+            transport_security=_transport_security(config),
+        )
         return
 
     import uvicorn
 
     assert config.api_key is not None
-    application = server.streamable_http_app()
+    application = _streamable_http_app(server, config)
     application.add_middleware(ApiKeyMiddleware, api_key=config.api_key)
     uvicorn.run(
         application,
@@ -274,7 +283,7 @@ async def _run_io[T](call: Callable[[], T]) -> T | str:
 
 
 def _tool(
-    server: FastMCP,
+    server: MCPServer,
     policy: ToolPolicy,
     name: str,
     *,
@@ -296,7 +305,7 @@ def _tool(
             async def scoped(*args: Any, **kwargs: Any) -> Any:
                 token = get_access_token()
                 if token is None or required_scope not in token.scopes:
-                    raise PermissionError(f"OAuth scope '{required_scope}' is required for {name}.")
+                    raise ToolError(f"OAuth scope '{required_scope}' is required for {name}.")
                 return await function(*args, **kwargs)
 
             registered = scoped
@@ -309,7 +318,7 @@ def _tool(
 
 
 def register_tools(
-    server: FastMCP,
+    server: MCPServer,
     session: Session,
     *,
     registry: ProjectRegistry | None = None,
@@ -364,7 +373,7 @@ def register_tools(
         ),
         meta={"ui": {"resourceUri": UI_URI}, "openai/outputTemplate": UI_URI},
         annotations=ToolAnnotations(
-            readOnlyHint=True, destructiveHint=False, openWorldHint=False, idempotentHint=True
+            read_only_hint=True, destructive_hint=False, open_world_hint=False, idempotent_hint=True
         ),
     )
     async def ShowImage(
@@ -379,7 +388,7 @@ def register_tools(
             )
         except HarnessError as error:
             return CallToolResult(
-                isError=True, content=[TextContent(type="text", text=error.render())]
+                is_error=True, content=[TextContent(type="text", text=error.render())]
             )
 
     @_tool(server, policy, "ServerInfo", description="Return non-sensitive server metadata.")
@@ -789,10 +798,10 @@ def register_tools(
             "counts and the latest transaction id without diffs, snapshots, or history paths."
         ),
         annotations=ToolAnnotations(
-            readOnlyHint=True,
-            destructiveHint=False,
-            openWorldHint=False,
-            idempotentHint=True,
+            read_only_hint=True,
+            destructive_hint=False,
+            open_world_hint=False,
+            idempotent_hint=True,
         ),
     )
     async def ListPatchReviews(

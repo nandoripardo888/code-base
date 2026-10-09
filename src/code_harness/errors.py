@@ -58,7 +58,8 @@ class RipgrepUnavailableError(HarnessError):
     def __init__(self, detail: str, *, hint_install: bool = True) -> None:
         if hint_install:
             super().__init__(
-                f"{detail} Install ripgrep or set CODE_HARNESS_RG to the full path of the executable."
+                f"{detail} Install ripgrep or set CODE_HARNESS_RG to the full path "
+                "of the executable."
             )
         else:
             super().__init__(detail)

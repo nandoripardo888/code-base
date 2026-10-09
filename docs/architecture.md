@@ -72,7 +72,7 @@ flowchart TB
 | `shell/environment.py` | Shell discovery, argv construction, syntax diagnostics |
 | `shell/background.py` | Per-session job registry, concurrency reservations, process-tree cancellation, retention, bounded log tails, and reload-safe running-job checks |
 | `review/` | Workspace review services behind one loopback `ReviewHub` when a named registry is active |
-| `mcp/server.py` | FastMCP registration over stdio or Streamable HTTP; resolves project aliases per request and uses session leases during reload |
+| `mcp/server.py` | MCPServer registration over stdio or Streamable HTTP; resolves project aliases per request and uses session leases during reload |
 | `cli.py` | The same tools behind typer commands plus legacy/named/persistent MCP startup options |
 
 There is no index or database in v1. `Grep` and `Glob` remain the MCP surface.

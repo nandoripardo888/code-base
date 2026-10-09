@@ -5,7 +5,6 @@ import json
 import os
 import sys
 from collections.abc import Awaitable, Callable
-from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +40,7 @@ def run_with_mcp[T](
             ClientSession(
                 reader,
                 writer,
-                read_timeout_seconds=timedelta(seconds=15),
+                read_timeout_seconds=15,
             ) as session,
         ):
             await session.initialize()
@@ -51,7 +50,7 @@ def run_with_mcp[T](
 
 
 def structured_result(result: Any) -> dict[str, Any]:
-    value = result.structuredContent
+    value = result.structured_content
     if isinstance(value, dict):
         nested = value.get("result")
         if isinstance(nested, dict):

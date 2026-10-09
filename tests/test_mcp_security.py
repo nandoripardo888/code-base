@@ -8,7 +8,7 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from mcp.server.auth.provider import AccessToken
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from starlette.testclient import TestClient
 
 import code_harness.mcp.server as server_module
@@ -158,7 +158,9 @@ def test_oauth_server_publishes_resource_metadata_and_requires_bearer(session: S
 
     assert metadata.status_code == 200
     assert metadata.json()["resource"] == "https://mcp.example.com/mcp"
-    assert metadata.json()["authorization_servers"] == ["https://auth.example.com/"]
+    assert [url.rstrip("/") for url in metadata.json()["authorization_servers"]] == [
+        "https://auth.example.com"
+    ]
     assert unauthorized.status_code == 401
     challenge = unauthorized.headers["www-authenticate"]
     assert challenge.startswith("Bearer ")

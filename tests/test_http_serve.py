@@ -19,7 +19,7 @@ from code_harness.mcp.http_config import (
     resolve_mcp_transport,
     validate_http_config,
 )
-from code_harness.mcp.server import create_server
+from code_harness.mcp.server import _streamable_http_app, _transport_security, create_server
 from code_harness.projects import ProjectRegistry
 from code_harness.session import Session
 
@@ -162,12 +162,11 @@ def test_create_server_applies_http_settings(session: Session) -> None:
         allowed_hosts=["mcp.example.com"],
         allowed_origins=["https://mcp.example.com"],
     )
-    server = create_server(session=session, http_config=config)
+    server = create_server(session=session)
 
-    assert server.settings.host == "127.0.0.1"
-    assert server.settings.port == 9010
-    assert server.settings.streamable_http_path == "/custom-mcp"
-    security = server.settings.transport_security
+    app = _streamable_http_app(server, config)
+    assert any(route.path == "/custom-mcp" for route in app.routes)
+    security = _transport_security(config)
     assert security is not None
     assert security.enable_dns_rebinding_protection is True
     assert "mcp.example.com" in security.allowed_hosts
@@ -176,7 +175,7 @@ def test_create_server_applies_http_settings(session: Session) -> None:
 
 def test_streamable_http_initialize_handshake(session: Session) -> None:
     config = resolve_http_config(transport="streamable-http")
-    server = create_server(session=session, http_config=config)
+    server = create_server(session=session)
     headers = {
         "Accept": "application/json, text/event-stream",
         "Content-Type": "application/json",
@@ -192,7 +191,9 @@ def test_streamable_http_initialize_handshake(session: Session) -> None:
         },
     }
 
-    with TestClient(server.streamable_http_app(), base_url="http://localhost:8000") as client:
+    with TestClient(
+        _streamable_http_app(server, config), base_url="http://localhost:8000"
+    ) as client:
         response = client.post("/mcp", json=initialize, headers=headers)
 
     assert response.status_code == 200
@@ -211,7 +212,7 @@ def test_one_streamable_http_session_routes_multiple_projects(tmp_path: Path) ->
     registry = ProjectRegistry.create({"crm": crm, "banco": banco}, default_project="crm")
     try:
         config = resolve_http_config(transport="streamable-http", no_api_key=True)
-        server = create_server(registry=registry, http_config=config)
+        server = create_server(registry=registry)
         base_headers = {
             "Accept": "application/json, text/event-stream",
             "Content-Type": "application/json",
@@ -227,7 +228,9 @@ def test_one_streamable_http_session_routes_multiple_projects(tmp_path: Path) ->
             },
         }
 
-        with TestClient(server.streamable_http_app(), base_url="http://localhost:8000") as client:
+        with TestClient(
+            _streamable_http_app(server, config), base_url="http://localhost:8000"
+        ) as client:
             initialized = client.post("/mcp", json=initialize, headers=base_headers)
             assert initialized.status_code == 200
             session_id = initialized.headers.get("mcp-session-id")

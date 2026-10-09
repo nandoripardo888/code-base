@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 from importlib.resources import files
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 from mcp.types import CallToolResult, TextContent
 
 from code_harness.errors import InvalidArgumentError
@@ -26,7 +26,7 @@ UI_META = {
 }
 
 
-def register_image_resource(server: FastMCP) -> None:
+def register_image_resource(server: MCPServer) -> None:
     @server.resource(
         UI_URI,
         name="image_card",

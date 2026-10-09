@@ -203,7 +203,7 @@ mutation/review tools; and `code.exec` for `Shell`, `GetJobStatus`, and
 authorization server should require additional scopes globally.
 
 For a tunnel or public connector, pass `--public-url` so the public Host and
-Origin are added to the FastMCP transport-security allowlists.
+Origin are added to the MCPServer transport-security allowlists.
 
 The HTTP settings can also be supplied through environment variables. Explicit
 CLI options take precedence:

@@ -88,7 +88,7 @@ _MCP_ALLOWED_ORIGINS = typer.Option(
 _MCP_DISABLE_DNS_REBINDING = typer.Option(
     None,
     "--disable-dns-rebinding/--enable-dns-rebinding",
-    help="Override FastMCP DNS-rebinding protection.",
+    help="Override MCPServer DNS-rebinding protection.",
 )
 _GLOB_FILTER = typer.Option(
     None,

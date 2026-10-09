@@ -25,8 +25,8 @@ def test_patch_tools_are_discoverable_with_the_public_contract(
         assert "ApplyPatch" in tools
         assert "RollbackPatch" in tools
         return {
-            "apply": tools["ApplyPatch"].inputSchema,
-            "rollback": tools["RollbackPatch"].inputSchema,
+            "apply": tools["ApplyPatch"].input_schema,
+            "rollback": tools["RollbackPatch"].input_schema,
         }
 
     schemas = run_with_mcp(project, tmp_path / "history", inspect)
@@ -38,9 +38,10 @@ def test_patch_tools_are_discoverable_with_the_public_contract(
         "description",
         "group_id",
         "group_title",
+        "project",
     }
     assert schemas["rollback"]["required"] == ["transaction_id"]
-    assert set(schemas["rollback"]["properties"]) == {"transaction_id", "force"}
+    assert set(schemas["rollback"]["properties"]) == {"transaction_id", "force", "project"}
 
 
 def test_dry_run_validates_without_mutating_the_project(tmp_path: Path) -> None:

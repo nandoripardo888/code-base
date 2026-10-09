@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from mcp.types import CallToolResult
 from typer.testing import CliRunner
 
 from code_harness import tools as tools_module
@@ -44,11 +45,12 @@ EXPECTED_TOOLS = {
 }
 
 
-def _tool_json(result: object) -> dict[str, Any]:
-    content = result[0] if isinstance(result, tuple) else result
-    assert isinstance(content, list)
-    assert content
-    text = getattr(content[0], "text", None)
+def _tool_json(result: CallToolResult) -> dict[str, Any]:
+    assert isinstance(result, CallToolResult) and not result.is_error
+    if result.structured_content is not None:
+        return result.structured_content
+    assert result.content
+    text = getattr(result.content[0], "text", None)
     assert isinstance(text, str)
     value = json.loads(text)
     assert isinstance(value, dict)
@@ -861,7 +863,7 @@ def test_mcp_grep_calls_overlap(session: Session, monkeypatch: pytest.MonkeyPatc
 def test_tool_schemas_match_the_cursor_contract(session: Session) -> None:
     server = create_server(session=session)
     listed_tools = asyncio.run(server.list_tools())
-    schemas = {tool.name: tool.inputSchema for tool in listed_tools}
+    schemas = {tool.name: tool.input_schema for tool in listed_tools}
     tools_by_name = {tool.name: tool for tool in listed_tools}
 
     assert schemas["ListProjects"].get("properties", {}) == {}
@@ -946,7 +948,7 @@ def test_tool_schemas_match_the_cursor_contract(session: Session) -> None:
         "rolled_back",
     ]
     assert tools_by_name["ListPatchReviews"].annotations is not None
-    assert tools_by_name["ListPatchReviews"].annotations.readOnlyHint is True
+    assert tools_by_name["ListPatchReviews"].annotations.read_only_hint is True
     assert schemas["OpenPatchReview"]["properties"]["transaction_id"]["default"] == "latest"
     assert schemas["OpenPatchReview"]["properties"]["open_browser"]["default"] is True
     assert "project" in schemas["OpenPatchReview"]["properties"]

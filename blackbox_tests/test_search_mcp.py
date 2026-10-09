@@ -32,7 +32,7 @@ def test_search_contract_and_count_then_content_workflow(tmp_path: Path) -> None
                 {"pattern": "Target", "exclude": "generated/**", "head_limit": 1},
             )
         )
-        return {"schema": tools["Grep"].inputSchema, "count": count, "content": content}
+        return {"schema": tools["Grep"].input_schema, "count": count, "content": content}
 
     result = run_with_mcp(project, tmp_path / "history", exercise)
     schema = result["schema"]
